@@ -746,10 +746,7 @@ export function formatPeek(peekData, { redirected = false } = {}) {
   const parts = [];
 
   parts.push(`## File: ${filePath}`);
-  parts.push(`**Size:** ${sizeChars.toLocaleString()} chars, ${sizeLines.toLocaleString()} lines`);
-  if (totalChunks > 1) {
-    parts.push(`**Chunks:** ${totalChunks} (use \`chunk\` param to read by chunk)`);
-  }
+  parts.push(`**Size:** ${sizeChars.toLocaleString()} chars, ${sizeLines.toLocaleString()} lines, ${totalChunks} ${totalChunks === 1 ? "chunk" : "chunks"}`);
 
   if (frontmatter) {
     parts.push("");
@@ -764,7 +761,9 @@ export function formatPeek(peekData, { redirected = false } = {}) {
     parts.push("");
     parts.push("### Heading Outline");
     for (const h of headings) {
-      parts.push(`L${h.lineNumber}  ${h.heading} (~${h.charCount} chars)`);
+      const indent = "  ".repeat(h.level - 1);
+      const title = h.heading.replace(/^#+\s*/, "");
+      parts.push(`${indent}${title} [${h.charCount} chars]`);
     }
   }
 

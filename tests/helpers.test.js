@@ -946,19 +946,21 @@ describe("formatPeek", () => {
     totalChunks: 2,
   };
 
-  it("includes file path and size info", () => {
+  it("includes file path, size info, and chunk count on one line", () => {
     const text = formatPeek(basePeekData);
     assert.ok(text.includes("notes/big.md"));
     assert.ok(text.includes("90,000") || text.includes("90000"));
     assert.ok(text.includes("2,000") || text.includes("2000"));
+    assert.ok(text.includes("2 chunks"));
   });
 
-  it("includes heading outline with line numbers", () => {
+  it("includes heading outline as indented tree without line numbers", () => {
     const text = formatPeek(basePeekData);
-    assert.ok(text.includes("# Title"));
-    assert.ok(text.includes("## Section A"));
-    assert.ok(text.includes("## Section B"));
-    assert.match(text, /L\d+/);
+    assert.ok(text.includes("Title [100 chars]"));
+    assert.ok(text.includes("  Section A [45000 chars]"));
+    assert.ok(text.includes("  Section B [400 chars]"));
+    assert.ok(!text.match(/L\d+/), "should not contain line number prefixes");
+    assert.ok(!text.includes("# Title"), "should not contain # markers");
   });
 
   it("includes frontmatter fields", () => {

@@ -1671,11 +1671,13 @@ describe("handlePeek", () => {
     assert.ok(text.includes("devlog"));
   });
 
-  it("includes heading outline with line numbers", async () => {
+  it("includes heading outline as indented tree", async () => {
     const handler = handlers.get("vault_peek");
     const result = await handler({ path: "notes/devlog.md" });
     const text = result.content[0].text;
-    assert.match(text, /L\d+/);
+    assert.ok(text.includes("Heading Outline"));
+    assert.ok(text.includes("["), "should contain char counts in brackets");
+    assert.ok(!text.match(/L\d+/), "should not contain line number prefixes");
   });
 
   it("supports fuzzy path resolution", async () => {

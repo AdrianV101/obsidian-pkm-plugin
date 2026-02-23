@@ -6,12 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-02-23
+
+### Changed
+- `vault_peek` heading outline now displays as an indented tree instead of a flat list — hierarchy is conveyed by 2-space indentation per level, `#` markers stripped
+- `vault_peek` heading outline no longer includes line number prefixes (`L13`, `L15`, etc.)
+- `vault_peek` size line now always includes chunk count (e.g. "1 chunk", "3 chunks") instead of showing a separate `**Chunks:**` line only for multi-chunk files
+
 ## [1.0.0] - 2026-02-11
 
 ### Added
 - MCP server with 18 tools for Obsidian vault interaction
 - `vault_read` with pagination support (heading-based, tail lines, tail sections, chunk, line range); auto-redirects large files (>80k chars) to peek data; `force` param to bypass redirect (hard-capped at ~400k chars)
-- `vault_peek` for inspecting file metadata and structure without reading full content (size, frontmatter, heading outline with line numbers, preview)
+- `vault_peek` for inspecting file metadata and structure without reading full content (size, frontmatter, indented heading tree, preview)
 - `vault_write` with template-based note creation enforcing YAML frontmatter
 - `vault_append` with positional insert (after heading, before heading, end of section)
 - `vault_edit` for surgical single-occurrence string replacement
@@ -48,5 +55,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Atomic file creation in `vault_write` (`wx` flag) prevents race conditions
 - Error messages sanitized to prevent leaking absolute vault paths
 
-[Unreleased]: https://github.com/AdrianV101/Obsidian-MCP/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/AdrianV101/Obsidian-MCP/compare/v1.1.0...HEAD
+[1.1.0]: https://github.com/AdrianV101/Obsidian-MCP/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/AdrianV101/Obsidian-MCP/releases/tag/v1.0.0

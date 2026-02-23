@@ -31,7 +31,7 @@ The project consists of three parts:
 
 **MCP Server**: A Node.js ES module server implementing the Model Context Protocol. The main entry point is `index.js` (tool definitions and request routing), with pure helper functions extracted to `helpers.js`. It provides 18 tools for vault interaction:
 - `vault_read` - Read note contents (supports pagination: `heading`, `tail`, `tail_sections`, `chunk`, `lines`; auto-redirects to peek data for files >80k chars; `force` bypasses redirect)
-- `vault_peek` - Inspect file metadata/structure without reading full content (size, frontmatter, heading outline, preview)
+- `vault_peek` - Inspect file metadata/structure without reading full content (size, frontmatter, indented heading tree, preview)
 - `vault_write` - Create new notes from templates (enforces frontmatter; settable fields: `status`, `priority`, `project`, `deciders`, `due`, `source`)
 - `vault_append` - Add content to existing files, with optional positional insert (after/before heading, end of section)
 - `vault_edit` - Surgical string replacement (exact match, single occurrence)
