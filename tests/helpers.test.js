@@ -21,6 +21,7 @@ import {
   computePeek,
   formatPeek,
   updateFrontmatter,
+  validateFieldEnum,
   compareFrontmatterValues,
   AUTO_REDIRECT_THRESHOLD,
   FORCE_HARD_CAP,
@@ -336,6 +337,44 @@ describe("substituteTemplateVariables", () => {
     assert.ok(result.includes("status: done"), "frontmatter should be updated");
     assert.ok(result.includes("Body text."), "body should be preserved");
     assert.ok(!result.includes("<% tp.file.title %>"), "template variable should be replaced");
+  });
+
+  it("rejects invalid task status in vault_write", () => {
+    const template = "---\ntype: task\nstatus: pending\npriority: normal\n---\n# Title\n";
+    assert.throws(
+      () => substituteTemplateVariables(template, {
+        frontmatter: { status: "open" }
+      }),
+      /invalid status "open".*task.*pending, active, done, cancelled/i
+    );
+  });
+
+  it("rejects invalid task priority in vault_write", () => {
+    const template = "---\ntype: task\nstatus: pending\npriority: normal\n---\n# Title\n";
+    assert.throws(
+      () => substituteTemplateVariables(template, {
+        frontmatter: { priority: "critical" }
+      }),
+      /invalid priority "critical".*task.*urgent, high, normal, low/i
+    );
+  });
+
+  it("accepts valid task status values in vault_write", () => {
+    for (const status of ["pending", "active", "done", "cancelled"]) {
+      const template = "---\ntype: task\nstatus: pending\npriority: normal\n---\n# Title\n";
+      const result = substituteTemplateVariables(template, {
+        frontmatter: { status }
+      });
+      assert.ok(result.includes(`status: ${status}`));
+    }
+  });
+
+  it("skips enum validation for non-task note types", () => {
+    const template = "---\ntype: research\nstatus: draft\n---\n# Title\n";
+    const result = substituteTemplateVariables(template, {
+      frontmatter: { status: "reviewed" }
+    });
+    assert.ok(result.includes("status: reviewed"));
   });
 });
 
@@ -1116,6 +1155,78 @@ describe("updateFrontmatter", () => {
     const content = "---\ntype: task\ncreated: 2026-02-10\ntags:\n  - task\n---" + body;
     const { content: result } = updateFrontmatter(content, { status: "done" });
     assert.ok(result.endsWith(body), "body should be preserved exactly");
+  });
+
+  it("rejects invalid task status in vault_update_frontmatter", () => {
+    const content = "---\ntype: task\nstatus: pending\ncreated: 2026-02-10\ntags:\n  - task\n---\n# Title\n";
+    assert.throws(
+      () => updateFrontmatter(content, { status: "open" }),
+      /invalid status "open".*task.*pending, active, done, cancelled/i
+    );
+  });
+
+  it("rejects invalid task priority in vault_update_frontmatter", () => {
+    const content = "---\ntype: task\nstatus: pending\npriority: normal\ncreated: 2026-02-10\ntags:\n  - task\n---\n# Title\n";
+    assert.throws(
+      () => updateFrontmatter(content, { priority: "medium" }),
+      /invalid priority "medium".*task.*urgent, high, normal, low/i
+    );
+  });
+
+  it("accepts valid task status values in vault_update_frontmatter", () => {
+    for (const status of ["pending", "active", "done", "cancelled"]) {
+      const content = "---\ntype: task\nstatus: pending\ncreated: 2026-02-10\ntags:\n  - task\n---\n# Title\n";
+      const { frontmatter } = updateFrontmatter(content, { status });
+      assert.equal(frontmatter.status, status);
+    }
+  });
+
+  it("skips enum validation for non-task note types", () => {
+    const content = "---\ntype: research\nstatus: draft\ncreated: 2026-02-10\ntags:\n  - research\n---\n# Title\n";
+    const { frontmatter } = updateFrontmatter(content, { status: "reviewed" });
+    assert.equal(frontmatter.status, "reviewed");
+  });
+});
+
+describe("validateFieldEnum", () => {
+  it("throws for invalid task status", () => {
+    assert.throws(() => validateFieldEnum("status", "open", "task"), /invalid status "open"/i);
+  });
+
+  it("throws for invalid task priority", () => {
+    assert.throws(() => validateFieldEnum("priority", "critical", "task"), /invalid priority "critical"/i);
+  });
+
+  it("accepts valid task status values", () => {
+    for (const v of ["pending", "active", "done", "cancelled"]) {
+      assert.doesNotThrow(() => validateFieldEnum("status", v, "task"));
+    }
+  });
+
+  it("accepts valid task priority values", () => {
+    for (const v of ["low", "normal", "high", "urgent"]) {
+      assert.doesNotThrow(() => validateFieldEnum("priority", v, "task"));
+    }
+  });
+
+  it("skips validation for unknown note types", () => {
+    assert.doesNotThrow(() => validateFieldEnum("status", "anything", "research"));
+  });
+
+  it("skips validation for unknown fields", () => {
+    assert.doesNotThrow(() => validateFieldEnum("author", "anyone", "task"));
+  });
+
+  it("skips validation for null/undefined values", () => {
+    assert.doesNotThrow(() => validateFieldEnum("status", null, "task"));
+    assert.doesNotThrow(() => validateFieldEnum("status", undefined, "task"));
+  });
+
+  it("includes allowed values in error message", () => {
+    assert.throws(
+      () => validateFieldEnum("status", "open", "task"),
+      /pending, active, done, cancelled/
+    );
   });
 });
 

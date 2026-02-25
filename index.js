@@ -115,8 +115,8 @@ Pass custom <%...%> variables via the 'variables' parameter.`,
             description: "Frontmatter fields to set (e.g., {tags: ['tag1', 'tag2'], status: 'active'})",
             properties: {
               tags: { type: "array", items: { type: "string" }, description: "Tags for the note (required)" },
-              status: { type: "string", description: "Note status" },
-              priority: { type: "string", description: "Priority level (for tasks)" },
+              status: { type: "string", description: "Note status. For tasks: pending, active, done, cancelled" },
+              priority: { type: "string", description: "Priority level. For tasks: low, normal, high, urgent" },
               project: { type: "string", description: "Project name (for devlogs)" },
               deciders: { type: "string", description: "Decision makers (for ADRs)" },
               due: { type: "string", description: "Due date (for tasks)" },
@@ -157,7 +157,7 @@ Pass custom <%...%> variables via the 'variables' parameter.`,
     },
     {
       name: "vault_update_frontmatter",
-      description: "Update YAML frontmatter fields in an existing note. Parses existing frontmatter, updates specified fields, preserves everything else. Set a field to null to remove it. Protected fields (type, created, tags) cannot be removed.",
+      description: "Update YAML frontmatter fields in an existing note. Parses existing frontmatter, updates specified fields, preserves everything else. Set a field to null to remove it. Protected fields (type, created, tags) cannot be removed. Field values are validated against the note's type (e.g. task status must be: pending, active, done, cancelled; task priority must be: low, normal, high, urgent).",
       inputSchema: {
         type: "object",
         properties: {

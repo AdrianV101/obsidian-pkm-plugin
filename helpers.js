@@ -12,6 +12,39 @@ const PRIORITY_RANKS = { urgent: 3, high: 2, normal: 1, low: 0 };
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 const DANGEROUS_KEYS = new Set(["__proto__", "constructor", "prototype"]);
 
+// Canonical frontmatter field constraints, keyed by note type.
+// Used by vault_write (template-based) and vault_update_frontmatter (existing files).
+const FIELD_ENUMS = {
+  status: {
+    task: ["pending", "active", "done", "cancelled"],
+  },
+  priority: {
+    task: Object.keys(PRIORITY_RANKS),  // low, normal, high, urgent
+  },
+};
+
+/**
+ * Validate a frontmatter field value against FIELD_ENUMS for a given note type.
+ * Throws if the value is not in the allowed set.
+ *
+ * @param {string} fieldName - the frontmatter field (e.g. "status")
+ * @param {*} value - the value being set
+ * @param {string} noteType - the note's type field (e.g. "task")
+ */
+export function validateFieldEnum(fieldName, value, noteType) {
+  if (value === null || value === undefined) return;
+  const enumsByType = FIELD_ENUMS[fieldName];
+  if (!enumsByType) return;
+  const allowed = enumsByType[noteType];
+  if (!allowed) return;
+  const strValue = String(value);
+  if (!allowed.includes(strValue)) {
+    throw new Error(
+      `Invalid ${fieldName} "${strValue}" for type "${noteType}". Allowed values: ${allowed.join(", ")}`
+    );
+  }
+}
+
 /**
  * Compare two frontmatter values for sorting.
  * Smart ordering: priority uses custom ranks, dates sort chronologically, strings use localeCompare.
@@ -314,10 +347,17 @@ export function substituteTemplateVariables(content, vars) {
         }
       }
 
+      // Extract note type from template for enum validation
+      const typeMatch = frontmatterSection.match(/^type:\s*(.+)$/m);
+      const noteType = typeMatch ? typeMatch[1].trim() : null;
+
       for (const [key, value] of Object.entries(vars.frontmatter)) {
         if (key === "tags") continue;
         if (DANGEROUS_KEYS.has(key)) {
           throw new Error(`Disallowed frontmatter key: "${key}"`);
+        }
+        if (noteType && typeof value === "string") {
+          validateFieldEnum(key, value, noteType);
         }
         if (typeof value === "string") {
           if (!/^[a-zA-Z][a-zA-Z0-9_-]*$/.test(key)) {
@@ -842,6 +882,11 @@ export function updateFrontmatter(content, fields) {
         if (!Array.isArray(value) || value.filter(Boolean).length === 0) {
           throw new Error("tags must be a non-empty array");
         }
+      }
+      // Use the file's existing type (or the new type if being changed) for enum validation
+      const effectiveType = key === "type" ? undefined : (fields.type || parsed.type);
+      if (effectiveType) {
+        validateFieldEnum(key, value, String(effectiveType));
       }
       parsed[key] = value;
     }
