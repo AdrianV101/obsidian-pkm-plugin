@@ -15,8 +15,8 @@ The hook system consists of three hooks:
 ### How it works
 
 - **SessionStart** (`session-start.js`): Runs synchronously. Resolves the current working directory to a vault project, reads the project index, recent devlog entries, and active tasks, then injects them as context.
-- **Stop** (`stop-sweep.sh`): Runs asynchronously after each assistant response. Spawns a background `claude -p` (Sonnet) that reads the transcript, identifies decisions/tasks/findings from the latest exchange, and appends them to a daily captures file in `00-Inbox/`.
-- **PostToolUse** (`capture-handler.sh`): Runs asynchronously after `vault_capture` tool use. Spawns a background `claude -p` (Opus) that creates a properly structured vault note (ADR, task, research note, or troubleshooting log) from the capture payload.
+- **Stop** (`stop-sweep.sh`): Runs asynchronously after each assistant response. Spawns a background `claude -p` (Haiku) that reads the transcript, identifies decisions/tasks/findings from the latest exchange, and appends them to a daily captures file in `00-Inbox/`.
+- **PostToolUse** (`capture-handler.sh`): Runs asynchronously after `vault_capture` tool use. Spawns a background `claude -p` (Sonnet) that creates a properly structured vault note (ADR, task, research note, or troubleshooting log) from the capture payload.
 
 ## Setup
 

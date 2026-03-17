@@ -64,6 +64,6 @@ If you find PKM-worthy content, use vault_append to add entries to 00-Inbox/capt
 If nothing is PKM-worthy, do nothing."
 
 # Spawn claude -p in background (detached, no stdin/stdout)
-echo "$PROMPT" | nohup claude -p --model sonnet --mcp-config "$MCP_CONFIG" --max-turns 5 > /dev/null 2>&1 &
+echo "$PROMPT" | nohup claude -p --model haiku --mcp-config "$MCP_CONFIG" --max-turns 5 > /dev/null 2>&1 &
 
 exit 0
