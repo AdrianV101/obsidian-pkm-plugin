@@ -1722,8 +1722,8 @@ describe("createHandlers", () => {
     }
   });
 
-  it("returns exactly 18 handlers", () => {
-    assert.equal(handlers.size, 18);
+  it("returns exactly 19 handlers", () => {
+    assert.equal(handlers.size, 19);
   });
 });
 

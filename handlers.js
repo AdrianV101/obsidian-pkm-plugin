@@ -848,6 +848,16 @@ export async function createHandlers({ vaultPath, templateRegistry, semanticInde
     };
   }
 
+  async function handleCapture(args) {
+    const { type, title } = args;
+    return {
+      content: [{
+        type: "text",
+        text: `Capture queued: [${type}] ${title}`
+      }]
+    };
+  }
+
   return new Map([
     ["vault_read", handleRead],
     ["vault_write", handleWrite],
@@ -867,5 +877,6 @@ export async function createHandlers({ vaultPath, templateRegistry, semanticInde
     ["vault_trash", handleTrash],
     ["vault_move", handleMove],
     ["vault_update_frontmatter", handleUpdateFrontmatter],
+    ["vault_capture", handleCapture],
   ]);
 }
