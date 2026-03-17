@@ -6,6 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-03-17
+
+### Added
+- Enum validation for task `status` (pending/active/done/cancelled) and `priority` (low/normal/high/urgent) fields in `vault_write` and `vault_update_frontmatter` — non-task note types are unaffected
+
+### Changed
+- `sqlite-vec` upgraded from pinned alpha (0.1.7-alpha.2) to stable release (0.1.7)
+- `@modelcontextprotocol/sdk` updated to 1.27.1
+- `better-sqlite3` updated to 12.8.0
+
+### Security
+- Resolved 7 transitive dependency vulnerabilities (hono, @hono/node-server, ajv, express-rate-limit, flatted, minimatch, qs)
+
 ## [1.1.0] - 2026-02-23
 
 ### Changed
@@ -55,6 +68,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Atomic file creation in `vault_write` (`wx` flag) prevents race conditions
 - Error messages sanitized to prevent leaking absolute vault paths
 
-[Unreleased]: https://github.com/AdrianV101/Obsidian-MCP/compare/v1.1.0...HEAD
+[Unreleased]: https://github.com/AdrianV101/Obsidian-MCP/compare/v1.2.0...HEAD
+[1.2.0]: https://github.com/AdrianV101/Obsidian-MCP/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/AdrianV101/Obsidian-MCP/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/AdrianV101/Obsidian-MCP/releases/tag/v1.0.0
