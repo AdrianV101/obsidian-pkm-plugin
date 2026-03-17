@@ -109,6 +109,21 @@ When solving a problem that has general applicability:
 
 `vault_suggest_links` uses semantic similarity to find notes worth linking to, and excludes notes already linked via `[[wikilinks]]`.
 
+### Passive Capture
+
+When you identify something worth preserving (a decision, task, research finding, or bug), use `vault_capture` to signal it. The tool returns immediately; the PostToolUse hook creates the structured vault note in the background.
+
+```
+vault_capture({
+  type: "adr",       // or: task | research | bug
+  title: "Brief descriptive title",
+  content: "Context, rationale, and details. 1-5 sentences.",
+  project: "[YourProjectName]"  // omit to infer from session context
+})
+```
+
+Use `vault_capture` instead of manually calling `vault_write` for ad-hoc captures during a session — it's faster and non-blocking. Use `vault_write` directly when you need precise control over the note path and content.
+
 ### Troubleshooting
 
 When debugging a complex issue, create a troubleshooting log:

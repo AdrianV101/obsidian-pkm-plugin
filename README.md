@@ -5,7 +5,7 @@
 [![Node.js >= 20](https://img.shields.io/badge/Node.js-%3E%3D20-green.svg)](https://nodejs.org/)
 [![CI](https://github.com/AdrianV101/Obsidian-MCP/actions/workflows/ci.yml/badge.svg)](https://github.com/AdrianV101/Obsidian-MCP/actions/workflows/ci.yml)
 
-An MCP (Model Context Protocol) server that gives Claude Code full read/write access to your Obsidian vault. 18 tools for note CRUD, full-text search, semantic search, graph traversal, metadata queries, and session activity tracking. Published on npm as [`pkm-mcp-server`](https://www.npmjs.com/package/pkm-mcp-server).
+An MCP (Model Context Protocol) server that gives Claude Code full read/write access to your Obsidian vault. 19 tools for note CRUD, full-text search, semantic search, graph traversal, metadata queries, session activity tracking, and passive knowledge capture. Published on npm as [`pkm-mcp-server`](https://www.npmjs.com/package/pkm-mcp-server).
 
 ## Why
 
@@ -42,6 +42,7 @@ https://github.com/user-attachments/assets/58ad9c9b-d987-4728-89e7-33de20b73a38
 | `vault_trash` | Soft-delete to `.trash/` (Obsidian convention), warns about broken incoming links |
 | `vault_move` | Move/rename files with automatic wikilink updating across vault |
 | `vault_update_frontmatter` | Atomic YAML frontmatter updates (set, create, remove fields; validates enum fields by note type) |
+| `vault_capture` | Signal a PKM-worthy capture (decision, task, research, bug); returns immediately, background hook creates the note |
 
 ### Fuzzy Path Resolution
 
@@ -55,7 +56,7 @@ vault_read({ path: "devlog.md" })
 // Same result — .md extension is optional
 
 vault_links({ path: "alpha" })
-// Works on vault_links, vault_neighborhood, vault_suggest_links too
+// Works on vault_peek, vault_links, vault_neighborhood, vault_suggest_links too
 ```
 
 Folder-scoped tools accept partial folder names:
@@ -279,7 +280,9 @@ All paths passed to tools are relative to vault root. The server includes path s
 
 **Graph exploration** resolves `[[wikilinks]]` to file paths (handling aliases, headings, and ambiguous basenames), then does BFS traversal to return notes grouped by hop distance.
 
-**Activity logging** records every tool call with timestamps and session IDs, enabling Claude to recall what happened in previous conversations.
+**Activity logging** records every tool call (except `vault_activity` itself) with timestamps and session IDs, enabling Claude to recall what happened in previous conversations.
+
+**Passive capture** uses `vault_capture` to signal that something is worth persisting (a decision, task, research finding, or bug). The tool returns immediately — a PostToolUse hook spawns a background agent that creates the structured vault note. Combined with the Stop hook (which sweeps each session for un-captured decisions and tasks), this keeps the vault up to date without interrupting the coding flow.
 
 ## Troubleshooting
 
@@ -301,6 +304,8 @@ Check your Node version with `node -v`. The file watcher uses `fs.watch({ recurs
 ## Contributing
 
 Contributions are welcome! Please read [CONTRIBUTING.md](CONTRIBUTING.md) for development setup, code style guidelines, and the pull request process before submitting changes.
+
+See [CHANGELOG.md](CHANGELOG.md) for release history and [SECURITY.md](SECURITY.md) to report vulnerabilities.
 
 ## License
 

@@ -42,13 +42,15 @@ Be respectful, constructive, and inclusive. We follow the [Contributor Covenant]
 
 ```
 index.js        - MCP server setup, tool definitions, request routing
-handlers.js     - Tool handler implementations (all 18 handlers)
+handlers.js     - Tool handler implementations (all 19 handlers)
 helpers.js      - Pure helper functions (path resolution, filtering, templates, fuzzy matching, peek/redirect)
 graph.js        - Wikilink resolution and BFS graph traversal
 embeddings.js   - Semantic search (OpenAI embeddings, SQLite + sqlite-vec)
 activity.js     - Activity logging (session tracking, SQLite)
 utils.js        - Shared utilities (frontmatter parsing, file listing)
+hooks/          - Claude Code hooks (session context, passive capture)
 templates/      - Obsidian note templates (copy to vault's 05-Templates/)
+sample-project/ - Sample CLAUDE.md for integrating PKM into your repos
 ```
 
 ## Code Style

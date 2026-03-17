@@ -30,9 +30,9 @@ npm run lint
 The project consists of three parts:
 
 **MCP Server**: A Node.js ES module server implementing the Model Context Protocol. The main entry point is `index.js` (tool definitions and request routing), with pure helper functions extracted to `helpers.js`. It provides 19 tools for vault interaction:
-- `vault_read` - Read note contents (supports pagination: `heading`, `tail`, `tail_sections`, `chunk`, `lines`; auto-redirects to peek data for files >80k chars; `force` bypasses redirect)
+- `vault_read` - Read note contents (supports pagination: `heading`, `tail`, `tail_sections` [with optional `section_level` param, default: 2], `chunk`, `lines`; auto-redirects to peek data for files >80k chars; `force` bypasses redirect)
 - `vault_peek` - Inspect file metadata/structure without reading full content (size, frontmatter, indented heading tree, preview)
-- `vault_write` - Create new notes from templates (enforces frontmatter; settable fields: `status`, `priority`, `project`, `deciders`, `due`, `source`)
+- `vault_write` - Create new notes from templates (enforces frontmatter; settable fields: `status`, `priority`, `project`, `deciders`, `due`, `source`; `variables` param for custom `<%...%>` substitution in template body)
 - `vault_append` - Add content to existing files, with optional positional insert (after/before heading, end of section)
 - `vault_edit` - Surgical string replacement (exact match, single occurrence)
 - `vault_update_frontmatter` - Update YAML frontmatter fields atomically (set, create, remove fields)
@@ -42,11 +42,11 @@ The project consists of three parts:
 - `vault_list` / `vault_recent` - Directory listing and recent files
 - `vault_links` - Wikilink analysis (`[[...]]` syntax)
 - `vault_neighborhood` - Graph context exploration via BFS wikilink traversal
-- `vault_query` - Query notes by YAML frontmatter (type, status, tags, dates, `custom_fields` for arbitrary field matching, `sort_by`/`sort_order` for result ordering)
+- `vault_query` - Query notes by YAML frontmatter (type, status, `tags` [ALL must match], `tags_any` [ANY must match], dates, `custom_fields` for arbitrary field matching, `sort_by`/`sort_order` for result ordering)
 - `vault_tags` - Discover all tags with per-note counts; supports folder scoping, glob patterns, inline `#tag` parsing
 - `vault_activity` - Query/clear activity log (all tool calls with timestamps and session IDs)
 - `vault_trash` - Soft-delete to `.trash/` (Obsidian convention), warns about broken incoming links
-- `vault_move` - Move/rename files with automatic wikilink updating across vault
+- `vault_move` - Move/rename files with automatic wikilink updating across vault (`update_links: false` to skip)
 - `vault_capture` - Signal a PKM-worthy capture (decision, task, research, bug); returns immediately, background hook creates the note
 
 The server uses `VAULT_PATH` environment variable (defaults to `~/Documents/PKM`) and includes path security to prevent directory escaping.
@@ -81,6 +81,7 @@ Notes must be created from templates to ensure proper frontmatter. The tool:
 - Auto-substitutes `<% tp.date.now("YYYY-MM-DD") %>` and `<% tp.file.title %>`
 - Accepts `frontmatter` param for tags and other fields (`status`, `priority`, `project`, `deciders`, `due`, `source`)
 - Validates required fields: `type`, `created`, `tags`
+- Validates enum fields for task notes: `status` (pending/active/done/cancelled), `priority` (low/normal/high/urgent)
 - Errors if file already exists (use `vault_edit` or `vault_append` to modify)
 
 Examples:
@@ -111,6 +112,7 @@ Logs all MCP tool calls with timestamps and session IDs. Enables cross-session m
 ```javascript
 vault_activity()                                    // Recent 50 entries
 vault_activity({ tool: "vault_write" })             // Only writes
+vault_activity({ session: "abc12345" })             // Filter by session ID prefix
 vault_activity({ since: "2026-02-08" })             // Today's activity
 vault_activity({ path: "01-Projects/MyApp" })       // Activity on specific project
 vault_activity({ action: "clear" })                 // Clear all history
@@ -126,6 +128,7 @@ Safely updates YAML frontmatter fields in an existing note without touching the 
 - Set fields to new values, add new fields, or remove fields by setting to `null`
 - Protected fields (`type`, `created`, `tags`) cannot be removed (only updated)
 - Arrays (like `tags`) are replaced wholesale
+- Enum validation: task `status` must be one of `pending`, `active`, `done`, `cancelled`; task `priority` must be one of `low`, `normal`, `high`, `urgent` — non-task types are unconstrained
 - Requires exact path (no fuzzy resolution — destructive operation)
 
 ```javascript
@@ -145,7 +148,7 @@ Implementation: `updateFrontmatter` pure function in `helpers.js`, handler in `h
 
 ### vault_query (Enhanced Filtering and Sorting)
 
-In addition to the standard filters (type, status, tags, dates, folder), `vault_query` supports:
+In addition to the standard filters (type, status, `tags` [ALL must match], `tags_any` [ANY must match], dates, folder), `vault_query` supports:
 
 - `custom_fields` — filter by arbitrary frontmatter fields (exact match); use `null` to match notes where a field is missing
 - `sort_by` — sort results by any frontmatter field; smart ordering for priority (`urgent > high > normal > low`), chronological for dates, alphabetical otherwise; nulls sort last
@@ -159,7 +162,7 @@ vault_query({ custom_fields: { project: "MyApp", due: null } })  // tasks with n
 
 ### Fuzzy Path Resolution
 
-Read-only tools (`vault_read`, `vault_links`, `vault_neighborhood`, `vault_suggest_links`) support fuzzy path resolution:
+Read-only tools (`vault_read`, `vault_peek`, `vault_links`, `vault_neighborhood`, `vault_suggest_links`) support fuzzy path resolution:
 - Exact paths still work as before (zero overhead)
 - Short names resolve by basename: `"devlog"` → `"01-Projects/MyApp/development/devlog.md"`
 - `.md` extension is optional: `"devlog"` and `"devlog.md"` both work
