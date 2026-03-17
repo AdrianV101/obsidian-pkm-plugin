@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.2.1] - 2026-03-17
+
+### Added
+- CI workflow for automated npm publishing via GitHub releases (OIDC trusted publishing, no tokens)
+
+### Fixed
+- Hook setup instructions now included in main README Quick Start (previously only in `hooks/README.md`, invisible on npm)
+- `hooks/` directory added to architecture file tree in README
+
 ## [1.2.0] - 2026-03-17
 
 ### Added
@@ -73,7 +82,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Atomic file creation in `vault_write` (`wx` flag) prevents race conditions
 - Error messages sanitized to prevent leaking absolute vault paths
 
-[Unreleased]: https://github.com/AdrianV101/Obsidian-MCP/compare/v1.2.0...HEAD
+[Unreleased]: https://github.com/AdrianV101/Obsidian-MCP/compare/v1.2.1...HEAD
+[1.2.1]: https://github.com/AdrianV101/Obsidian-MCP/compare/v1.2.0...v1.2.1
 [1.2.0]: https://github.com/AdrianV101/Obsidian-MCP/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/AdrianV101/Obsidian-MCP/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/AdrianV101/Obsidian-MCP/releases/tag/v1.0.0
