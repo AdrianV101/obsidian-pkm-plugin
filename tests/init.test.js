@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import os from "os";
 import path from "path";
 import fs from "fs/promises";
-import { resolveInputPath, copyTemplates, scaffoldFolders, backupVault, dirSize, updateSettingsJson } from "../init.js";
+import { resolveInputPath, copyTemplates, scaffoldFolders, backupVault, dirSize, updateSettingsJson, detectInstallType } from "../init.js";
 
 describe("resolveInputPath", () => {
   it("expands ~ to home directory", () => {
@@ -258,5 +258,20 @@ describe("updateSettingsJson", () => {
     const config = { command: "new", args: [], env: {} };
     const result = await updateSettingsJson(settingsPath, config);
     assert.equal(result.mcpServers["obsidian-pkm"].command, "new");
+  });
+});
+
+describe("detectInstallType", () => {
+  it("returns npx for a path inside node_modules", () => {
+    const result = detectInstallType("/usr/lib/node_modules/pkm-mcp-server/init.js");
+    assert.equal(result.command, "npx");
+    assert.deepEqual(result.args, ["-y", "pkm-mcp-server"]);
+  });
+
+  it("returns node with absolute cli.js path for a source install", () => {
+    const result = detectInstallType("/home/user/Projects/Obsidian-MCP/init.js");
+    assert.equal(result.command, "node");
+    assert.ok(result.args[0].endsWith("cli.js"));
+    assert.ok(path.isAbsolute(result.args[0]));
   });
 });

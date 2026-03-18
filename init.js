@@ -1,6 +1,7 @@
 import os from "os";
 import path from "path";
 import fs from "fs/promises";
+import { fileURLToPath } from "url";
 
 /**
  * Resolve user-provided path input: expand ~, $HOME, resolve relative, normalise.
@@ -170,4 +171,312 @@ export async function dirSize(dirPath) {
     }
   }
   return total;
+}
+
+/**
+ * Detect whether running from npm install or from source.
+ * @param {string} [filePath] - Override path for testing (defaults to current file)
+ * @returns {{ command: string, args: string[] }}
+ */
+export function detectInstallType(filePath) {
+  const thisFile = filePath || fileURLToPath(import.meta.url);
+  if (thisFile.includes("node_modules") || thisFile.includes("/lib/node_modules/")) {
+    return { command: "npx", args: ["-y", "pkm-mcp-server"] };
+  }
+  const cliPath = path.join(path.dirname(thisFile), "cli.js");
+  return { command: "node", args: [cliPath] };
+}
+
+const SYSTEM_DIRS = new Set(["/", "/home", "/usr", "/var", "/etc", "/tmp", "/opt", "/bin", "/sbin"]);
+
+function formatBytes(bytes) {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
+}
+
+/**
+ * Interactive setup wizard for the PKM MCP server.
+ */
+export async function runInit() {
+  const { confirm: confirmPrompt, input, select, password } = await import("@inquirer/prompts");
+
+  const bundledTemplatesDir = path.join(path.dirname(fileURLToPath(import.meta.url)), "templates");
+  const settingsPath = path.join(os.homedir(), ".claude", "settings.json");
+  const steps = [];
+
+  try {
+    // ── Step 1: Welcome ──
+    console.log("\n🗂️  PKM MCP Server — Setup Wizard\n");
+    console.log("This wizard will:");
+    console.log("  1. Set up your Obsidian vault with PARA folders");
+    console.log("  2. Install note templates");
+    console.log("  3. Register the MCP server with Claude Code\n");
+
+    // ── Step 2: Vault Path ──
+    const hasVault = await confirmPrompt({
+      message: "Do you have an existing Obsidian vault?",
+      default: false,
+    });
+
+    const defaultPath = hasVault
+      ? ""
+      : path.join(os.homedir(), "Documents", "PKM");
+
+    const rawPath = await input({
+      message: hasVault
+        ? "Path to your vault:"
+        : "Where should we create your vault?",
+      default: defaultPath || undefined,
+      validate: (val) => (val.trim() ? true : "Please enter a path."),
+    });
+
+    const vaultPath = await resolveVaultPath(resolveInputPath(rawPath.trim()), hasVault);
+
+    // ── Step 3: Templates ──
+    const templateMode = await select({
+      message: "Install note templates?",
+      choices: [
+        { name: "Full set (13 templates — ADR, devlog, research, task, etc.)", value: "full" },
+        { name: "Minimal (just note.md — a single generic template)", value: "minimal" },
+        { name: "Skip (I have my own templates)", value: "skip" },
+      ],
+    });
+
+    const templateDest = path.join(vaultPath, "05-Templates");
+    const templateResult = await copyTemplates(bundledTemplatesDir, templateDest, templateMode);
+    if (templateMode !== "skip") {
+      console.log(`  ✅ Templates: ${templateResult.created} installed, ${templateResult.skipped} already existed`);
+      steps.push(`Templates: ${templateResult.created} installed (${templateMode} set)`);
+    } else {
+      console.log("  ⏭️  Templates: skipped");
+      steps.push("Templates: skipped");
+    }
+
+    // ── Step 4: Folders ──
+    console.log("\nPARA folder structure to create:");
+    for (const folder of PARA_FOLDERS) {
+      const suffix = (folder.name === "05-Templates" && templateMode !== "skip")
+        ? " (already set up)"
+        : "";
+      console.log(`  📁 ${folder.name}/${suffix}`);
+    }
+
+    const doFolders = await confirmPrompt({
+      message: "Create PARA folder structure?",
+      default: true,
+    });
+
+    if (doFolders) {
+      const folderResult = await scaffoldFolders(vaultPath);
+      console.log(`  ✅ Folders: ${folderResult.created} created, ${folderResult.skipped} already existed`);
+      steps.push(`Folders: ${folderResult.created} created`);
+    } else {
+      console.log("  ⏭️  Folders: skipped");
+      steps.push("Folders: skipped");
+    }
+
+    // ── Step 5: OpenAI API Key ──
+    console.log("\nSemantic search uses OpenAI embeddings (optional).");
+    const apiKey = await password({
+      message: "OpenAI API key (press Enter to skip):",
+      mask: "*",
+    });
+
+    // ── Step 6: Registration ──
+    const installType = detectInstallType();
+    const serverConfig = {
+      command: installType.command,
+      args: [...installType.args],
+      env: { VAULT_PATH: vaultPath },
+    };
+    if (apiKey) {
+      serverConfig.env.OPENAI_API_KEY = apiKey;
+    }
+
+    // Check for existing registration
+    let hasExisting = false;
+    try {
+      const raw = await fs.readFile(settingsPath, "utf8");
+      const existing = JSON.parse(raw);
+      if (existing.mcpServers?.["obsidian-pkm"]) {
+        hasExisting = true;
+      }
+    } catch {
+      // No file or invalid — that's fine
+    }
+
+    if (hasExisting) {
+      console.log("\n⚠️  An existing obsidian-pkm registration was found. It will be overwritten.");
+    }
+
+    // Show preview
+    const previewObj = {
+      mcpServers: {
+        "obsidian-pkm": serverConfig,
+      },
+    };
+    console.log(`\nWill write to ${settingsPath}:\n`);
+    console.log(JSON.stringify(previewObj, null, 2));
+
+    const doRegister = await confirmPrompt({
+      message: "Register MCP server with Claude Code?",
+      default: true,
+    });
+
+    if (doRegister) {
+      await updateSettingsJson(settingsPath, serverConfig);
+      console.log("  ✅ MCP server registered");
+      steps.push("MCP server: registered");
+    } else {
+      console.log("  ⏭️  Registration: skipped (you can run `pkm-mcp-server init` again later)");
+      steps.push("MCP server: skipped");
+    }
+
+    // ── Step 7: Summary ──
+    console.log("\n━━━ Setup Complete ━━━\n");
+    console.log(`Vault: ${vaultPath}`);
+    for (const step of steps) {
+      console.log(`  • ${step}`);
+    }
+    console.log(`\nNext steps:`);
+    console.log(`  1. Open ${vaultPath} in Obsidian`);
+    console.log(`  2. Start a Claude Code session — the MCP server will auto-start`);
+    console.log(`  3. Ask Claude to read your vault: vault_read("00-Inbox/_index.md")\n`);
+  } catch (e) {
+    if (e.name === "ExitPromptError") {
+      console.log("\nSetup cancelled. Nothing was changed.");
+      return;
+    }
+    console.error(`\nError: ${e.message}`);
+    process.exit(1);
+  }
+
+  // ── Inner function: resolveVaultPath ──
+  async function resolveVaultPath(resolved, hasVault) {
+    // System directory safety check
+    if (SYSTEM_DIRS.has(resolved) || resolved === os.homedir()) {
+      console.log(`\n⚠️  "${resolved}" is a system directory. Using it directly as a vault could be dangerous.`);
+      const newRaw = await input({
+        message: "Please enter a different path:",
+        validate: (val) => (val.trim() ? true : "Please enter a path."),
+      });
+      return resolveVaultPath(resolveInputPath(newRaw.trim()), hasVault);
+    }
+
+    // Check what exists at the path
+    let stat;
+    try {
+      stat = await fs.stat(resolved);
+    } catch {
+      // Path doesn't exist — create it
+      await fs.mkdir(resolved, { recursive: true });
+      console.log(`  ✅ Created ${resolved}`);
+      steps.push(`Vault: created ${resolved}`);
+      return resolved;
+    }
+
+    // Path is a file, not a directory
+    if (!stat.isDirectory()) {
+      console.log(`\n⚠️  "${resolved}" is a file, not a directory.`);
+      const newRaw = await input({
+        message: "Please enter a directory path:",
+        validate: (val) => (val.trim() ? true : "Please enter a path."),
+      });
+      return resolveVaultPath(resolveInputPath(newRaw.trim()), hasVault);
+    }
+
+    // Directory exists — check if empty
+    const entries = await fs.readdir(resolved);
+    if (entries.length === 0) {
+      console.log(`  ✅ Using empty directory ${resolved}`);
+      steps.push(`Vault: using ${resolved}`);
+      return resolved;
+    }
+
+    // Non-empty directory
+    if (hasVault) {
+      // User said they have a vault — just use it
+      console.log(`  ✅ Using existing vault ${resolved}`);
+      steps.push(`Vault: using existing ${resolved}`);
+      return resolved;
+    }
+
+    // Non-empty dir, user said no vault — need to decide
+    const dirAction = await select({
+      message: `"${resolved}" is not empty. What should we do?`,
+      choices: [
+        { name: "Use it as-is (add PKM structure alongside existing files)", value: "use" },
+        { name: "Create a PKM/ subfolder inside it", value: "subfolder" },
+        { name: "Wipe it and start fresh (DESTRUCTIVE)", value: "wipe" },
+      ],
+    });
+
+    if (dirAction === "use") {
+      // Offer backup
+      await offerBackup(resolved);
+      console.log(`  ✅ Using ${resolved}`);
+      steps.push(`Vault: using ${resolved}`);
+      return resolved;
+    }
+
+    if (dirAction === "subfolder") {
+      const subPath = path.join(resolved, "PKM");
+      await fs.mkdir(subPath, { recursive: true });
+      console.log(`  ✅ Created ${subPath}`);
+      steps.push(`Vault: created ${subPath}`);
+      return subPath;
+    }
+
+    // Wipe — triple confirmation
+    const basename = path.basename(resolved);
+    console.log(`\n🚨 This will permanently delete ALL contents of ${resolved}`);
+
+    const wipeConfirm1 = await confirmPrompt({
+      message: "Are you sure you want to wipe this directory?",
+      default: false,
+    });
+    if (!wipeConfirm1) {
+      return resolveVaultPath(resolved, true); // re-evaluate as existing vault
+    }
+
+    await offerBackup(resolved);
+
+    const typedName = await input({
+      message: `Type "${basename}" to confirm:`,
+    });
+    if (typedName !== basename) {
+      console.log("  Names did not match. Wipe cancelled.");
+      return resolveVaultPath(resolved, true);
+    }
+
+    // Do the wipe
+    const wipeEntries = await fs.readdir(resolved);
+    for (const entry of wipeEntries) {
+      await fs.rm(path.join(resolved, entry), { recursive: true, force: true });
+    }
+    console.log(`  ✅ Wiped and using ${resolved}`);
+    steps.push(`Vault: wiped and using ${resolved}`);
+    return resolved;
+  }
+
+  async function offerBackup(dirPath) {
+    const size = await dirSize(dirPath);
+    const sizeStr = formatBytes(size);
+    const sizeWarning = size > 500 * 1024 * 1024
+      ? ` (⚠️  ${sizeStr} — this may take a while)`
+      : ` (${sizeStr})`;
+
+    const doBackup = await confirmPrompt({
+      message: `Back up ${dirPath} first?${sizeWarning}`,
+      default: true,
+    });
+
+    if (doBackup) {
+      const backupPath = await backupVault(dirPath);
+      console.log(`  ✅ Backed up to ${backupPath}`);
+      steps.push(`Backup: ${backupPath}`);
+    }
+  }
 }
