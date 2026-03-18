@@ -116,6 +116,42 @@ export async function backupVault(vaultPath) {
 }
 
 /**
+ * Read/merge/write settings.json atomically.
+ * @param {string} settingsPath - Absolute path to settings.json
+ * @param {object} serverConfig - The obsidian-pkm server config block
+ * @returns {Promise<object>} The full merged config object
+ */
+export async function updateSettingsJson(settingsPath, serverConfig) {
+  // Create parent directory
+  await fs.mkdir(path.dirname(settingsPath), { recursive: true });
+
+  // Read existing or start fresh
+  let config = {};
+  try {
+    const raw = await fs.readFile(settingsPath, "utf8");
+    try {
+      config = JSON.parse(raw);
+    } catch {
+      throw new Error(`${settingsPath} is not valid JSON. Please fix it manually or delete it to start fresh.`);
+    }
+  } catch (e) {
+    if (e.code !== "ENOENT") throw e;
+    // File doesn't exist — start with {}
+  }
+
+  // Merge
+  config.mcpServers = config.mcpServers || {};
+  config.mcpServers["obsidian-pkm"] = serverConfig;
+
+  // Atomic write
+  const tmpPath = settingsPath + ".tmp";
+  await fs.writeFile(tmpPath, JSON.stringify(config, null, 2) + "\n");
+  await fs.rename(tmpPath, settingsPath);
+
+  return config;
+}
+
+/**
  * Calculate total size of a directory (in bytes). Skips symlinks.
  * @param {string} dirPath
  * @returns {Promise<number>}

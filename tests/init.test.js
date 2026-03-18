@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import os from "os";
 import path from "path";
 import fs from "fs/promises";
-import { resolveInputPath, copyTemplates, scaffoldFolders, backupVault, dirSize } from "../init.js";
+import { resolveInputPath, copyTemplates, scaffoldFolders, backupVault, dirSize, updateSettingsJson } from "../init.js";
 
 describe("resolveInputPath", () => {
   it("expands ~ to home directory", () => {
@@ -206,5 +206,57 @@ describe("dirSize", () => {
   it("returns 0 for empty directory", async () => {
     const size = await dirSize(tmpDir);
     assert.equal(size, 0);
+  });
+});
+
+describe("updateSettingsJson", () => {
+  let tmpDir, settingsPath;
+
+  beforeEach(async () => {
+    tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "init-settings-"));
+    settingsPath = path.join(tmpDir, "settings.json");
+  });
+
+  it("creates settings.json if it does not exist", async () => {
+    const config = { command: "npx", args: ["-y", "pkm-mcp-server"], env: { VAULT_PATH: "/v" } };
+    const result = await updateSettingsJson(settingsPath, config);
+    assert.deepEqual(result.mcpServers["obsidian-pkm"], config);
+    const written = JSON.parse(await fs.readFile(settingsPath, "utf8"));
+    assert.deepEqual(written.mcpServers["obsidian-pkm"], config);
+  });
+
+  it("merges into existing settings without overwriting other keys", async () => {
+    await fs.writeFile(settingsPath, JSON.stringify({ theme: "dark", mcpServers: { other: { command: "x" } } }, null, 2));
+    const config = { command: "npx", args: ["-y", "pkm-mcp-server"], env: {} };
+    const result = await updateSettingsJson(settingsPath, config);
+    assert.equal(result.theme, "dark");
+    assert.deepEqual(result.mcpServers.other, { command: "x" });
+    assert.deepEqual(result.mcpServers["obsidian-pkm"], config);
+  });
+
+  it("creates parent directory if it does not exist", async () => {
+    const deepPath = path.join(tmpDir, "sub", "dir", "settings.json");
+    const config = { command: "npx", args: [], env: {} };
+    await updateSettingsJson(deepPath, config);
+    const written = JSON.parse(await fs.readFile(deepPath, "utf8"));
+    assert.ok(written.mcpServers["obsidian-pkm"]);
+  });
+
+  it("throws on malformed JSON", async () => {
+    await fs.writeFile(settingsPath, "{ not valid json");
+    const config = { command: "npx", args: [], env: {} };
+    await assert.rejects(
+      updateSettingsJson(settingsPath, config),
+      (err) => err.message.includes("not valid JSON")
+    );
+  });
+
+  it("overwrites existing obsidian-pkm entry", async () => {
+    await fs.writeFile(settingsPath, JSON.stringify({
+      mcpServers: { "obsidian-pkm": { command: "old" } }
+    }, null, 2));
+    const config = { command: "new", args: [], env: {} };
+    const result = await updateSettingsJson(settingsPath, config);
+    assert.equal(result.mcpServers["obsidian-pkm"].command, "new");
   });
 });
