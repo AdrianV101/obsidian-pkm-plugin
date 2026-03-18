@@ -133,7 +133,9 @@ export async function updateSettingsJson(settingsPath, serverConfig) {
     try {
       config = JSON.parse(raw);
     } catch {
-      throw new Error(`${settingsPath} is not valid JSON. Please fix it manually or delete it to start fresh.`);
+      const err = new Error(`${settingsPath} is not valid JSON. Please fix it manually or delete it to start fresh.`);
+      err.code = "INVALID_JSON";
+      throw err;
     }
   } catch (e) {
     if (e.code !== "ENOENT") throw e;
@@ -180,7 +182,7 @@ export async function dirSize(dirPath) {
  */
 export function detectInstallType(filePath) {
   const thisFile = filePath || fileURLToPath(import.meta.url);
-  if (thisFile.includes("node_modules") || thisFile.includes("/lib/node_modules/")) {
+  if (thisFile.includes("node_modules")) {
     return { command: "npx", args: ["-y", "pkm-mcp-server"] };
   }
   const cliPath = path.join(path.dirname(thisFile), "cli.js");
@@ -304,8 +306,6 @@ Nothing is written until you confirm each step. Press Ctrl+C at any time to canc
     } else {
       console.log("  You can add this later by setting OPENAI_API_KEY in your Claude Code settings.\n");
     }
-    const apiKey = openaiKey;
-
     // ── Step 6: Registration ──
     const installType = detectInstallType();
     const serverConfig = {
@@ -313,8 +313,8 @@ Nothing is written until you confirm each step. Press Ctrl+C at any time to canc
       args: [...installType.args],
       env: { VAULT_PATH: vaultPath },
     };
-    if (apiKey) {
-      serverConfig.env.OPENAI_API_KEY = apiKey;
+    if (openaiKey) {
+      serverConfig.env.OPENAI_API_KEY = openaiKey;
     }
 
     // Check for existing registration
@@ -357,7 +357,7 @@ Nothing is written until you confirm each step. Press Ctrl+C at any time to canc
           await updateSettingsJson(settingsPath, serverConfig);
           registered = true;
         } catch (regErr) {
-          if (regErr.message && regErr.message.includes("not valid JSON")) {
+          if (regErr.code === "INVALID_JSON") {
             console.error(`\n  ${regErr.message}`);
             const skipReg = await confirmPrompt({ message: "Skip registration and finish setup?", default: true });
             if (!skipReg) throw regErr;
@@ -388,7 +388,7 @@ Nothing is written until you confirm each step. Press Ctrl+C at any time to canc
     const folderSummary = folderResult
       ? `${folderResult.created} created`
       : "Skipped";
-    const semanticSummary = apiKey
+    const semanticSummary = openaiKey
       ? "Enabled (API key configured)"
       : "Disabled (no API key)";
     // Determine registration summary from steps
@@ -423,7 +423,6 @@ If that doesn't work, check: https://github.com/AdrianV101/Obsidian-MCP#troubles
 
   // ── Inner function: resolveVaultPath ──
   async function resolveVaultPath(resolved, hasVault) {
-    // Issue 16: Show resolved path
     console.log(`\n  Resolved path: ${resolved}\n`);
 
     // System directory safety check
@@ -442,7 +441,6 @@ If that doesn't work, check: https://github.com/AdrianV101/Obsidian-MCP#troubles
       stat = await fs.stat(resolved);
     } catch (e) {
       if (e.code === "ENOENT") {
-        // Issue 2: Confirm before creating
         const create = await confirmPrompt({ message: `This directory doesn't exist. Create ${resolved}?` });
         if (!create) { console.log("Setup cancelled."); process.exit(0); }
         await fs.mkdir(resolved, { recursive: true });
@@ -466,7 +464,6 @@ If that doesn't work, check: https://github.com/AdrianV101/Obsidian-MCP#troubles
     // Directory exists — check if empty
     const entries = await fs.readdir(resolved);
     if (entries.length === 0) {
-      // Issue 3: Confirm before using empty directory
       const useEmpty = await confirmPrompt({ message: `Use ${resolved} as your vault?` });
       if (!useEmpty) { console.log("Setup cancelled."); process.exit(0); }
       console.log(`  Using empty directory ${resolved}`);
@@ -476,7 +473,7 @@ If that doesn't work, check: https://github.com/AdrianV101/Obsidian-MCP#troubles
 
     // Non-empty directory
     if (hasVault) {
-      // User said they have a vault — confirm then offer backup (Issue 4)
+      // User said they have a vault — confirm then offer backup
       console.log(`  Using existing vault ${resolved}`);
       await offerBackup(resolved);
       steps.push(`Vault: using existing ${resolved}`);
@@ -502,9 +499,12 @@ If that doesn't work, check: https://github.com/AdrianV101/Obsidian-MCP#troubles
     }
 
     if (dirAction === "subfolder") {
-      // Issue 6: Prompt for subfolder name instead of hardcoding
       const subName = await input({ message: "Subfolder name:", default: "PKM" });
       const subPath = path.join(resolved, subName);
+      if (!subPath.startsWith(resolved + path.sep) && subPath !== resolved) {
+        console.log("  Subfolder name must not contain path separators or navigation (..).\n");
+        return resolveVaultPath(resolved, hasVault);
+      }
       await fs.mkdir(subPath, { recursive: true });
       console.log(`  Created ${subPath}`);
       steps.push(`Vault: created ${subPath}`);
@@ -533,7 +533,7 @@ If that doesn't work, check: https://github.com/AdrianV101/Obsidian-MCP#troubles
       return resolveVaultPath(resolved, true);
     }
 
-    // Issue 5: Third confirmation before wipe
+    // Third confirmation before wipe
     const c3 = await confirmPrompt({ message: `Last chance. Delete all contents of ${resolved}?` });
     if (!c3) { console.log("Wipe cancelled."); process.exit(0); }
 
@@ -560,7 +560,6 @@ If that doesn't work, check: https://github.com/AdrianV101/Obsidian-MCP#troubles
     });
 
     if (doBackup) {
-      // Issue 7: Wrap backup in try/catch
       try {
         const backupPath = await backupVault(dirPath);
         console.log(`  Backup created: ${backupPath}\n`);
