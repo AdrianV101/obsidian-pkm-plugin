@@ -37,10 +37,20 @@ tags: []
 
 ### Modified Files
 
-**`index.js`** — Wrap all startup code (from `const VAULT_PATH = ...` through `main()`) in an exported `startServer()` function. Add `export { startServer }`. The file no longer auto-executes on import. Functionally identical; only structural.
+**`index.js`** — Wrap all code in an exported `startServer()` function so nothing executes on import. Specifically:
+- All module-level declarations (`VAULT_PATH`, `templateRegistry`, `semanticIndex`, `activityLog`, `SESSION_ID`, `handlers`, `server`) become local variables inside `startServer()`
+- The `server.setRequestHandler(...)` registrations move inside `startServer()`
+- `initializeServer()` and `shutdown()` become inner functions of `startServer()`
+- Signal handlers (`process.on("SIGINT", ...)`, `process.on("SIGTERM", ...)`) register inside `startServer()`
+- The top-level `initializeServer().catch(...)` call is removed; `startServer()` calls it internally
+- Static imports (`@modelcontextprotocol/sdk`, `crypto`, `os`, etc.) stay at module level (they're side-effect-free)
+- The file exports only: `export async function startServer() { ... }`
 
 **`package.json`**:
 - `bin`: `"pkm-mcp-server": "cli.js"` (was `index.js`)
+- `main`: `"cli.js"` (was `index.js`)
+- `exports`: `{ ".": "./cli.js" }` (was `./index.js`)
+- `scripts.start`: `"node cli.js"` (was `node index.js`)
 - `dependencies`: add `"@inquirer/prompts": "^7.0.0"` (or latest stable)
 
 ### Untouched Files
@@ -49,7 +59,7 @@ tags: []
 
 ### Dependency
 
-`@inquirer/prompts` — the official modular successor to `inquirer`. ESM-native, tree-shakeable. We use: `input`, `password`, `confirm`, `select`. No transitive dependencies for these modules.
+`@inquirer/prompts` — the official modular successor to `inquirer`. ESM-native, tree-shakeable. We use: `input`, `password`, `confirm`, `select`. Lightweight dependency tree (small internal packages like `@inquirer/core`, `ansi-escapes`, `strip-ansi`).
 
 ## Wizard Flow
 
@@ -79,6 +89,7 @@ If **yes**: prompt for the path to the existing vault.
 If **no**: prompt for where to create a new vault (suggest `~/Documents/PKM`).
 
 **Path input handling** (`resolveInputPath`):
+- Empty string (user presses Enter without typing): use the suggested default path (e.g., `~/Documents/PKM`); the `input` prompt is configured with a `default` value
 - `~` and `~/...` → `os.homedir()` expansion
 - `$HOME` and `${HOME}` → environment variable expansion
 - Relative paths → resolved to absolute via `path.resolve()`
@@ -94,12 +105,19 @@ If **no**: prompt for where to create a new vault (suggest `~/Documents/PKM`).
 | Path exists, is a file | Error: "That's a file, not a directory. Please enter a directory path." Re-prompt. |
 | Path exists, empty directory | Confirm: "Use `<path>` as your vault?" |
 | Path exists, non-empty, user said they HAVE a vault | Confirm: "Use `<path>` as your vault?" Then offer backup. |
-| Path exists, non-empty, user said they DON'T have a vault | 3-way select: (1) "Actually, treat this as my vault" (2) "Create a new vault folder inside it" → prompt for subfolder name (3) "Wipe it and start fresh" → triple confirmation |
+| Path exists, non-empty, user said they DON'T have a vault | 3-way select: (1) "Actually, treat this as my vault" (2) "Create a new vault folder inside it" → prompt for subfolder name (3) "Wipe it and start fresh" → see Wipe flow below |
+
+**Wipe flow** (triple confirmation):
+1. First confirm: "This will permanently delete everything in `<path>`. Are you sure?"
+2. Second confirm: "This cannot be undone. Type the folder name to confirm:" (user must type the exact folder basename)
+3. Third confirm: "Last chance. Delete all contents of `<path>`? (yes/no)"
+4. Implementation: recursively remove all contents of the directory (`fs.rm` with `recursive: true` on each child entry), leaving the directory itself. Never `rm -rf` the directory itself (the user specified it as their vault location).
 
 **Backup** (offered when working with non-empty directory):
 - Prompt: "Back up your vault before making changes? (Recommended)"
-- Copies entire directory to `<vault-path>-backup-YYYY-MM-DD-HHmmss/`
-- Prints backup path
+- Copies entire directory (including `.obsidian/`, `.trash/`, and all hidden files) to `<vault-path>-backup-YYYY-MM-DD-HHmmss/`
+- For large vaults: checks total size first and warns if >500MB (e.g., "Your vault is 1.2GB. Backup may take a moment.")
+- Prints backup path after completion
 - If backup fails: abort wizard entirely ("Backup failed: <error>. Aborting to keep your data safe.")
 
 ### Step 3 — Templates
@@ -109,16 +127,16 @@ If **no**: prompt for where to create a new vault (suggest `~/Documents/PKM`).
 Install note templates? These are used by the vault_write tool to create
 structured notes with proper frontmatter.
 
-  > Full set (recommended) — 12 templates for projects, research, decisions, tasks, and more
+  > Full set (recommended) — 13 templates for projects, research, decisions, tasks, and more
     Minimal — A single generic note template (you can add your own later)
     Skip — No templates (vault_write won't work until you add templates manually)
 ```
 
-**Full set**: Copy all files from bundled `templates/` directory to `<vault>/05-Templates/`. Skip files that already exist. Print summary: `Created: 12` or `Created: 8, Skipped: 4 (already exist)`.
+**Full set**: Copy all files from bundled `templates/` directory (13 files, including the new `note.md`) to `<vault>/05-Templates/`. Skip files that already exist. Print summary: `Created: 13` or `Created: 9, Skipped: 4 (already exist)`.
 
 **Minimal**: Copy only `templates/note.md` to `<vault>/05-Templates/note.md`. Same skip-if-exists logic.
 
-**Skip**: Print warning: "Note: vault_write requires at least one template in 05-Templates/ to function. The other 17 tools work without templates."
+**Skip**: Print warning: "Note: vault_write requires at least one template in 05-Templates/ to function. All other tools work without templates."
 
 ### Step 4 — Folder Structure
 
@@ -132,13 +150,13 @@ Will create:
   02-Areas/          — Ongoing areas of responsibility
   03-Resources/      — Reference material and reusable knowledge
   04-Archive/        — Completed or inactive items
-  05-Templates/      — Note templates (already set up)
+  05-Templates/      — Note templates
   06-System/         — System configuration and metadata
 ```
 
-Each folder gets a brief `_index.md` with a one-line description of the folder's purpose. Skip folders that already exist. Print summary.
+The `05-Templates/` line is shown conditionally: if templates were already installed in Step 3, show "(already set up)"; if not, include it in the creation list. Each folder gets a brief `_index.md` with a one-line description of the folder's purpose. Skip folders that already exist. Print summary.
 
-If **no**: skip. (Templates from step 3 were placed in `05-Templates/` regardless — that folder is created implicitly by step 3 if it doesn't exist.)
+If **no**: skip. Note that if the user chose templates in Step 3, `05-Templates/` was already created implicitly by that step.
 
 ### Step 5 — OpenAI API Key (Optional)
 
@@ -161,7 +179,7 @@ If **no**: skip. Print: "You can add this later by setting OPENAI_API_KEY in you
 
 **Detection**: Check if `~/.claude/settings.json` exists and whether it already contains an `mcpServers.obsidian-pkm` entry.
 
-**If already registered**: "Claude Code is already configured for pkm-mcp-server. Skipping registration. (Run with --force to overwrite.)"
+**If already registered**: "Claude Code is already configured for pkm-mcp-server." Then ask: "Overwrite the existing configuration?" (default: No). If the user declines, skip registration.
 
 **If not registered**: Show the exact JSON block that will be added:
 ```
@@ -190,8 +208,11 @@ Confirm before writing. `OPENAI_API_KEY` is only included if the user provided o
 1. Read existing file, or start with `{}` if it doesn't exist
 2. If file exists but isn't valid JSON: warn the user, show the raw content, and offer to skip registration (don't corrupt the file)
 3. Deep-merge: set `config.mcpServers = config.mcpServers || {}`, then set `config.mcpServers["obsidian-pkm"]` to the new block
-4. Write atomically: write to `settings.json.tmp`, then `fs.rename()` to `settings.json`
-5. Create `~/.claude/` directory if it doesn't exist
+4. Serialize with `JSON.stringify(config, null, 2)`. Note: this re-formats the file with 2-space indentation. Any custom formatting or key ordering in the original file will not be preserved. This is standard for machine-edited JSON and matches how Claude Code itself writes settings.
+5. Write atomically: write to `settings.json.tmp`, then `fs.rename()` to `settings.json`
+6. Create `~/.claude/` directory if it doesn't exist
+
+**Installation detection for registration**: The registration block detects whether the user installed from npm or from source (by checking if the running script is inside a `node_modules` directory or a global npm prefix). For npm installs: `"command": "npx", "args": ["-y", "pkm-mcp-server"]`. For source installs: `"command": "node", "args": ["/absolute/path/to/cli.js"]`.
 
 ### Step 7 — Summary
 
@@ -261,15 +282,35 @@ Dynamic imports ensure the MCP server modules (heavy: `better-sqlite3`, `sqlite-
 
 ### `index.js` refactor
 
-Wrap everything from `const VAULT_PATH = ...` through the `main()` call in:
+The current `index.js` has module-level declarations (lines 23-38: `VAULT_PATH`, `templateRegistry`, `semanticIndex`, `activityLog`, `SESSION_ID`, `handlers`, `server`), `server.setRequestHandler(...)` registrations, `initializeServer()`, `shutdown()`, signal handlers, and a top-level `initializeServer().catch(...)` call.
+
+All of these move inside a single exported function:
 
 ```javascript
+// Static imports stay at module level (side-effect-free)
+import { Server } from "@modelcontextprotocol/sdk/server/index.js";
+// ... other imports ...
+
 export async function startServer() {
-  // ... existing startup code, unchanged ...
+  const VAULT_PATH = process.env.VAULT_PATH || (os.homedir() + "/Documents/PKM");
+  let templateRegistry = new Map();
+  // ... other declarations ...
+  const server = new Server(...);
+
+  server.setRequestHandler(ListToolsRequestSchema, async () => { ... });
+  server.setRequestHandler(CallToolRequestSchema, async (request) => { ... });
+
+  async function initializeServer() { ... }
+  async function shutdown() { ... }
+
+  process.on("SIGINT", () => shutdown());
+  process.on("SIGTERM", () => shutdown());
+
+  await initializeServer();
 }
 ```
 
-Remove the top-level `main()` call. `cli.js` calls `startServer()` when no subcommand is given.
+When `cli.js` does `import("./index.js")`, nothing executes. `startServer()` must be called explicitly.
 
 ## Future Extensibility
 
