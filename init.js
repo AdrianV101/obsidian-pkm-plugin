@@ -63,7 +63,8 @@ export async function scaffoldFolders(vaultPath) {
     try {
       await fs.access(indexPath);
       skipped++;
-    } catch {
+    } catch (e) {
+      if (e.code !== "ENOENT") throw e;
       await fs.writeFile(indexPath, makeIndexStub(folder.title, folder.desc));
       created++;
     }
@@ -95,7 +96,8 @@ export async function copyTemplates(src, dest, mode) {
     try {
       await fs.access(destFile);
       skipped++;
-    } catch {
+    } catch (e) {
+      if (e.code !== "ENOENT") throw e;
       await fs.copyFile(path.join(src, file), destFile);
       created++;
     }
@@ -325,8 +327,10 @@ Nothing is written until you confirm each step. Press Ctrl+C at any time to canc
       if (existing.mcpServers?.["obsidian-pkm"]) {
         hasExisting = true;
       }
-    } catch {
-      // No file or invalid — that's fine
+    } catch (e) {
+      if (e.code !== "ENOENT" && !(e instanceof SyntaxError)) {
+        console.warn(`  Warning: could not read ${settingsPath}: ${e.message}`);
+      }
     }
 
     let skipRegistration = false;

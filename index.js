@@ -531,3 +531,9 @@ Pass custom <%...%> variables via the 'variables' parameter.`,
     process.exit(1);
   });
 }
+
+// Auto-start when run directly (backward compat: existing users may have
+// "args": ["/path/to/index.js"] in their settings.json)
+if (process.argv[1] && import.meta.url === `file://${process.argv[1]}`) {
+  startServer();
+}
