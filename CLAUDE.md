@@ -13,7 +13,10 @@ This is a PKM (Personal Knowledge Management) + Claude Code Integration Starter 
 npm install
 
 # Run the MCP server (for testing)
-VAULT_PATH="/path/to/your/vault" node index.js
+VAULT_PATH="/path/to/your/vault" node cli.js
+
+# Interactive setup wizard
+node cli.js init
 
 # Start the server
 npm start
@@ -203,7 +206,7 @@ Register the MCP server in `~/.claude/settings.json`:
   "mcpServers": {
     "obsidian-pkm": {
       "command": "node",
-      "args": ["/absolute/path/to/index.js"],
+      "args": ["/absolute/path/to/cli.js"],
       "env": {
         "VAULT_PATH": "/absolute/path/to/obsidian/vault",
         "OPENAI_API_KEY": "sk-..."
