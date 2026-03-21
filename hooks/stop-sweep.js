@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { spawn } from "node:child_process";
-import { appendFileSync, createWriteStream, mkdirSync } from "node:fs";
+import { appendFileSync, closeSync, mkdirSync, openSync } from "node:fs";
 import { access } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -147,6 +147,7 @@ If nothing is PKM-worthy, do nothing. Doing nothing is the correct default.`;
   // Ensure log directory exists
   mkdirSync(LOG_DIR, { recursive: true });
   const logFile = join(LOG_DIR, `sweep-${new Date().toISOString().replace(/[:.]/g, "").slice(0, 15)}.log`);
+  const fd = openSync(logFile, "a");
 
   const child = spawn("claude", [
     "-p",
@@ -156,17 +157,18 @@ If nothing is PKM-worthy, do nothing. Doing nothing is the correct default.`;
     "--allowedTools", allowedTools,
   ], {
     detached: true,
-    stdio: ["pipe", "pipe", "pipe"],
+    stdio: ["pipe", fd, fd],
+  });
+
+  child.on("error", (err) => {
+    logError(`spawn failed: ${err.message}`);
   });
 
   // Pipe prompt to stdin
   child.stdin.write(prompt);
   child.stdin.end();
 
-  // Log stdout and stderr to file
-  const logStream = createWriteStream(logFile, { flags: "a" });
-  child.stdout.pipe(logStream);
-  child.stderr.pipe(logStream);
+  closeSync(fd);
 
   // Detach — let the background process run independently
   child.unref();
