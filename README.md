@@ -82,13 +82,23 @@ Ambiguous matches return an error listing candidates. Exact paths always work un
 
 ## Quick Start
 
-### 1. Install
+### 1. Install and Set Up
 
 **From npm** (recommended):
 
 ```bash
 npm install -g pkm-mcp-server
+pkm-mcp-server init
 ```
+
+The setup wizard walks you through:
+1. Vault path (existing or new)
+2. Note templates (full set, minimal, or skip)
+3. PARA folder structure
+4. OpenAI API key for semantic search (optional)
+5. Automatic registration with Claude Code
+
+Restart Claude Code after setup. The server provides all tools except semantic search out of the box.
 
 **From source:**
 
@@ -96,55 +106,35 @@ npm install -g pkm-mcp-server
 git clone https://github.com/AdrianV101/Obsidian-MCP.git
 cd Obsidian-MCP
 npm install
+node cli.js init
 ```
 
-### 2. Register with Claude Code
+### 2. Manual Registration (alternative)
 
-Add to `~/.claude/settings.json`:
+If you prefer to skip the wizard, register directly with the Claude CLI:
 
-**If installed from npm:**
-
-```json
-{
-  "mcpServers": {
-    "obsidian-pkm": {
-      "command": "npx",
-      "args": ["-y", "pkm-mcp-server"],
-      "env": {
-        "VAULT_PATH": "/absolute/path/to/your/obsidian/vault"
-      }
-    }
-  }
-}
+```bash
+claude mcp add -s user -e VAULT_PATH=/absolute/path/to/your/vault obsidian-pkm -- npx -y pkm-mcp-server
 ```
 
-**If installed from source:**
+For a source install:
 
-```json
-{
-  "mcpServers": {
-    "obsidian-pkm": {
-      "command": "node",
-      "args": ["/absolute/path/to/index.js"],
-      "env": {
-        "VAULT_PATH": "/absolute/path/to/your/obsidian/vault"
-      }
-    }
-  }
-}
+```bash
+claude mcp add -s user -e VAULT_PATH=/absolute/path/to/your/vault obsidian-pkm -- node /absolute/path/to/cli.js
 ```
 
-Restart Claude Code. The server provides all tools except semantic search out of the box.
+Verify with `claude mcp list` — you should see `obsidian-pkm: ... - Connected`.
 
 ### 3. Enable Semantic Search (optional)
 
-Add your OpenAI API key to the env block:
+If you didn't set this up during `init`, add your OpenAI API key by re-registering:
 
-```json
-"env": {
-  "VAULT_PATH": "/absolute/path/to/your/obsidian/vault",
-  "OPENAI_API_KEY": "sk-..."
-}
+```bash
+claude mcp remove obsidian-pkm
+claude mcp add -s user \
+  -e VAULT_PATH=/absolute/path/to/your/vault \
+  -e OPENAI_API_KEY=sk-... \
+  obsidian-pkm -- npx -y pkm-mcp-server
 ```
 
 This enables `vault_semantic_search` and `vault_suggest_links`. Uses `text-embedding-3-large` with a SQLite + sqlite-vec index stored at `.obsidian/semantic-index.db`. The index rebuilds automatically — delete the DB file to force a full re-embed.
@@ -290,13 +280,16 @@ All paths passed to tools are relative to vault root. The server includes path s
 You need C++ build tools. See [Prerequisites](#prerequisites) for your platform. On Linux, `sudo apt install build-essential python3` usually fixes it.
 
 **Server starts but all tool calls fail with ENOENT**
-Your `VAULT_PATH` is wrong or missing. The server now validates this at startup and exits with a clear error. Set it explicitly in your `settings.json` env block.
+Your `VAULT_PATH` is wrong or missing. The server validates this at startup and exits with a clear error. Re-register with the correct path: `claude mcp remove obsidian-pkm && claude mcp add -s user -e VAULT_PATH=/correct/path obsidian-pkm -- npx -y pkm-mcp-server`
 
 **`vault_write` says "no templates available"**
-Copy the `templates/` files from this repo into your vault's `05-Templates/` directory. The server loads templates from there at startup.
+Run `pkm-mcp-server init` to install templates, or copy the `templates/` files from this repo into your vault's `05-Templates/` directory. The server loads templates from there at startup.
 
 **Semantic search not appearing in tool list**
-Set `OPENAI_API_KEY` in your `settings.json` env block. Without it, `vault_semantic_search` and `vault_suggest_links` are hidden entirely.
+Set `OPENAI_API_KEY` in your MCP server registration. See [Enable Semantic Search](#3-enable-semantic-search-optional). Without it, `vault_semantic_search` and `vault_suggest_links` are hidden entirely.
+
+**Server not showing up in Claude Code after install**
+Run `claude mcp list` to check. If `obsidian-pkm` is missing, register it with `claude mcp add` (see [Manual Registration](#2-manual-registration-alternative)). Note: editing `~/.claude/settings.json` directly does **not** register MCP servers — use the CLI.
 
 **Semantic index not updating after file changes**
 Check your Node version with `node -v`. The file watcher uses `fs.watch({ recursive: true })` which requires Node.js >= 18.13 on Linux.

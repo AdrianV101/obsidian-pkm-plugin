@@ -199,21 +199,17 @@ Implementation: `helpers.js` (`buildBasenameMap`, `resolveFuzzyPath`, `resolveFu
 
 ## Claude Code Configuration
 
-Register the MCP server in `~/.claude/settings.json`:
+Register the MCP server using the CLI:
 
-```json
-{
-  "mcpServers": {
-    "obsidian-pkm": {
-      "command": "node",
-      "args": ["/absolute/path/to/cli.js"],
-      "env": {
-        "VAULT_PATH": "/absolute/path/to/obsidian/vault",
-        "OPENAI_API_KEY": "sk-..."
-      }
-    }
-  }
-}
+```bash
+# Interactive setup (recommended)
+pkm-mcp-server init
+
+# Or register manually
+claude mcp add -s user \
+  -e VAULT_PATH=/absolute/path/to/obsidian/vault \
+  -e OPENAI_API_KEY=sk-... \
+  obsidian-pkm -- npx -y pkm-mcp-server
 ```
 
 `OPENAI_API_KEY` is optional — without it, all tools except `vault_semantic_search` and `vault_suggest_links` work normally.
