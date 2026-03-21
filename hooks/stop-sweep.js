@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { spawn } from "node:child_process";
-import { appendFileSync, closeSync, mkdirSync, openSync } from "node:fs";
+import { appendFileSync, closeSync, existsSync, mkdirSync, openSync } from "node:fs";
 import { access } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -63,19 +63,18 @@ async function main() {
   const { projectPath, error } = await resolveProject(cwd, VAULT_PATH);
   if (error || !projectPath) return;
 
-  // Build MCP config
-  const indexPath = join(__dirname, "..", "index.js");
+  // Build MCP config — auto-detect repo (../index.js exists) vs installed (use npx)
+  const localIndex = join(__dirname, "..", "index.js");
+  const useLocal = existsSync(localIndex);
   const mcpEnv = { VAULT_PATH };
   if (process.env.OPENAI_API_KEY) {
     mcpEnv.OPENAI_API_KEY = process.env.OPENAI_API_KEY;
   }
   const mcpConfig = JSON.stringify({
     mcpServers: {
-      "obsidian-pkm": {
-        command: "node",
-        args: [indexPath],
-        env: mcpEnv,
-      },
+      "obsidian-pkm": useLocal
+        ? { command: "node", args: [localIndex], env: mcpEnv }
+        : { command: "npx", args: ["-y", "pkm-mcp-server@latest"], env: mcpEnv },
     },
   });
 
