@@ -326,6 +326,32 @@ export async function mergeHooksIntoSettings(settingsPath, hookEntries, disabled
   return {};
 }
 
+const HOOK_FILES = ["session-start.js", "resolve-project.js", "load-context.js", "stop-sweep.sh", "capture-handler.sh"];
+const SHELL_HOOKS = new Set(["stop-sweep.sh", "capture-handler.sh"]);
+
+/**
+ * Copy hook scripts to destination, patching shell scripts with correct MCP config.
+ * @param {string} src - Source hooks directory
+ * @param {string} dest - Destination directory (e.g. ~/.claude/hooks/pkm/)
+ * @param {{ command: string, args: string[] }} installType - Server command for MCP config patching
+ */
+export async function copyHooks(src, dest, installType) {
+  await fs.mkdir(dest, { recursive: true });
+
+  for (const file of HOOK_FILES) {
+    const srcFile = path.join(src, file);
+    const destFile = path.join(dest, file);
+
+    if (SHELL_HOOKS.has(file)) {
+      let content = await fs.readFile(srcFile, "utf8");
+      content = patchMcpConfig(content, installType);
+      await fs.writeFile(destFile, content, { mode: 0o755 });
+    } else {
+      await fs.copyFile(srcFile, destFile);
+    }
+  }
+}
+
 const SYSTEM_DIRS = new Set(["/", "/home", "/usr", "/var", "/etc", "/tmp", "/opt", "/bin", "/sbin"]);
 
 function formatBytes(bytes) {

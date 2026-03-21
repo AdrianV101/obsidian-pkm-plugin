@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import os from "os";
 import path from "path";
 import fs from "fs/promises";
-import { resolveInputPath, copyTemplates, scaffoldFolders, backupVault, dirSize, buildMcpAddArgs, detectInstallType, patchMcpConfig, isPkmHookEntry, buildHookEntries, mergeHooksIntoSettings } from "../init.js";
+import { resolveInputPath, copyTemplates, scaffoldFolders, backupVault, dirSize, buildMcpAddArgs, detectInstallType, patchMcpConfig, isPkmHookEntry, buildHookEntries, mergeHooksIntoSettings, copyHooks } from "../init.js";
 
 describe("resolveInputPath", () => {
   it("expands ~ to home directory", () => {
@@ -571,5 +571,72 @@ describe("mergeHooksIntoSettings", () => {
     }, []);
     const raw = await fs.readFile(settingsPath, "utf8");
     assert.ok(raw.includes('  "hooks"'));
+  });
+});
+
+describe("copyHooks", () => {
+  let tmpDir, srcDir, destDir;
+
+  beforeEach(async () => {
+    tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "init-hooks-"));
+    srcDir = path.join(tmpDir, "src-hooks");
+    destDir = path.join(tmpDir, "dest-hooks");
+    await fs.mkdir(srcDir);
+    // Create mock hook files
+    await fs.writeFile(path.join(srcDir, "session-start.js"), '#!/usr/bin/env node\nconsole.log("hello");\n');
+    await fs.writeFile(path.join(srcDir, "resolve-project.js"), 'export function resolveProject() {}\n');
+    await fs.writeFile(path.join(srcDir, "load-context.js"), 'export function loadProjectContext() {}\n');
+    await fs.writeFile(path.join(srcDir, "stop-sweep.sh"), '#!/usr/bin/env bash\nSCRIPT_DIR=$(cd "$(dirname "$0")" && pwd -P)\nMCP_CONFIG=$(node -e "original")\necho done\n');
+    await fs.writeFile(path.join(srcDir, "capture-handler.sh"), '#!/usr/bin/env bash\nSCRIPT_DIR=$(cd "$(dirname "$0")" && pwd -P)\nMCP_CONFIG=$(node -e "original")\necho done\n');
+    // Also add README.md to ensure it's NOT copied
+    await fs.writeFile(path.join(srcDir, "README.md"), "# Docs\n");
+  });
+
+  it("copies all 5 hook files to destination", async () => {
+    const installType = { command: "npx", args: ["-y", "pkm-mcp-server@latest"] };
+    await copyHooks(srcDir, destDir, installType);
+    const files = (await fs.readdir(destDir)).sort();
+    assert.deepEqual(files, ["capture-handler.sh", "load-context.js", "resolve-project.js", "session-start.js", "stop-sweep.sh"]);
+  });
+
+  it("does not copy README.md", async () => {
+    const installType = { command: "npx", args: ["-y", "pkm-mcp-server@latest"] };
+    await copyHooks(srcDir, destDir, installType);
+    const files = await fs.readdir(destDir);
+    assert.ok(!files.includes("README.md"));
+  });
+
+  it("patches MCP_CONFIG in shell scripts", async () => {
+    const installType = { command: "npx", args: ["-y", "pkm-mcp-server@latest"] };
+    await copyHooks(srcDir, destDir, installType);
+    const sweepContent = await fs.readFile(path.join(destDir, "stop-sweep.sh"), "utf8");
+    assert.ok(!sweepContent.includes('$(node -e "original")'));
+    assert.ok(sweepContent.includes('"command":"npx"'));
+    const captureContent = await fs.readFile(path.join(destDir, "capture-handler.sh"), "utf8");
+    assert.ok(captureContent.includes('"command":"npx"'));
+  });
+
+  it("does not patch JS files", async () => {
+    const installType = { command: "npx", args: ["-y", "pkm-mcp-server@latest"] };
+    await copyHooks(srcDir, destDir, installType);
+    const jsContent = await fs.readFile(path.join(destDir, "session-start.js"), "utf8");
+    assert.equal(jsContent, '#!/usr/bin/env node\nconsole.log("hello");\n');
+  });
+
+  it("creates destination directory if it doesn't exist", async () => {
+    const nested = path.join(tmpDir, "deep", "nested", "hooks");
+    const installType = { command: "npx", args: ["-y", "pkm-mcp-server@latest"] };
+    await copyHooks(srcDir, nested, installType);
+    const files = await fs.readdir(nested);
+    assert.equal(files.length, 5);
+  });
+
+  it("overwrites existing files", async () => {
+    await fs.mkdir(destDir, { recursive: true });
+    await fs.writeFile(path.join(destDir, "session-start.js"), "old content");
+    const installType = { command: "npx", args: ["-y", "pkm-mcp-server@latest"] };
+    await copyHooks(srcDir, destDir, installType);
+    const content = await fs.readFile(path.join(destDir, "session-start.js"), "utf8");
+    assert.ok(content.includes("hello"));
   });
 });
