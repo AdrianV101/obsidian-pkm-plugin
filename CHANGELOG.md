@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.4.2] - 2026-03-21
+
+### Fixed
+- SessionStart hook crash — `load-context.js` imported `extractFrontmatter` and `extractTailSections` from parent-relative paths (`../utils.js`, `../helpers.js`) that don't exist when hooks are copied to `~/.claude/hooks/pkm/`. Inlined all three functions to make hooks fully self-contained.
+
 ## [1.4.1] - 2026-03-21
 
 ### Fixed

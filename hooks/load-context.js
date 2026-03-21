@@ -1,7 +1,62 @@
 import fs from "fs/promises";
 import path from "path";
-import { extractFrontmatter } from "../utils.js";
-import { extractTailSections } from "../helpers.js";
+
+/**
+ * Extract YAML frontmatter as simple key-value pairs.
+ * Lightweight parser — only handles scalar values (sufficient for status/priority).
+ */
+function extractFrontmatter(content) {
+  if (!content.startsWith("---")) return null;
+  const endIndex = content.indexOf("\n---", 3);
+  if (endIndex === -1) return null;
+  const yamlContent = content.slice(4, endIndex);
+  const result = {};
+  for (const line of yamlContent.split("\n")) {
+    const match = line.match(/^(\w+):\s*(.+)$/);
+    if (match) result[match[1]] = match[2].trim();
+  }
+  return result;
+}
+
+function parseHeadingLevel(line) {
+  const match = line.match(/^(#{1,6})\s/);
+  return match ? match[1].length : 0;
+}
+
+/**
+ * Extract the last N sections at a given heading level from markdown content.
+ */
+function extractTailSections(content, n, level) {
+  let frontmatter = "";
+  let body = content;
+  if (content.startsWith("---")) {
+    const endIndex = content.indexOf("\n---", 3);
+    if (endIndex !== -1) {
+      frontmatter = content.slice(0, endIndex + 4);
+      body = content.slice(endIndex + 4);
+    }
+  }
+
+  const lines = body.split("\n");
+  const headingPositions = [];
+  let offset = 0;
+  for (const line of lines) {
+    if (parseHeadingLevel(line) === level) {
+      headingPositions.push(offset);
+    }
+    offset += line.length + 1;
+  }
+
+  if (headingPositions.length === 0) {
+    return content;
+  }
+
+  const startIdx = Math.max(0, headingPositions.length - n);
+  const sliceStart = headingPositions[startIdx];
+  const tail = body.slice(sliceStart);
+
+  return frontmatter + (frontmatter && !frontmatter.endsWith("\n") ? "\n" : "") + tail;
+}
 
 export async function loadProjectContext(vaultPath, projectPath) {
   const projectName = path.basename(projectPath);
