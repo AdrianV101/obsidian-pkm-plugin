@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # PostToolUse hook: explicit PKM capture via vault_capture tool
-# Runs async after vault_capture returns. Spawns claude -p with Sonnet
-# to create a properly structured vault note.
+# Runs async after vault_capture returns. Spawns claude -p with Opus
+# to create a properly structured vault note with graph links.
 
 set -euo pipefail
 
@@ -37,7 +37,11 @@ fi
 
 # MCP config for obsidian-pkm server
 SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd -P)
-MCP_CONFIG=$(node -e "console.log(JSON.stringify({mcpServers:{'obsidian-pkm':{command:'node',args:[process.argv[1]],env:{VAULT_PATH:process.argv[2]}}}}))" "$SCRIPT_DIR/../index.js" "${VAULT_PATH:-$HOME/Documents/PKM}")
+MCP_CONFIG=$(node -e "
+  const env = { VAULT_PATH: process.argv[2] };
+  if (process.env.OPENAI_API_KEY) env.OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+  console.log(JSON.stringify({ mcpServers: { 'obsidian-pkm': { command: 'node', args: [process.argv[1]], env } } }));
+" "$SCRIPT_DIR/../index.js" "${VAULT_PATH:-$HOME/Documents/PKM}")
 
 # Build prompt via Node.js to avoid shell injection from user content
 PROMPT_FILE=$(mktemp)
@@ -71,11 +75,15 @@ const prompt = \`You are a PKM note creation agent. Your job is NOT done until t
 
 4. Read the note one final time to confirm no placeholder text remains.
 
-CRITICAL: If you stop after step 1 or 2, you have FAILED. The note will contain useless placeholder text like 'Brief description of the technology, tool, or concept.' which is worse than no note at all. You MUST reach step 4.\`;
+5. Use vault_suggest_links with the note's content to find related notes. If the tool is available, add [[wikilinks]] to 2-3 of the most relevant suggestions in the note body using vault_edit.
+
+6. Use vault_search to verify no very similar note already exists. If a near-duplicate is found, consider appending to the existing note instead of creating a new one.
+
+CRITICAL: If you stop after step 1 or 2, you have FAILED. The note will contain useless placeholder text like 'Brief description of the technology, tool, or concept.' which is worse than no note at all. You MUST reach step 6.\`;
 require('fs').writeFileSync(process.argv[2], prompt);
 " "$TOOL_INPUT" "$PROMPT_FILE"
 
 # Spawn claude -p in background with logging
-nohup claude -p --model sonnet --mcp-config "$MCP_CONFIG" --max-turns 25 --allowedTools "mcp__obsidian-pkm__vault_write mcp__obsidian-pkm__vault_read mcp__obsidian-pkm__vault_edit mcp__obsidian-pkm__vault_append mcp__obsidian-pkm__vault_query mcp__obsidian-pkm__vault_list mcp__obsidian-pkm__vault_update_frontmatter mcp__obsidian-pkm__vault_activity" < "$PROMPT_FILE" >> "$LOG_DIR/capture-$(date +%Y%m%d-%H%M%S).log" 2>&1 &
+nohup claude -p --model opus --mcp-config "$MCP_CONFIG" --max-turns 30 --allowedTools "mcp__obsidian-pkm__vault_read mcp__obsidian-pkm__vault_peek mcp__obsidian-pkm__vault_write mcp__obsidian-pkm__vault_append mcp__obsidian-pkm__vault_edit mcp__obsidian-pkm__vault_update_frontmatter mcp__obsidian-pkm__vault_search mcp__obsidian-pkm__vault_semantic_search mcp__obsidian-pkm__vault_suggest_links mcp__obsidian-pkm__vault_list mcp__obsidian-pkm__vault_recent mcp__obsidian-pkm__vault_links mcp__obsidian-pkm__vault_neighborhood mcp__obsidian-pkm__vault_query mcp__obsidian-pkm__vault_tags mcp__obsidian-pkm__vault_activity mcp__obsidian-pkm__vault_move" < "$PROMPT_FILE" >> "$LOG_DIR/capture-$(date +%Y%m%d-%H%M%S).log" 2>&1 &
 
 exit 0
