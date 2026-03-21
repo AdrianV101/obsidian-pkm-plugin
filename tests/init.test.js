@@ -248,8 +248,7 @@ describe("buildMcpAddArgs", () => {
     assert.deepEqual(args, [
       "mcp", "add", "-s", "user",
       "-e", "VAULT_PATH=/home/user/Documents/PKM",
-      "obsidian-pkm",
-      "--", "npx", "-y", "pkm-mcp-server",
+      "--", "obsidian-pkm", "npx", "-y", "pkm-mcp-server",
     ]);
   });
 
@@ -274,8 +273,7 @@ describe("buildMcpAddArgs", () => {
     assert.deepEqual(args, [
       "mcp", "add", "-s", "user",
       "-e", "VAULT_PATH=/vault",
-      "obsidian-pkm",
-      "--", "node", "/home/user/Projects/Obsidian-MCP/cli.js",
+      "--", "obsidian-pkm", "node", "/home/user/Projects/Obsidian-MCP/cli.js",
     ]);
   });
 
@@ -294,7 +292,7 @@ describe("buildMcpAddArgs", () => {
     }
   });
 
-  it("places -- separator between server name and command", () => {
+  it("places -- separator before server name to terminate variadic -e", () => {
     const args = buildMcpAddArgs({
       vaultPath: "/vault",
       openaiKey: null,
@@ -302,8 +300,8 @@ describe("buildMcpAddArgs", () => {
     });
     const nameIdx = args.indexOf("obsidian-pkm");
     const dashIdx = args.indexOf("--");
-    assert.ok(dashIdx > nameIdx);
-    assert.equal(dashIdx, nameIdx + 1);
+    assert.ok(dashIdx < nameIdx);
+    assert.equal(dashIdx, nameIdx - 1);
   });
 });
 

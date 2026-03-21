@@ -133,7 +133,7 @@ export function buildMcpAddArgs({ vaultPath, openaiKey, installType }) {
   if (openaiKey) {
     args.push("-e", `OPENAI_API_KEY=${openaiKey}`);
   }
-  args.push("obsidian-pkm", "--", installType.command, ...installType.args);
+  args.push("--", "obsidian-pkm", installType.command, ...installType.args);
   return args;
 }
 
@@ -318,7 +318,7 @@ Nothing is written until you confirm each step. Press Ctrl+C at any time to canc
     const hasClaude = await checkClaudeCli();
     if (!hasClaude) {
       const installType = detectInstallType();
-      const manualCmd = `claude mcp add -s user -e VAULT_PATH=${vaultPath} obsidian-pkm -- ${installType.command} ${installType.args.join(" ")}`;
+      const manualCmd = `claude mcp add -s user -e VAULT_PATH=${vaultPath} -- obsidian-pkm ${installType.command} ${installType.args.join(" ")}`;
       console.log(`
   Claude Code CLI not found on PATH. To register manually, run:
 
