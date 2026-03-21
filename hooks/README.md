@@ -9,14 +9,14 @@ The hook system consists of three hooks:
 | Hook | Event | Purpose |
 |------|-------|---------|
 | `session-start.js` | SessionStart | Loads project context from the vault at the start of each session |
-| `stop-sweep.sh` | Stop | Passive capture: scans the latest exchange for PKM-worthy content |
+| `stop-sweep.js` | Stop | PKM librarian: creates structured, graph-linked vault notes from the latest exchange |
 | `capture-handler.sh` | PostToolUse | Explicit capture: creates structured vault notes when `vault_capture` is called |
 
 ### How it works
 
 - **SessionStart** (`session-start.js`): Runs synchronously. Resolves the current working directory to a vault project, reads the project index, recent devlog entries, and active tasks, then injects them as context.
-- **Stop** (`stop-sweep.sh`): Runs asynchronously after each assistant response. Spawns a background `claude -p` (Haiku) that reads the transcript, identifies decisions/tasks/findings from the latest exchange, and appends them to a daily captures file in `00-Inbox/`.
-- **PostToolUse** (`capture-handler.sh`): Runs asynchronously after `vault_capture` tool use. Spawns a background `claude -p` (Sonnet) that creates a properly structured vault note (ADR, task, research note, or troubleshooting log) from the capture payload.
+- **Stop** (`stop-sweep.js`): Runs asynchronously after each assistant response. Resolves the current working directory to a vault project (no project = no captures). Spawns a background `claude -p` (Sonnet, 15 turns) that reads the transcript, classifies PKM-worthy content from the latest exchange, and creates properly structured vault notes in the project directory with wikilinks to related notes.
+- **PostToolUse** (`capture-handler.sh`): Runs asynchronously after `vault_capture` tool use. Spawns a background `claude -p` (Opus, 30 turns) that creates a properly structured vault note (ADR, task, research note, or troubleshooting log) from the capture payload with graph links.
 
 ## Setup
 
@@ -51,7 +51,7 @@ Add the following to your `~/.claude/settings.json`:
         "hooks": [
           {
             "type": "command",
-            "command": "VAULT_PATH=\"/path/to/your/vault\" /path/to/Obsidian-MCP/hooks/stop-sweep.sh",
+            "command": "VAULT_PATH=\"/path/to/your/vault\" node /path/to/Obsidian-MCP/hooks/stop-sweep.js",
             "async": true,
             "timeout": 10
           }
@@ -85,19 +85,19 @@ The hook system uses `type: "command"` hooks (not `type: "agent"`). The shell sc
 
 - The hook script exits immediately, satisfying the timeout constraint
 - The `claude -p` process continues running independently, doing the actual vault work
-- `--max-turns` limits how many tool calls the background process can make (5 for stop-sweep, 25 for capture-handler)
+- `--max-turns` limits how many tool calls the background process can make (15 for stop-sweep, 30 for capture-handler)
 
 ### MCP config resolution
 
-The shell scripts use `cd "$(dirname "$0")" && pwd -P` to resolve their own location, then construct the path to `index.js` relative to the script directory. This means the scripts work regardless of the current working directory. The `VAULT_PATH` environment variable must be set in the hook command because hook scripts run outside the MCP server process.
+The hook scripts resolve their own location to construct the path to `index.js`. `stop-sweep.js` uses the ES module pattern (`import.meta.url` → `fileURLToPath` → `path.dirname`), while `capture-handler.sh` uses the POSIX pattern (`cd "$(dirname "$0")" && pwd -P`). Both work regardless of current working directory. The `VAULT_PATH` environment variable must be set in the hook command because hook scripts run outside the MCP server process.
 
 ### Async behavior
 
-Both `stop-sweep.sh` and `capture-handler.sh` use `async: true` in the hook config. This means Claude Code does not wait for the hook script to finish before continuing. The script starts, spawns the background `claude -p` process, and exits. The background process runs to completion on its own.
+Both `stop-sweep.js` and `capture-handler.sh` use `async: true` in the hook config. This means Claude Code does not wait for the hook script to finish before continuing. The script starts, spawns the background `claude -p` process, and exits. The background process runs to completion on its own.
 
 ### Noise suppression and deduplication
 
-The stop-sweep hook is conservative by design. It only looks at the last exchange (one user message + one assistant response) and skips trivial interactions. If the exchange already contains an explicit `vault_capture` call, the stop-sweep skips that content to avoid duplication with the capture-handler.
+The stop-sweep hook is conservative by design. It only looks at the last exchange (one user message + one assistant response) and skips trivial interactions. Deduplication is item-level: if the exchange contains a `vault_capture` call, the sweep reads its arguments and skips that specific item, but still captures other PKM-worthy content. The sweep also runs `vault_search` before creating notes to catch duplicates from concurrent sweep instances.
 
 ## Troubleshooting
 
@@ -111,7 +111,7 @@ The stop-sweep hook is conservative by design. It only looks at the last exchang
 
 - Check that `VAULT_PATH` is set correctly and the directory exists
 - Verify `node` is available in the hook's PATH
-- Test the script manually: `echo '{"cwd":"/tmp","transcript_path":"/tmp/test","session_id":"abc123"}' | VAULT_PATH="/path/to/vault" ./hooks/stop-sweep.sh`
+- Test the script manually: `echo '{"cwd":"/tmp","transcript_path":"/tmp/test","session_id":"abc123"}' | VAULT_PATH="/path/to/vault" node ./hooks/stop-sweep.js`
 
 ### Background process not running
 
