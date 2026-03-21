@@ -6,6 +6,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.5.0] - 2026-03-21
+
+### Changed
+- **Passive sweep hook upgraded to "PKM librarian"** — replaces inbox dumping with structured note creation in the correct project directory. Creates properly templated notes (tasks, ADRs, research notes, troubleshooting logs) with wikilinks to related notes via `vault_suggest_links`.
+- Passive sweep: Haiku → Sonnet, 5 → 15 max turns, 3 → 17 tools
+- Capture handler: Sonnet → Opus, 25 → 30 max turns, 8 → 17 tools
+- Both hook agents now get all vault tools except `vault_trash` and `vault_capture`
+- Capture handler prompt now includes `vault_suggest_links` for graph linking and `vault_search` for duplicate detection
+- Stop hook converted from bash (`stop-sweep.sh`) to Node.js (`stop-sweep.js`) for direct `resolveProject()` import and cleaner prompt construction
+
+### Added
+- Auto-detection of repo vs installed location for MCP config — `stop-sweep.js` checks for `../index.js` (repo) and falls back to `npx pkm-mcp-server@latest` (installed). Eliminates need for text replacement during hook installation.
+- `OPENAI_API_KEY` passthrough in both hook agents' MCP config when set, enabling `vault_semantic_search` and `vault_suggest_links`
+
+### Fixed
+- Sweep log files were empty due to pipe-based logging — parent process owned the FDs and exited before child could write. Now uses `openSync` FDs owned directly by the child process.
+- Missing `child.on("error")` handler in sweep agent — spawn failures (e.g., `claude` not on PATH) now logged gracefully instead of crashing.
+
+### Removed
+- `hooks/stop-sweep.sh` — superseded by `hooks/stop-sweep.js`
+- Inbox capture pattern (`00-Inbox/captures-{date}.md`) — all captures now go to project-specific typed notes
+
 ## [1.4.2] - 2026-03-21
 
 ### Fixed
