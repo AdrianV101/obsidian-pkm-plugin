@@ -1,6 +1,12 @@
 import fs from "fs/promises";
 import path from "path";
-import { resolvePath } from "../helpers.js";
+
+function assertPathWithinVault(relativePath, vaultPath) {
+  const resolved = path.resolve(vaultPath, relativePath);
+  if (resolved !== vaultPath && !resolved.startsWith(vaultPath + path.sep)) {
+    throw new Error("Path escapes vault directory");
+  }
+}
 
 export async function resolveProject(cwd, vaultPath) {
   try {
@@ -35,7 +41,7 @@ export async function resolveProject(cwd, vaultPath) {
     if (match) {
       const annotatedPath = match[1].trim();
       try {
-        resolvePath(annotatedPath, vaultPath);
+        assertPathWithinVault(annotatedPath, vaultPath);
       } catch (e) {
         if (e.message === "Path escapes vault directory") {
           return { error: `CLAUDE.md annotation escapes vault directory: ${annotatedPath}` };

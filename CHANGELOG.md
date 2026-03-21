@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.4.1] - 2026-03-21
+
+### Fixed
+- SessionStart hook crash when installed via `init` — `resolve-project.js` imported `resolvePath` from `../helpers.js` which doesn't exist at `~/.claude/hooks/pkm/`. Inlined the path security check to remove the external dependency.
+
 ## [1.4.0] - 2026-03-21
 
 ### Added
