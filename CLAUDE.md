@@ -194,6 +194,7 @@ Implementation: `helpers.js` (`buildBasenameMap`, `resolveFuzzyPath`, `resolveFu
 - `moc.md` - Maps of Content (index/hub notes)
 - `daily-note.md` - Daily notes
 - `task.md` - Structured task notes with status, priority, due date, project, and source fields
+- `note.md` - Minimal generic note
 
 **Sample CLAUDE.md** (`sample-project/CLAUDE.md`): Template for code repositories to specify PKM integration paths, context loading, and documentation rules.
 

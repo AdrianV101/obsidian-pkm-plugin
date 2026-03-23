@@ -15,19 +15,23 @@ trap cleanup EXIT
 # Read hook input from stdin
 INPUT=$(cat)
 
-# Extract tool_input fields (buffer all stdin before parsing)
-eval "$(echo "$INPUT" | node -e "
-  let b='';
-  process.stdin.on('data',c=>b+=c);
-  process.stdin.on('end',()=>{
-    const j=JSON.parse(b);
-    const ti=j.tool_input||{};
-    console.log('TOOL_INPUT='+JSON.stringify(JSON.stringify(ti)));
-    console.log('CAPTURE_TYPE='+JSON.stringify(ti.type||''));
-    console.log('CAPTURE_TITLE='+JSON.stringify(ti.title||''));
-    console.log('CAPTURE_CONTENT='+JSON.stringify(ti.content||''));
-  })
-")"
+# Extract tool_input fields safely (no eval — stdout capture only)
+TOOL_INPUT=$(echo "$INPUT" | node -e "
+  let b=''; process.stdin.on('data',c=>b+=c);
+  process.stdin.on('end',()=>{ process.stdout.write(JSON.stringify(JSON.parse(b).tool_input||{})); })
+")
+CAPTURE_TYPE=$(echo "$INPUT" | node -e "
+  let b=''; process.stdin.on('data',c=>b+=c);
+  process.stdin.on('end',()=>{ process.stdout.write((JSON.parse(b).tool_input||{}).type||''); })
+")
+CAPTURE_TITLE=$(echo "$INPUT" | node -e "
+  let b=''; process.stdin.on('data',c=>b+=c);
+  process.stdin.on('end',()=>{ process.stdout.write((JSON.parse(b).tool_input||{}).title||''); })
+")
+CAPTURE_CONTENT=$(echo "$INPUT" | node -e "
+  let b=''; process.stdin.on('data',c=>b+=c);
+  process.stdin.on('end',()=>{ process.stdout.write((JSON.parse(b).tool_input||{}).content||''); })
+")
 
 # Skip if missing required fields
 if [ -z "$CAPTURE_TYPE" ] || [ -z "$CAPTURE_TITLE" ] || [ -z "$CAPTURE_CONTENT" ]; then

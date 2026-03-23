@@ -190,7 +190,7 @@ Add to your `~/.claude/settings.json` (alongside the `mcpServers` block):
         "hooks": [
           {
             "type": "command",
-            "command": "VAULT_PATH=\"/path/to/your/vault\" /path/to/Obsidian-MCP/hooks/stop-sweep.sh",
+            "command": "VAULT_PATH=\"/path/to/your/vault\" node /path/to/Obsidian-MCP/hooks/stop-sweep.js",
             "async": true,
             "timeout": 10
           }
@@ -219,7 +219,7 @@ Replace `/path/to/your/vault` with your Obsidian vault path and `/path/to/Obsidi
 | Hook | Event | What it does |
 |------|-------|--------------|
 | `session-start.js` | SessionStart | Loads project context (index, devlog, active tasks) at session start |
-| `stop-sweep.sh` | Stop | Scans each exchange for PKM-worthy decisions/tasks, appends to daily captures |
+| `stop-sweep.js` | Stop | PKM librarian: creates structured, graph-linked vault notes from the latest exchange |
 | `capture-handler.sh` | PostToolUse | Creates structured vault notes when `vault_capture` is called |
 
 See [hooks/README.md](hooks/README.md) for architecture details and troubleshooting.

@@ -23,7 +23,7 @@ import {
   FORCE_HARD_CAP,
   CHUNK_SIZE,
 } from "./helpers.js";
-import { exploreNeighborhood, formatNeighborhood, findFilesLinkingTo, rewriteWikilinks } from "./graph.js";
+import { exploreNeighborhood, formatNeighborhood, findFilesLinkingTo, rewriteWikilinks, extractWikilinks } from "./graph.js";
 import { getAllMarkdownFiles, extractFrontmatter } from "./utils.js";
 
 /**
@@ -62,6 +62,26 @@ export async function createHandlers({ vaultPath, templateRegistry, semanticInde
     const resolvedFolder = resolveFuzzyFolder(folder, Array.from(allFilesSet));
     return resolvePath(resolvedFolder);
   };
+
+  const SESSION_ID_DISPLAY_LEN = 8;
+
+  function addToBasenameMap(relativePath) {
+    const bn = path.basename(relativePath, ".md").toLowerCase();
+    if (!basenameMap.has(bn)) basenameMap.set(bn, []);
+    basenameMap.get(bn).push(relativePath);
+    allFilesSet.add(relativePath);
+  }
+
+  function removeFromBasenameMap(relativePath) {
+    allFilesSet.delete(relativePath);
+    const bn = path.basename(relativePath, ".md").toLowerCase();
+    const entries = basenameMap.get(bn);
+    if (entries) {
+      const idx = entries.indexOf(relativePath);
+      if (idx !== -1) entries.splice(idx, 1);
+      if (entries.length === 0) basenameMap.delete(bn);
+    }
+  }
 
   async function handleRead(args) {
     const filePath = resolveFile(args.path);
@@ -193,12 +213,7 @@ export async function createHandlers({ vaultPath, templateRegistry, semanticInde
     }
 
     // Update basename map with the new file
-    const newBasename = path.basename(outputPath, ".md").toLowerCase();
-    if (!basenameMap.has(newBasename)) {
-      basenameMap.set(newBasename, []);
-    }
-    basenameMap.get(newBasename).push(outputPath);
-    allFilesSet.add(outputPath);
+    addToBasenameMap(outputPath);
 
     const fm = validation.frontmatter;
     const createdStr = fm.created instanceof Date
@@ -403,11 +418,7 @@ export async function createHandlers({ vaultPath, templateRegistry, semanticInde
     const result = { outgoing: [], incoming: [] };
 
     if (args.direction !== "incoming") {
-      const linkRegex = /\[\[([^\]|]+)(?:\|[^\]]+)?\]\]/g;
-      let match;
-      while ((match = linkRegex.exec(content)) !== null) {
-        result.outgoing.push(match[1]);
-      }
+      result.outgoing = extractWikilinks(content);
     }
 
     if (args.direction !== "outgoing") {
@@ -580,20 +591,20 @@ export async function createHandlers({ vaultPath, templateRegistry, semanticInde
 
       if (entries.length === 0) {
         return {
-          content: [{ type: "text", text: `No activity entries found. (current session: ${sessionId.slice(0, 8)})` }]
+          content: [{ type: "text", text: `No activity entries found. (current session: ${sessionId.slice(0, SESSION_ID_DISPLAY_LEN)})` }]
         };
       }
 
       const formatted = entries.map(e => {
         const ts = e.timestamp.replace("T", " ").slice(0, 19);
-        const sessionShort = e.session_id.slice(0, 8);
+        const sessionShort = e.session_id.slice(0, SESSION_ID_DISPLAY_LEN);
         return `[${ts}] [${sessionShort}] ${e.tool_name}\n${e.args_json}`;
       }).join("\n\n");
 
       return {
         content: [{
           type: "text",
-          text: `Activity log (${entries.length} entr${entries.length === 1 ? "y" : "ies"}, current session: ${sessionId.slice(0, 8)}):\n\n${formatted}`
+          text: `Activity log (${entries.length} entr${entries.length === 1 ? "y" : "ies"}, current session: ${sessionId.slice(0, SESSION_ID_DISPLAY_LEN)}):\n\n${formatted}`
         }]
       };
     }
@@ -651,13 +662,9 @@ export async function createHandlers({ vaultPath, templateRegistry, semanticInde
     }
     if (!body) throw new Error("No content to analyze");
 
-    const linkRegex = /\[\[([^\]|]+)(?:\|[^\]]+)?\]\]/g;
-    const linkedNames = new Set();
-    let match;
-    while ((match = linkRegex.exec(inputText)) !== null) {
-      const target = match[1];
-      linkedNames.add(path.basename(target, ".md").toLowerCase());
-    }
+    const linkedNames = new Set(
+      extractWikilinks(inputText).map(t => path.basename(t, ".md").toLowerCase())
+    );
 
     const excludeFiles = new Set();
     if (sourcePath) excludeFiles.add(sourcePath);
@@ -696,7 +703,12 @@ export async function createHandlers({ vaultPath, templateRegistry, semanticInde
     const filePath = resolvePath(resolvedRelative);
 
     // Verify file exists
-    await fs.access(filePath);
+    try {
+      await fs.access(filePath);
+    } catch (e) {
+      if (e.code === "ENOENT") throw new Error(`ENOENT: File not found: ${resolvedRelative}`, { cause: e });
+      throw e;
+    }
 
     // Find incoming links for warning output
     const allFilesList = Array.from(allFilesSet);
@@ -725,14 +737,7 @@ export async function createHandlers({ vaultPath, templateRegistry, semanticInde
     await fs.rename(filePath, trashAbsolute);
 
     // Update in-memory basename map
-    allFilesSet.delete(resolvedRelative);
-    const oldBasename = path.basename(resolvedRelative, ".md").toLowerCase();
-    const entries = basenameMap.get(oldBasename);
-    if (entries) {
-      const idx = entries.indexOf(resolvedRelative);
-      if (idx !== -1) entries.splice(idx, 1);
-      if (entries.length === 0) basenameMap.delete(oldBasename);
-    }
+    removeFromBasenameMap(resolvedRelative);
 
     // Build output
     let text = `Trashed ${resolvedRelative} → ${trashRelative}`;
@@ -754,7 +759,12 @@ export async function createHandlers({ vaultPath, templateRegistry, semanticInde
     const newAbsolute = resolvePath(newRelative);
 
     // Verify source exists
-    await fs.access(oldAbsolute);
+    try {
+      await fs.access(oldAbsolute);
+    } catch (e) {
+      if (e.code === "ENOENT") throw new Error(`ENOENT: File not found: ${oldRelative}`, { cause: e });
+      throw e;
+    }
 
     // Verify destination does NOT exist
     try {
@@ -775,23 +785,11 @@ export async function createHandlers({ vaultPath, templateRegistry, semanticInde
     await fs.rename(oldAbsolute, newAbsolute);
 
     // Update basename map: remove old, add new
-    allFilesSet.delete(oldRelative);
-    const oldBasename = path.basename(oldRelative, ".md").toLowerCase();
-    const oldEntries = basenameMap.get(oldBasename);
-    if (oldEntries) {
-      const idx = oldEntries.indexOf(oldRelative);
-      if (idx !== -1) oldEntries.splice(idx, 1);
-      if (oldEntries.length === 0) basenameMap.delete(oldBasename);
-    }
-
-    allFilesSet.add(newRelative);
-    const newBasename = path.basename(newRelative, ".md").toLowerCase();
-    if (!basenameMap.has(newBasename)) {
-      basenameMap.set(newBasename, []);
-    }
-    basenameMap.get(newBasename).push(newRelative);
+    removeFromBasenameMap(oldRelative);
+    addToBasenameMap(newRelative);
 
     // Determine new link target — use full path if basename is now ambiguous
+    const newBasename = path.basename(newRelative, ".md").toLowerCase();
     const newEntries = basenameMap.get(newBasename);
     const isAmbiguous = newEntries && newEntries.length > 1;
     const newLinkTarget = isAmbiguous

@@ -185,6 +185,7 @@ Use these with `vault_write({ template: "name", path: "...", frontmatter: { tags
 | `moc` | Maps of Content (index/hub notes) |
 | `daily-note` | Daily notes |
 | `task` | Structured task notes with status, priority, due date |
+| `note` | Minimal generic notes |
 
 ## Session End
 

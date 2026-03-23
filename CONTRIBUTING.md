@@ -56,7 +56,7 @@ sample-project/ - Sample CLAUDE.md for integrating PKM into your repos
 ## Code Style
 
 - ES modules (`import`/`export`), no CommonJS
-- Double quotes, semicolons
+- Double quotes, semicolons (convention, not lint-enforced)
 - `const` by default, `let` when reassignment is needed, never `var`
 - JSDoc on exported functions
 - Strict equality (`===`) always

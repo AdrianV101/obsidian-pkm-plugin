@@ -6,6 +6,36 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.6.0] - 2026-03-23
+
+### Security
+- **Fix command injection in capture-handler.sh** — replaced `eval` of Node.js output with safe per-variable stdout capture. Previously, crafted `title` or `content` values containing shell metacharacters (e.g., `$(...)`) could execute arbitrary commands.
+- `handleTrash` and `handleMove` now catch ENOENT errors and return relative paths instead of leaking absolute vault paths in error messages
+
+### Changed
+- Wikilink extraction in `handleLinks` and `handleSuggestLinks` now uses shared `extractWikilinks` from `graph.js` instead of duplicating the regex
+- Extracted `addToBasenameMap`/`removeFromBasenameMap` helpers in `handlers.js` (replaces 3 inline copies)
+- Named constant `SESSION_ID_DISPLAY_LEN` replaces magic number `8` for session ID truncation
+- `@modelcontextprotocol/sdk` version range tightened from `^1.0.0` to `^1.27.0` to reflect actual minimum tested version
+
+### Fixed
+- README hook configuration referenced deleted `stop-sweep.sh` (renamed to `stop-sweep.js` in v1.5.0)
+- `vault_peek` tool description no longer claims "line numbers" in heading outline (removed in v1.1.0)
+- CHANGELOG: added missing entries for v1.5.3, v1.5.2, v1.1.1; fixed all comparison links
+- CLAUDE.md and sample-project/CLAUDE.md: added missing `note.md` template to template lists
+- CONTRIBUTING.md: clarified that double quotes and semicolons are conventions, not lint-enforced
+- CI workflow: added `permissions: {}` for least privilege; added `npm audit --omit=dev` step
+
+## [1.5.3] - 2026-03-21
+
+### Fixed
+- Init wizard `patchMcpConfig()` now handles multi-line `MCP_CONFIG=` blocks correctly — previously only replaced the first line, leaving orphaned continuation lines
+
+## [1.5.2] - 2026-03-21
+
+### Fixed
+- Hook scripts now auto-detect repo vs installed location — `capture-handler.sh` no longer hardcodes `node $SCRIPT_DIR/../index.js`, falling back to `npx pkm-mcp-server@latest` when `index.js` is not present
+
 ## [1.5.1] - 2026-03-21
 
 ### Fixed
@@ -109,6 +139,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Security
 - Resolved 7 transitive dependency vulnerabilities (hono, @hono/node-server, ajv, express-rate-limit, flatted, minimatch, qs)
 
+## [1.1.1] - 2026-02-24
+
+### Added
+- Enum validation for task `status` and `priority` fields in `vault_write` and `vault_update_frontmatter`
+
 ## [1.1.0] - 2026-02-23
 
 ### Changed
@@ -158,8 +193,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Atomic file creation in `vault_write` (`wx` flag) prevents race conditions
 - Error messages sanitized to prevent leaking absolute vault paths
 
-[Unreleased]: https://github.com/AdrianV101/Obsidian-MCP/compare/v1.2.1...HEAD
+[Unreleased]: https://github.com/AdrianV101/Obsidian-MCP/compare/v1.6.0...HEAD
+[1.6.0]: https://github.com/AdrianV101/Obsidian-MCP/compare/v1.5.3...v1.6.0
+[1.5.3]: https://github.com/AdrianV101/Obsidian-MCP/compare/v1.5.2...v1.5.3
+[1.5.2]: https://github.com/AdrianV101/Obsidian-MCP/compare/v1.5.1...v1.5.2
+[1.5.1]: https://github.com/AdrianV101/Obsidian-MCP/compare/v1.5.0...v1.5.1
+[1.5.0]: https://github.com/AdrianV101/Obsidian-MCP/compare/v1.4.2...v1.5.0
+[1.4.2]: https://github.com/AdrianV101/Obsidian-MCP/compare/v1.4.1...v1.4.2
+[1.4.1]: https://github.com/AdrianV101/Obsidian-MCP/compare/v1.4.0...v1.4.1
+[1.4.0]: https://github.com/AdrianV101/Obsidian-MCP/compare/v1.3.3...v1.4.0
+[1.3.3]: https://github.com/AdrianV101/Obsidian-MCP/compare/v1.3.2...v1.3.3
+[1.3.2]: https://github.com/AdrianV101/Obsidian-MCP/compare/v1.3.1...v1.3.2
+[1.3.1]: https://github.com/AdrianV101/Obsidian-MCP/compare/v1.3.0...v1.3.1
+[1.3.0]: https://github.com/AdrianV101/Obsidian-MCP/compare/v1.2.1...v1.3.0
 [1.2.1]: https://github.com/AdrianV101/Obsidian-MCP/compare/v1.2.0...v1.2.1
-[1.2.0]: https://github.com/AdrianV101/Obsidian-MCP/compare/v1.1.0...v1.2.0
+[1.2.0]: https://github.com/AdrianV101/Obsidian-MCP/compare/v1.1.1...v1.2.0
+[1.1.1]: https://github.com/AdrianV101/Obsidian-MCP/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/AdrianV101/Obsidian-MCP/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/AdrianV101/Obsidian-MCP/releases/tag/v1.0.0

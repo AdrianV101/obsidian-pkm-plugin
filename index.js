@@ -73,7 +73,7 @@ export async function startServer() {
       },
       {
         name: "vault_peek",
-        description: "Inspect a file's metadata and structure without reading full content. Returns file size, frontmatter, heading outline with line numbers and approximate section sizes, and a brief preview. Use this to plan which sections to read from large files.",
+        description: "Inspect a file's metadata and structure without reading full content. Returns file size, frontmatter, heading outline with approximate section sizes, and a brief preview. Use this to plan which sections to read from large files.",
         inputSchema: {
           type: "object",
           properties: {
