@@ -1,0 +1,11 @@
+{
+  "name": "obsidian-pkm-marketplace",
+  "description": "Obsidian PKM Plugin for Claude Code",
+  "plugins": [
+    {
+      "name": "obsidian-pkm",
+      "description": "Bidirectional knowledge flow between Claude Code and Obsidian — tools, skills, and hooks for PKM",
+      "source": "."
+    }
+  ]
+}
