@@ -1,0 +1,10 @@
+{
+  "obsidian-pkm": {
+    "command": "node",
+    "args": ["${CLAUDE_PLUGIN_ROOT}/cli.js"],
+    "env": {
+      "VAULT_PATH": "${VAULT_PATH}",
+      "OPENAI_API_KEY": "${OPENAI_API_KEY}"
+    }
+  }
+}
