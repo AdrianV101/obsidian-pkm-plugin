@@ -5,71 +5,72 @@
 [![Node.js >= 20](https://img.shields.io/badge/Node.js-%3E%3D20-green.svg)](https://nodejs.org/)
 [![CI](https://github.com/AdrianV101/Obsidian-MCP/actions/workflows/ci.yml/badge.svg)](https://github.com/AdrianV101/Obsidian-MCP/actions/workflows/ci.yml)
 
-An MCP (Model Context Protocol) server that gives Claude Code full read/write access to your Obsidian vault. 19 tools for note CRUD, full-text search, semantic search, graph traversal, metadata queries, session activity tracking, and passive knowledge capture. Published on npm as [`pkm-mcp-server`](https://www.npmjs.com/package/pkm-mcp-server).
+A personal knowledge management system powered by [MCP](https://modelcontextprotocol.io/) that turns your Obsidian vault into persistent, structured memory for AI coding assistants. 19 tools for note creation, semantic search, graph traversal, metadata queries, session memory, and passive knowledge capture — published on npm as [`pkm-mcp-server`](https://www.npmjs.com/package/pkm-mcp-server).
 
 ## Why
 
-Claude Code is powerful for writing code, but it forgets everything between sessions. This server turns your Obsidian vault into persistent, structured memory that Claude can read and write natively.
+Claude Code has built-in memory, but it's flat text files scoped to individual projects — no structure, no search beyond exact matches, no connections between notes, and no way to query across projects. As knowledge grows, it doesn't scale. This server replaces that with a proper PKM layer: structured notes with enforced metadata, semantic search, a navigable knowledge graph, and cross-project access through a single Obsidian vault.
 
-- **Session continuity** - Claude logs what it did and can pick up where it left off
-- **Structured knowledge** - ADRs, research notes, devlogs created from enforced templates, not freeform text dumps
-- **Semantic recall** - "find my notes about caching strategies" works even if you never used the word "caching"
-- **Graph context** - Claude can explore related notes by following wikilinks, not just keyword matches
+- **Structured session memory** — Every tool call is logged with timestamps and session IDs, so Claude can recall exactly what was read, written, and searched in previous conversations — not just what was saved to a text file.
+- **Structured knowledge creation** — ADRs, research notes, devlogs, and tasks are created from enforced templates with validated frontmatter — not freeform text dumps. Your vault stays consistent and queryable.
+- **Semantic discovery** — "Find my notes about caching strategies" works even if you never used the word "caching." Conceptual search surfaces relevant knowledge that keyword search misses.
+- **Graph-aware connections** — Claude explores your knowledge graph by following wikilinks, discovering related notes by proximity rather than just content. Link suggestions help weave new notes into your existing web of knowledge.
+- **Passive capture** — Decisions, tasks, and research findings are captured in the background without interrupting your coding flow. A session-end sweep catches anything that slipped through.
 
-Without this, every Claude Code session starts from scratch. With it, your AI assistant has a working memory that compounds over time.
+Without this, knowledge stays fragmented across per-project memory files and chat logs. With it, your AI assistant maintains a unified knowledge base that compounds over time.
 
 https://github.com/user-attachments/assets/58ad9c9b-d987-4728-89e7-33de20b73a38
 
 ## Features
 
+### Knowledge Creation & Editing
+
 | Tool | Description |
 |------|-------------|
-| `vault_read` | Read note contents (pagination by heading, tail, chunk, line range; auto-redirects large files to peek data) |
-| `vault_peek` | Inspect file metadata and structure without reading full content |
-| `vault_write` | Create notes from templates (enforces frontmatter) |
-| `vault_append` | Append to notes, with positional insert (after/before heading, end of section) |
-| `vault_edit` | Surgical string replacement |
-| `vault_search` | Full-text search across markdown files |
-| `vault_semantic_search` | Semantic similarity search via OpenAI embeddings |
+| `vault_write` | Create notes from templates with enforced frontmatter (ADRs, research, devlogs, tasks, etc.) |
+| `vault_append` | Add content to notes, with positional insert (after/before heading, end of section) |
+| `vault_edit` | Surgical string replacement for precise edits |
+| `vault_update_frontmatter` | Atomic YAML frontmatter updates (set, create, remove fields; validates enums by note type) |
+| `vault_capture` | Signal a PKM-worthy capture (decision, task, research, bug); background hook creates the note |
+
+### Discovery & Search
+
+| Tool | Description |
+|------|-------------|
+| `vault_search` | Full-text keyword search across markdown files |
+| `vault_semantic_search` | Conceptual similarity search via OpenAI embeddings — finds related notes even with different wording |
+| `vault_query` | Query by YAML frontmatter (type, status, tags, dates, custom fields) with sorting |
+| `vault_tags` | Discover all tags with per-note counts; folder scoping, glob filters, inline tag parsing |
 | `vault_suggest_links` | Suggest relevant notes to link based on content similarity |
+
+### Graph & Connections
+
+| Tool | Description |
+|------|-------------|
+| `vault_links` | Wikilink analysis (incoming and outgoing links for a note) |
+| `vault_neighborhood` | Graph exploration via BFS wikilink traversal — discover related notes by proximity |
+
+### Reading & Navigation
+
+| Tool | Description |
+|------|-------------|
+| `vault_read` | Read note contents (pagination by heading, tail, chunk, line range; auto-redirects large files) |
+| `vault_peek` | Inspect file metadata and structure without reading full content |
 | `vault_list` | List files and folders |
 | `vault_recent` | Recently modified files |
-| `vault_links` | Wikilink analysis (incoming/outgoing) |
-| `vault_neighborhood` | Graph exploration via BFS wikilink traversal |
-| `vault_query` | Query notes by YAML frontmatter (type, status, tags/tags_any, dates, custom fields, sorting) |
-| `vault_tags` | Discover tags with counts; folder scoping, glob filters, inline tag parsing |
-| `vault_activity` | Session activity log for cross-conversation memory |
+
+### Organization & Maintenance
+
+| Tool | Description |
+|------|-------------|
+| `vault_move` | Move/rename files with automatic wikilink updating across the vault |
 | `vault_trash` | Soft-delete to `.trash/` (Obsidian convention), warns about broken incoming links |
-| `vault_move` | Move/rename files with automatic wikilink updating across vault |
-| `vault_update_frontmatter` | Atomic YAML frontmatter updates (set, create, remove fields; validates enum fields by note type) |
-| `vault_capture` | Signal a PKM-worthy capture (decision, task, research, bug); returns immediately, background hook creates the note |
 
-### Fuzzy Path Resolution
+### Session Memory
 
-Read-only tools accept short names that resolve to full vault paths:
-
-```javascript
-vault_read({ path: "devlog" })
-// Resolves to: 01-Projects/Obsidian-MCP/development/devlog.md
-
-vault_read({ path: "devlog.md" })
-// Same result — .md extension is optional
-
-vault_links({ path: "alpha" })
-// Works on vault_peek, vault_links, vault_neighborhood, vault_suggest_links too
-```
-
-Folder-scoped tools accept partial folder names:
-
-```javascript
-vault_search({ query: "API design", folder: "Obsidian-MCP" })
-// Resolves folder to: 01-Projects/Obsidian-MCP
-
-vault_tags({ folder: "Obsidian-MCP" })
-// Works on vault_search, vault_query, vault_tags, vault_recent
-```
-
-Ambiguous matches return an error listing candidates. Exact paths always work unchanged.
+| Tool | Description |
+|------|-------------|
+| `vault_activity` | Cross-conversation memory — logs every tool call with timestamps and session IDs |
 
 ## Prerequisites
 
@@ -91,7 +92,10 @@ npm install -g pkm-mcp-server
 pkm-mcp-server init
 ```
 
-The setup wizard walks you through 5 steps. Nothing is written until you confirm each step, and you can press Ctrl+C at any time to cancel.
+The setup wizard walks you through vault path, templates, folder structure, semantic search, and Claude Code registration. Nothing is written until you confirm each step, and you can press Ctrl+C at any time to cancel.
+
+<details>
+<summary>Wizard step details</summary>
 
 **Step 1 — Vault path.** Point to an existing Obsidian vault or create a new one. The wizard resolves `~`, `$HOME`, and relative paths automatically. Safety checks prevent using system directories (`/`, `/home`, etc.) as a vault. For existing non-empty directories you can use it as-is, create a subfolder inside it, or wipe it (with triple confirmation). You'll be offered an optional backup before any changes — this creates a timestamped copy next to the vault (e.g. `PKM-backup-2026-03-21T14-30-00/`).
 
@@ -116,9 +120,11 @@ Existing templates are never overwritten.
 
 Each `_index.md` has `type: moc` frontmatter. Existing folders and index files are skipped.
 
-**Step 4 — OpenAI API key (optional).** Enables `vault_semantic_search` and `vault_suggest_links`. The key is stored only in your Claude Code configuration (`~/.claude.json`) and is used solely for generating text embeddings. You can add this later — see [Enable Semantic Search](#3-enable-semantic-search-optional).
+**Step 4 — OpenAI API key (optional).** Enables `vault_semantic_search` and `vault_suggest_links`. The key is stored only in your Claude Code configuration (`~/.claude.json`) and is used solely for generating text embeddings. You can add this later — see [Enable Semantic Search](#4-enable-semantic-search-optional).
 
 **Step 5 — Claude Code registration.** Registers the MCP server via `claude mcp add -s user`. If `obsidian-pkm` is already registered, you'll be asked whether to overwrite. The exact command is shown for confirmation before running. If the `claude` CLI is not found on PATH, the wizard prints the manual registration command instead.
+
+</details>
 
 Restart Claude Code after setup. The server provides all tools except semantic search out of the box.
 
@@ -149,7 +155,15 @@ claude mcp add -s user -e VAULT_PATH=/absolute/path/to/your/vault -- obsidian-pk
 
 Verify with `claude mcp list` — you should see `obsidian-pkm: ... - Connected`.
 
-### 3. Enable Semantic Search (optional)
+### 3. Verify It Works
+
+Open Claude Code and try:
+
+> List the folders in my vault
+
+Claude should call `vault_list` and show your vault's directory structure. If it works, the server is connected and ready.
+
+### 4. Enable Semantic Search (optional)
 
 If you didn't set this up during `init`, add your OpenAI API key by re-registering:
 
@@ -163,7 +177,7 @@ claude mcp add -s user \
 
 This enables `vault_semantic_search` and `vault_suggest_links`. Uses `text-embedding-3-large` with a SQLite + sqlite-vec index stored at `.obsidian/semantic-index.db`. The index rebuilds automatically — delete the DB file to force a full re-embed.
 
-### 4. Enable PKM Hooks (optional)
+### 5. Enable PKM Hooks (optional)
 
 The hook system adds automatic context loading at session start and passive knowledge capture during coding. Requires the [Claude CLI](https://docs.anthropic.com/en/docs/claude-cli) installed and authenticated.
 
@@ -288,15 +302,17 @@ All paths passed to tools are relative to vault root. The server includes path s
 
 ## How It Works
 
-**Note creation** is template-based. `vault_write` loads templates from `05-Templates/`, substitutes Templater-compatible variables (`<% tp.date.now("YYYY-MM-DD") %>`, `<% tp.file.title %>`), and validates required frontmatter fields (`type`, `created`, `tags`). Optional frontmatter fields — `status`, `priority`, `project`, `deciders`, `due`, `source` — can be set per template type. Task notes enforce enum validation on `status` (pending/active/done/cancelled) and `priority` (low/normal/high/urgent).
+**Knowledge creation** is template-based. `vault_write` loads templates from `05-Templates/`, substitutes Templater-compatible variables (`<% tp.date.now("YYYY-MM-DD") %>`, `<% tp.file.title %>`), and validates required frontmatter fields (`type`, `created`, `tags`). This ensures every note in your vault has consistent metadata — making it queryable, sortable, and discoverable from day one. Task notes enforce enum validation on `status` and `priority`; other types accept `project`, `deciders`, `due`, and `source`.
 
-**Semantic search** embeds notes on startup and watches for changes via `fs.watch`. Long notes are chunked by `##` headings. The index is a regenerable cache stored in `.obsidian/` so it syncs across machines via Obsidian Sync. The initial sync runs in the background — search is available immediately but may return incomplete results until sync finishes (a progress message is shown).
+**Knowledge discovery** works at two levels. Keyword search (`vault_search`) finds exact terms. Semantic search embeds notes using OpenAI and finds conceptually related content — so "managing overwhelm" surfaces notes about "cognitive load" even if those exact words never appear together. The semantic index watches for file changes in real-time and syncs across machines via Obsidian Sync.
 
-**Graph exploration** resolves `[[wikilinks]]` to file paths (handling aliases, headings, and ambiguous basenames), then does BFS traversal to return notes grouped by hop distance.
+**Knowledge connections** are maintained through Obsidian's `[[wikilink]]` graph. `vault_neighborhood` traverses links via BFS to discover related notes by proximity, while `vault_suggest_links` recommends connections you haven't made yet. `vault_move` rewrites wikilinks across the vault when you reorganize, and `vault_trash` warns about links that would break.
 
-**Activity logging** records every tool call (except `vault_activity` itself) with timestamps and session IDs, enabling Claude to recall what happened in previous conversations.
+**Session memory** records every tool call with timestamps and session IDs, so Claude can recall what was read, written, or searched in previous conversations. This turns ephemeral chat sessions into a continuous thread of work.
 
-**Passive capture** uses `vault_capture` to signal that something is worth persisting (a decision, task, research finding, or bug). The tool returns immediately — a PostToolUse hook spawns a background agent that creates the structured vault note. Combined with the Stop hook (which sweeps each session for un-captured decisions and tasks), this keeps the vault up to date without interrupting the coding flow.
+**Passive capture** uses `vault_capture` to signal that something is worth persisting (a decision, task, research finding, or bug). The tool returns immediately — a PostToolUse hook spawns a background agent that creates the structured vault note. Combined with the Stop hook (which sweeps each session for un-captured knowledge), this keeps your vault up to date without interrupting the coding flow.
+
+**Fuzzy path resolution** lets read-only tools accept short names instead of full vault paths. `vault_read({ path: "devlog" })` resolves to `01-Projects/Obsidian-MCP/development/devlog.md` automatically (`.md` extension optional). Folder-scoped tools like `vault_search` and `vault_query` accept partial folder names — `folder: "Obsidian-MCP"` resolves to `01-Projects/Obsidian-MCP`. Ambiguous matches return an error listing candidates. Write/destructive tools always require exact paths.
 
 ## Troubleshooting
 
@@ -310,7 +326,7 @@ Your `VAULT_PATH` is wrong or missing. The server validates this at startup and 
 Run `pkm-mcp-server init` to install templates, or copy the `templates/` files from this repo into your vault's `05-Templates/` directory. The server loads templates from there at startup.
 
 **Semantic search not appearing in tool list**
-Set `OPENAI_API_KEY` in your MCP server registration. See [Enable Semantic Search](#3-enable-semantic-search-optional). Without it, `vault_semantic_search` and `vault_suggest_links` are hidden entirely.
+Set `OPENAI_API_KEY` in your MCP server registration. See [Enable Semantic Search](#4-enable-semantic-search-optional). Without it, `vault_semantic_search` and `vault_suggest_links` are hidden entirely.
 
 **Server not showing up in Claude Code after install**
 Run `claude mcp list` to check. If `obsidian-pkm` is missing, register it with `claude mcp add` (see [Manual Registration](#2-manual-registration-alternative)). Note: editing `~/.claude/settings.json` directly does **not** register MCP servers — use the CLI.
