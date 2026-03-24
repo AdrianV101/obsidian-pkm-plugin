@@ -61,7 +61,11 @@ async function main() {
 
   // Resolve project — no project, no captures
   const { projectPath, error } = await resolveProject(cwd, VAULT_PATH);
-  if (error || !projectPath) return;
+  if (error) {
+    logError(`project resolution failed: ${error}`);
+    return;
+  }
+  if (!projectPath) return;
 
   // Build MCP config — auto-detect repo (../index.js exists) vs installed (use npx)
   const localIndex = join(__dirname, "..", "index.js");
@@ -74,7 +78,7 @@ async function main() {
     mcpServers: {
       "obsidian-pkm": useLocal
         ? { command: "node", args: [localIndex], env: mcpEnv }
-        : { command: "npx", args: ["-y", "pkm-mcp-server@latest"], env: mcpEnv },
+        : { command: "npx", args: ["-y", "obsidian-pkm@latest"], env: mcpEnv },
     },
   });
 
