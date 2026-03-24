@@ -243,12 +243,12 @@ describe("buildMcpAddArgs", () => {
     const args = buildMcpAddArgs({
       vaultPath: "/home/user/Documents/PKM",
       openaiKey: null,
-      installType: { command: "npx", args: ["-y", "pkm-mcp-server@latest"] },
+      installType: { command: "npx", args: ["-y", "obsidian-pkm@latest"] },
     });
     assert.deepEqual(args, [
       "mcp", "add", "-s", "user",
       "-e", "VAULT_PATH=/home/user/Documents/PKM",
-      "--", "obsidian-pkm", "npx", "-y", "pkm-mcp-server@latest",
+      "--", "obsidian-pkm", "npx", "-y", "obsidian-pkm@latest",
     ]);
   });
 
@@ -256,7 +256,7 @@ describe("buildMcpAddArgs", () => {
     const args = buildMcpAddArgs({
       vaultPath: "/vault",
       openaiKey: "sk-test-key",
-      installType: { command: "npx", args: ["-y", "pkm-mcp-server@latest"] },
+      installType: { command: "npx", args: ["-y", "obsidian-pkm@latest"] },
     });
     assert.ok(args.includes("-e"));
     const keyIdx = args.indexOf("OPENAI_API_KEY=sk-test-key");
@@ -281,7 +281,7 @@ describe("buildMcpAddArgs", () => {
     const args = buildMcpAddArgs({
       vaultPath: "/vault",
       openaiKey: "sk-key",
-      installType: { command: "npx", args: ["-y", "pkm-mcp-server@latest"] },
+      installType: { command: "npx", args: ["-y", "obsidian-pkm@latest"] },
     });
     const nameIdx = args.indexOf("obsidian-pkm");
     const flagIndices = args
@@ -296,7 +296,7 @@ describe("buildMcpAddArgs", () => {
     const args = buildMcpAddArgs({
       vaultPath: "/vault",
       openaiKey: null,
-      installType: { command: "npx", args: ["-y", "pkm-mcp-server@latest"] },
+      installType: { command: "npx", args: ["-y", "obsidian-pkm@latest"] },
     });
     const nameIdx = args.indexOf("obsidian-pkm");
     const dashIdx = args.indexOf("--");
@@ -308,6 +308,12 @@ describe("buildMcpAddArgs", () => {
 describe("detectInstallType", () => {
   it("returns npx for a path inside node_modules", () => {
     const result = detectInstallType("/usr/lib/node_modules/pkm-mcp-server/init.js");
+    assert.equal(result.command, "npx");
+    assert.deepEqual(result.args, ["-y", "obsidian-pkm@latest"]);
+  });
+
+  it("returns npx for new package name in node_modules", () => {
+    const result = detectInstallType("/usr/lib/node_modules/obsidian-pkm/init.js");
     assert.equal(result.command, "npx");
     assert.deepEqual(result.args, ["-y", "obsidian-pkm@latest"]);
   });
@@ -330,11 +336,11 @@ describe("patchMcpConfig", () => {
   ].join("\n");
 
   it("replaces MCP_CONFIG line for npx install", () => {
-    const installType = { command: "npx", args: ["-y", "pkm-mcp-server@latest"] };
+    const installType = { command: "npx", args: ["-y", "obsidian-pkm@latest"] };
     const result = patchMcpConfig(sampleScript, installType);
     assert.ok(!result.includes('$(node -e'));
     assert.ok(result.includes('"command":"npx"'));
-    assert.ok(result.includes('"args":["-y","pkm-mcp-server@latest"]'));
+    assert.ok(result.includes('"args":["-y","obsidian-pkm@latest"]'));
     // Verify exact shell quoting: '..."VAULT_PATH":"'"$VAULT_PATH"'"}}}'
     // The pattern is: close single-quote, open double-quote, $VAULT_PATH, close double-quote, open single-quote
     assert.ok(result.includes(`'"$VAULT_PATH"'`), "must use correct shell quoting for $VAULT_PATH expansion");
@@ -351,7 +357,7 @@ describe("patchMcpConfig", () => {
   });
 
   it("preserves lines that don't start with MCP_CONFIG=", () => {
-    const result = patchMcpConfig(sampleScript, { command: "npx", args: ["-y", "pkm-mcp-server@latest"] });
+    const result = patchMcpConfig(sampleScript, { command: "npx", args: ["-y", "obsidian-pkm@latest"] });
     const lines = result.split("\n");
     assert.equal(lines[0], '#!/usr/bin/env bash');
     assert.equal(lines[1], 'set -euo pipefail');
@@ -361,7 +367,7 @@ describe("patchMcpConfig", () => {
 
   it("returns script unchanged if no MCP_CONFIG= line found", () => {
     const noConfig = "#!/bin/bash\necho hello\n";
-    const result = patchMcpConfig(noConfig, { command: "npx", args: ["-y", "pkm-mcp-server@latest"] });
+    const result = patchMcpConfig(noConfig, { command: "npx", args: ["-y", "obsidian-pkm@latest"] });
     assert.equal(result, noConfig);
   });
 
@@ -377,7 +383,7 @@ describe("patchMcpConfig", () => {
       '" "$SCRIPT_DIR" "${VAULT_PATH:-$HOME/Documents/PKM}")',
       'echo "$MCP_CONFIG"',
     ].join("\n");
-    const installType = { command: "npx", args: ["-y", "pkm-mcp-server@latest"] };
+    const installType = { command: "npx", args: ["-y", "obsidian-pkm@latest"] };
     const result = patchMcpConfig(multiLineScript, installType);
     // All node -e lines should be gone
     assert.ok(!result.includes("existsSync"), "node -e body lines must be removed");
@@ -385,7 +391,7 @@ describe("patchMcpConfig", () => {
     assert.ok(!result.includes('$(node -e'), "command substitution must be replaced");
     // Replacement should be present
     assert.ok(result.includes('"command":"npx"'));
-    assert.ok(result.includes('"args":["-y","pkm-mcp-server@latest"]'));
+    assert.ok(result.includes('"args":["-y","obsidian-pkm@latest"]'));
     // Surrounding lines preserved
     assert.ok(result.includes('#!/usr/bin/env bash'));
     assert.ok(result.includes('echo "$MCP_CONFIG"'));
@@ -396,7 +402,7 @@ describe("patchMcpConfig", () => {
   it("handles already-patched single-line MCP_CONFIG (idempotent)", () => {
     const patchedScript = [
       '#!/usr/bin/env bash',
-      `MCP_CONFIG='{"mcpServers":{"obsidian-pkm":{"command":"npx","args":["-y","pkm-mcp-server@latest"],"env":{"VAULT_PATH":"'"$VAULT_PATH"'"}}}}'`,
+      `MCP_CONFIG='{"mcpServers":{"obsidian-pkm":{"command":"npx","args":["-y","obsidian-pkm@latest"],"env":{"VAULT_PATH":"'"$VAULT_PATH"'"}}}}'`,
       'echo done',
     ].join("\n");
     const installType = { command: "node", args: ["/new/path/cli.js"] };
@@ -634,21 +640,21 @@ describe("copyHooks", () => {
   });
 
   it("copies all 5 hook files to destination", async () => {
-    const installType = { command: "npx", args: ["-y", "pkm-mcp-server@latest"] };
+    const installType = { command: "npx", args: ["-y", "obsidian-pkm@latest"] };
     await copyHooks(srcDir, destDir, installType);
     const files = (await fs.readdir(destDir)).sort();
     assert.deepEqual(files, ["capture-handler.sh", "load-context.js", "resolve-project.js", "session-start.js", "stop-sweep.js"]);
   });
 
   it("does not copy README.md", async () => {
-    const installType = { command: "npx", args: ["-y", "pkm-mcp-server@latest"] };
+    const installType = { command: "npx", args: ["-y", "obsidian-pkm@latest"] };
     await copyHooks(srcDir, destDir, installType);
     const files = await fs.readdir(destDir);
     assert.ok(!files.includes("README.md"));
   });
 
   it("patches MCP_CONFIG in shell scripts", async () => {
-    const installType = { command: "npx", args: ["-y", "pkm-mcp-server@latest"] };
+    const installType = { command: "npx", args: ["-y", "obsidian-pkm@latest"] };
     await copyHooks(srcDir, destDir, installType);
     const captureContent = await fs.readFile(path.join(destDir, "capture-handler.sh"), "utf8");
     assert.ok(!captureContent.includes('$(node -e "original")'));
@@ -656,14 +662,14 @@ describe("copyHooks", () => {
   });
 
   it("does not patch stop-sweep.js (auto-detects MCP config)", async () => {
-    const installType = { command: "npx", args: ["-y", "pkm-mcp-server@latest"] };
+    const installType = { command: "npx", args: ["-y", "obsidian-pkm@latest"] };
     await copyHooks(srcDir, destDir, installType);
     const sweepContent = await fs.readFile(path.join(destDir, "stop-sweep.js"), "utf8");
     assert.equal(sweepContent, '#!/usr/bin/env node\nconsole.log("sweep");\n');
   });
 
   it("does not patch JS files", async () => {
-    const installType = { command: "npx", args: ["-y", "pkm-mcp-server@latest"] };
+    const installType = { command: "npx", args: ["-y", "obsidian-pkm@latest"] };
     await copyHooks(srcDir, destDir, installType);
     const jsContent = await fs.readFile(path.join(destDir, "session-start.js"), "utf8");
     assert.equal(jsContent, '#!/usr/bin/env node\nconsole.log("hello");\n');
@@ -671,7 +677,7 @@ describe("copyHooks", () => {
 
   it("creates destination directory if it doesn't exist", async () => {
     const nested = path.join(tmpDir, "deep", "nested", "hooks");
-    const installType = { command: "npx", args: ["-y", "pkm-mcp-server@latest"] };
+    const installType = { command: "npx", args: ["-y", "obsidian-pkm@latest"] };
     await copyHooks(srcDir, nested, installType);
     const files = await fs.readdir(nested);
     assert.equal(files.length, 5);
@@ -680,7 +686,7 @@ describe("copyHooks", () => {
   it("overwrites existing files", async () => {
     await fs.mkdir(destDir, { recursive: true });
     await fs.writeFile(path.join(destDir, "session-start.js"), "old content");
-    const installType = { command: "npx", args: ["-y", "pkm-mcp-server@latest"] };
+    const installType = { command: "npx", args: ["-y", "obsidian-pkm@latest"] };
     await copyHooks(srcDir, destDir, installType);
     const content = await fs.readFile(path.join(destDir, "session-start.js"), "utf8");
     assert.ok(content.includes("hello"));

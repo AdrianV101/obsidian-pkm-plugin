@@ -678,7 +678,7 @@ To verify, restart Claude Code and try:
   "List the folders in my vault"
 
 Claude should call vault_list and show your vault's directory structure.
-If that doesn't work, check: https://github.com/AdrianV101/Obsidian-MCP#troubleshooting
+If that doesn't work, check: https://github.com/AdrianV101/obsidian-pkm-plugin#troubleshooting
 `);
   } catch (e) {
     if (e.name === "ExitPromptError") {

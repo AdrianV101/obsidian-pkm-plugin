@@ -61,7 +61,11 @@ async function main() {
 
   // Resolve project — no project, no captures
   const { projectPath, error } = await resolveProject(cwd, VAULT_PATH);
-  if (error || !projectPath) return;
+  if (error) {
+    logError(`project resolution failed: ${error}`);
+    return;
+  }
+  if (!projectPath) return;
 
   // Build MCP config — auto-detect repo (../index.js exists) vs installed (use npx)
   const localIndex = join(__dirname, "..", "index.js");
