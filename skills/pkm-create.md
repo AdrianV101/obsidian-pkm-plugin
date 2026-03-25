@@ -77,7 +77,7 @@ vault_append({
 
 Format: `- [[note-name]] — relationship explanation`
 
-If the note's template does not include a `## Related` section (task, note, fleeting-note, daily-note), first append the heading: `vault_append({ path, content: "\n## Related\n" })`, then insert the links.
+If the note's template does not include a `## Related` section (task, note, fleeting-note, daily-note, devlog, project-index), first append the heading: `vault_append({ path, content: "\n## Related\n" })`, then insert the links.
 
 ## Step 6: Bidirectional Linking
 
