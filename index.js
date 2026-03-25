@@ -232,6 +232,14 @@ Pass custom <%...%> variables via the 'variables' parameter.`,
               enum: ["both", "outgoing", "incoming"],
               description: "Link direction to follow (default: both)",
               default: "both"
+            },
+            include_semantic: {
+              type: "boolean",
+              description: "Append semantically related but unlinked notes (requires OPENAI_API_KEY, default: false)"
+            },
+            semantic_limit: {
+              type: "number",
+              description: "Max semantic results to include (default: 5)"
             }
           },
           required: ["path"]

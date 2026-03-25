@@ -2648,3 +2648,69 @@ Links to [[lh-dup]] which is ambiguous.
     await fs.rm(dir, { recursive: true });
   });
 });
+
+describe("vault_neighborhood include_semantic", () => {
+  it("appends semantic results when include_semantic is true", async () => {
+    const mockResults = [
+      { path: "notes/devlog.md", score: 0.85, preview: "Devlog note" },
+      { path: "notes/alpha.md", score: 0.7, preview: "Alpha note" },
+    ];
+    const freshHandlers = await createHandlers({
+      vaultPath: tmpDir,
+      templateRegistry: await buildTemplateRegistry(tmpDir),
+      semanticIndex: createMockSemanticIndex(mockResults),
+      activityLog: null,
+      sessionId: "test"
+    });
+    const result = await freshHandlers.get("vault_neighborhood")({
+      path: "notes/alpha.md",
+      include_semantic: true
+    });
+    const text = result.content[0].text;
+    assert.ok(text.includes("Graph neighborhood"));
+    assert.ok(text.includes("Semantically related"), "should include semantic section header");
+    // devlog.md is not in alpha's structural graph, so it should appear as semantically related
+    assert.ok(text.includes("devlog.md"), "should list devlog as semantically related");
+  });
+
+  it("excludes notes already in structural graph from semantic results", async () => {
+    const mockResults = [
+      { path: "notes/beta.md", score: 0.9, preview: "Beta is linked" },
+      { path: "notes/gamma.md", score: 0.7, preview: "Gamma not linked from beta" },
+    ];
+    const freshHandlers = await createHandlers({
+      vaultPath: tmpDir,
+      templateRegistry: await buildTemplateRegistry(tmpDir),
+      semanticIndex: createMockSemanticIndex(mockResults),
+      activityLog: null,
+      sessionId: "test"
+    });
+    const result = await freshHandlers.get("vault_neighborhood")({
+      path: "notes/beta.md",
+      include_semantic: true,
+      semantic_limit: 5
+    });
+    const text = result.content[0].text;
+    assert.ok(text.includes("Graph neighborhood"));
+  });
+
+  it("preserves normal behavior when include_semantic is false", async () => {
+    const result = await handlers.get("vault_neighborhood")({
+      path: "notes/alpha.md",
+      include_semantic: false
+    });
+    const text = result.content[0].text;
+    assert.ok(text.includes("Graph neighborhood"));
+    assert.ok(!text.includes("Semantically related"));
+  });
+
+  it("gracefully handles when semanticIndex is null", async () => {
+    const result = await handlers.get("vault_neighborhood")({
+      path: "notes/alpha.md",
+      include_semantic: true
+    });
+    const text = result.content[0].text;
+    assert.ok(text.includes("Graph neighborhood"));
+    assert.ok(!text.includes("Semantically related"));
+  });
+});

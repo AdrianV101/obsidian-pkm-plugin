@@ -451,11 +451,54 @@ export async function createHandlers({ vaultPath, templateRegistry, semanticInde
       direction,
     });
 
-    const text = formatNeighborhood(result, {
+    let text = formatNeighborhood(result, {
       startPath: resolvedPath,
       depth,
       direction,
     });
+
+    // --- Semantic expansion (Tier 3) ---
+    if (args.include_semantic && semanticIndex?.isAvailable) {
+      const filePath = resolvePath(resolvedPath);
+      const noteContent = await fs.readFile(filePath, "utf-8");
+      let body = noteContent;
+      if (body.startsWith("---")) {
+        const endIdx = body.indexOf("\n---", 3);
+        if (endIdx !== -1) body = body.slice(endIdx + 4).trim();
+      }
+
+      if (body) {
+        const semanticLimit = args.semantic_limit || 5;
+        const semanticResults = await semanticIndex.searchRaw({
+          query: body.slice(0, 8000),
+          limit: semanticLimit * 2,
+          excludeFiles: new Set([resolvedPath])
+        });
+
+        const graphPaths = new Set();
+        for (const [, nodes] of result.depthGroups) {
+          for (const node of nodes) graphPaths.add(node.path);
+        }
+
+        const unlinked = semanticResults.filter(r => !graphPaths.has(r.path)).slice(0, semanticLimit);
+
+        if (unlinked.length > 0) {
+          text += `\n**Semantically related (unlinked)** (${unlinked.length} node${unlinked.length === 1 ? "" : "s"})\n`;
+          for (const r of unlinked) {
+            let line = `- ${r.path} (similarity: ${r.score})`;
+            try {
+              const fc = await fs.readFile(path.join(vaultPath, r.path), "utf-8");
+              const fm = extractFrontmatter(fc);
+              const meta = [];
+              if (fm?.type) meta.push(`type: ${fm.type}`);
+              if (fm?.tags?.length) meta.push(`tags: ${fm.tags.join(", ")}`);
+              if (meta.length > 0) line += `\n  ${meta.join(" | ")}`;
+            } catch { /* skip metadata on error */ }
+            text += line + "\n";
+          }
+        }
+      }
+    }
 
     return { content: [{ type: "text", text }] };
   }
