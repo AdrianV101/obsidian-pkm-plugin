@@ -47,6 +47,6 @@ tags:
 - 
 
 ## Related
-<!-- Links to related notes, prior decisions, or research -->
+<!-- Format: - [[note-name]] — relationship explanation -->
 - 
 

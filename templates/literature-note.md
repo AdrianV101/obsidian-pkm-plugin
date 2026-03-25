@@ -21,5 +21,5 @@ tags:
 -
 
 ## Related
-<!-- Links to related notes or concepts -->
+<!-- Format: - [[note-name]] — relationship explanation -->
 -
