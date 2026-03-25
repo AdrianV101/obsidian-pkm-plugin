@@ -378,6 +378,48 @@ Pass custom <%...%> variables via the 'variables' parameter.`,
           },
           required: ["type", "title", "content"]
         }
+      },
+      {
+        name: "vault_add_links",
+        description: "Add annotated wikilinks to a note's section (default: ## Related). " +
+          "Deduplicates by basename (skips links already present). " +
+          "Creates the section if missing. Requires exact path.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            path: {
+              type: "string",
+              description: "Exact path to the note (vault-relative, e.g., '01-Projects/MyApp/research/caching.md')"
+            },
+            links: {
+              type: "array",
+              description: "Links to add",
+              items: {
+                type: "object",
+                properties: {
+                  target: {
+                    type: "string",
+                    description: "Vault-relative path to link target (e.g., 'notes/architecture-patterns.md')"
+                  },
+                  annotation: {
+                    type: "string",
+                    description: "One-line explanation of the relationship (e.g., 'foundational patterns this decision builds on')"
+                  }
+                },
+                required: ["target", "annotation"]
+              }
+            },
+            section: {
+              type: "string",
+              description: "Target section heading (default: '## Related')"
+            },
+            create_section: {
+              type: "boolean",
+              description: "Create section if missing (default: true)"
+            }
+          },
+          required: ["path", "links"]
+        }
       }
     ];
 
