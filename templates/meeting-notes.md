@@ -24,5 +24,5 @@ tags:
 - [ ]
 
 ## Related
-<!-- Links to relevant notes, projects, or prior meetings -->
--
+<!-- Format: - [[note-name]] — relationship explanation -->
+- 

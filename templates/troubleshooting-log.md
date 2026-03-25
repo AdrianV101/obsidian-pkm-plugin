@@ -28,5 +28,5 @@ tags:
 <!-- How to avoid this in the future -->
 
 ## Related
-<!-- Links to related notes, ADRs, or issues -->
--
+<!-- Format: - [[note-name]] — relationship explanation -->
+- 

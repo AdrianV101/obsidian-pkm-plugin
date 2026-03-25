@@ -33,3 +33,7 @@ tags:
 ## Verdict
 <!-- Summary assessment and recommendation -->
 
+
+## Related
+<!-- Format: - [[note-name]] — relationship explanation -->
+- 

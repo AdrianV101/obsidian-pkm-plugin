@@ -17,6 +17,6 @@ tags:
 <!-- Primary notes on this topic -->
 -
 
-## Related Topics
-<!-- Links to other MOCs or areas -->
--
+## Related
+<!-- Format: - [[note-name]] — relationship explanation -->
+- 

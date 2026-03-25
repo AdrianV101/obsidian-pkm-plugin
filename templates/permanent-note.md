@@ -17,7 +17,7 @@ This is a permanent/evergreen note. Guidelines:
 
 
 ## Related
-<!-- Links to related concepts, source materials, projects where this was learned -->
+<!-- Format: - [[note-name]] — relationship explanation -->
 - 
 
 ## References

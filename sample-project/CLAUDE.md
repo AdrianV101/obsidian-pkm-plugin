@@ -7,29 +7,15 @@
 - **Vault project path**: `01-Projects/[YourProjectName]/`
 - **MCP Server**: `obsidian-pkm` (configured in `~/.claude/settings.json`)
 
-### Session Start: Load Context
+### PKM Skills
 
-Before starting work, load project context:
+The `obsidian-pkm` plugin provides skills that automate common PKM workflows:
 
-```
-vault_read("01-Projects/[YourProjectName]/_index.md")
-vault_recent({ folder: "01-Projects/[YourProjectName]", limit: 5 })
-vault_activity({ path: "01-Projects/[YourProjectName]", limit: 10 })
-```
+- `obsidian-pkm:pkm-create` — Use when creating vault notes (duplicate check, linking, annotations)
+- `obsidian-pkm:pkm-explore` — Use when researching what the vault knows about a topic (graph + semantic exploration)
+- `obsidian-pkm:pkm-session-end` — Use when wrapping up a session (devlog, link audit, undocumented work capture)
 
-Use `vault_activity` to recall what was done in previous sessions (files read, written, searched). This gives continuity across conversations.
-
-### Before Creating or Researching
-
-Always search before creating new notes to avoid duplication:
-
-```
-vault_search({ query: "your topic" })
-vault_semantic_search({ query: "your concept", folder: "01-Projects/[YourProjectName]" })
-vault_query({ tags: ["relevant-tag"], folder: "01-Projects/[YourProjectName]" })
-```
-
-`vault_semantic_search` finds conceptually related notes even when different words are used (e.g., searching "managing overwhelm" finds notes about "cognitive load"). Use it for discovery alongside exact-text `vault_search`.
+Session-start context loading is handled automatically by the SessionStart hook.
 
 ## Documentation Rules
 
@@ -73,41 +59,11 @@ When a significant technical decision is made:
 
 ### Development Progress
 
-After implementing features or making significant progress, append to the devlog:
-
-```
-vault_append({
-  path: "01-Projects/[YourProjectName]/development/devlog.md",
-  heading: "## Recent Activity",
-  position: "after_heading",
-  content: "## YYYY-MM-DD\n\n### Session Summary\n- What was done\n\n### Key Decisions\n- Decisions made (link to ADRs)\n\n### Next Steps\n- What's next\n\n---\n"
-})
-```
-
-Use `position: "after_heading"` to prepend new entries (most recent first) or `position: "end_of_section"` to append.
+Use the `obsidian-pkm:pkm-session-end` skill at the end of each session — it handles devlog entries, link auditing, and capturing undocumented work from the conversation.
 
 ### Reusable Knowledge
 
-When solving a problem that has general applicability:
-
-1. Search for existing related notes first:
-   ```
-   vault_semantic_search({ query: "the concept you learned" })
-   ```
-2. Create a permanent note if nothing exists:
-   ```
-   vault_write({
-     template: "permanent-note",
-     path: "03-Resources/Development/{topic-name}.md",
-     frontmatter: { tags: ["relevant-tags"] }
-   })
-   ```
-3. Find and add bidirectional links:
-   ```
-   vault_suggest_links({ path: "03-Resources/Development/{topic-name}.md" })
-   ```
-
-`vault_suggest_links` uses semantic similarity to find notes worth linking to, and excludes notes already linked via `[[wikilinks]]`.
+Use the `obsidian-pkm:pkm-create` skill when creating any vault note — it handles duplicate checking, template selection, link discovery, and bidirectional linking automatically.
 
 ### Passive Capture
 
@@ -189,11 +145,7 @@ Use these with `vault_write({ template: "name", path: "...", frontmatter: { tags
 
 ## Session End
 
-Before ending a development session:
-
-1. Append a summary to the devlog
-2. Update project status in `_index.md` if changed
-3. Note any created files for future reference
+Use the `obsidian-pkm:pkm-session-end` skill — it handles devlog updates, undocumented work capture, link audits, and index updates.
 
 ## Project-Specific Notes
 

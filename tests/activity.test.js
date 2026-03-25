@@ -111,6 +111,18 @@ describe("query", () => {
     log2.shutdown();
   });
 
+  it("filters by session ID prefix", async () => {
+    const fullId = "abcd1234-5678-9abc-def0-123456789abc";
+    const log = createLog(fullId);
+    await log.initialize();
+    log.log("vault_read", { path: "test.md" });
+
+    const rows = log.query({ session: "abcd1234" });
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].session_id, fullId);
+    log.shutdown();
+  });
+
   it("filters by since timestamp", async () => {
     const log = createLog("query-since");
     await log.initialize();
