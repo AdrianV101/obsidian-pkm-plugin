@@ -220,12 +220,12 @@ Read-only tools (`vault_read`, `vault_peek`, `vault_links`, `vault_neighborhood`
 - Ambiguous names (multiple files with same basename) return an error listing all candidates
 - Use a more specific path or the `folder` param to disambiguate
 
-Folder-scoped tools (`vault_search`, `vault_query`, `vault_tags`, `vault_recent`) support fuzzy folder resolution:
+Folder-scoped tools (`vault_search`, `vault_query`, `vault_tags`, `vault_recent`, `vault_link_health`) support fuzzy folder resolution:
 - Exact folder paths still work as before
 - Partial names match by substring: `"MyApp"` → `"01-Projects/MyApp"`
 - Ambiguous matches return an error listing candidates
 
-Write/destructive tools (`vault_write`, `vault_append`, `vault_edit`, `vault_trash`, `vault_move`) require exact paths to prevent accidental modifications.
+Write/destructive tools (`vault_write`, `vault_append`, `vault_edit`, `vault_trash`, `vault_move`, `vault_add_links`) require exact paths to prevent accidental modifications.
 
 Implementation: `helpers.js` (`buildBasenameMap`, `resolveFuzzyPath`, `resolveFuzzyFolder`)
 

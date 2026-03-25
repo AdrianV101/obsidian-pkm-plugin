@@ -69,7 +69,7 @@ Skip if the session was purely mechanical (config changes, minor fixes) with not
 
 ## Step 4: Link Audit
 
-Run a link health check on notes touched this session:
+Run a link health check on the project folder to find disconnected notes:
 
 ```
 vault_link_health({ folder: "<project-folder>", checks: ["orphans", "weak"] })

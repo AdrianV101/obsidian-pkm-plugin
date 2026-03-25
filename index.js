@@ -406,7 +406,7 @@ Pass custom <%...%> variables via the 'variables' parameter.`,
                     description: "One-line explanation of the relationship (e.g., 'foundational patterns this decision builds on')"
                   }
                 },
-                required: ["target", "annotation"]
+                required: ["target"]
               }
             },
             section: {

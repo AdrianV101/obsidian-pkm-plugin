@@ -887,7 +887,12 @@ export async function createHandlers({ vaultPath, templateRegistry, semanticInde
         continue;
       }
 
-      const displayName = path.basename(target, ".md");
+      // Use full path for disambiguation when basename is not unique
+      const basenameKey = targetBasename;
+      const candidates = basenameMap.get(basenameKey) || [];
+      const displayName = candidates.length > 1
+        ? targetWithExt.replace(/\.md$/, "")
+        : path.basename(target, ".md");
       const entry = annotation
         ? `- [[${displayName}]] — ${annotation}`
         : `- [[${displayName}]]`;
@@ -910,6 +915,9 @@ export async function createHandlers({ vaultPath, templateRegistry, semanticInde
       const sectionBlock = (content.endsWith("\n") ? "\n" : "\n\n") + section + "\n";
       content = content + sectionBlock;
       range = findSectionRange(content, section);
+      if (!range) {
+        throw new Error(`Failed to create section "${section}" in ${filePath}. Ensure the section parameter is a valid markdown heading (e.g., "## Related").`);
+      }
     }
 
     const insertText = added.join("\n") + "\n";

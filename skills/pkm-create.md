@@ -90,7 +90,7 @@ Note: MOC notes created before this version may use `## Related Topics` instead 
 
 For **significant note types** (ADR, permanent-note, research-note, troubleshooting-log, literature-note, moc, meeting-notes):
 - Check if the top 1–2 target notes would benefit from a backlink to this new note
-- If yes, append to their `## Related` section too using `vault_append`
+- If yes, add a backlink to their `## Related` section using `vault_add_links`
 
 **Skip** for ephemeral types (fleeting-note, daily-note) — Obsidian's native backlinks panel is sufficient.
 
