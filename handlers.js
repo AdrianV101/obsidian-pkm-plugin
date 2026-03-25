@@ -458,7 +458,9 @@ export async function createHandlers({ vaultPath, templateRegistry, semanticInde
     });
 
     // --- Semantic expansion (Tier 3) ---
-    if (args.include_semantic && semanticIndex?.isAvailable) {
+    if (args.include_semantic && !semanticIndex?.isAvailable) {
+      text += "\n(Semantic expansion skipped: OPENAI_API_KEY not set)\n";
+    } else if (args.include_semantic && semanticIndex?.isAvailable) {
       const filePath = resolvePath(resolvedPath);
       const noteContent = await fs.readFile(filePath, "utf-8");
       let body = noteContent;
@@ -493,7 +495,7 @@ export async function createHandlers({ vaultPath, templateRegistry, semanticInde
               if (fm?.type) meta.push(`type: ${fm.type}`);
               if (fm?.tags?.length) meta.push(`tags: ${fm.tags.join(", ")}`);
               if (meta.length > 0) line += `\n  ${meta.join(" | ")}`;
-            } catch { /* skip metadata on error */ }
+            } catch (e) { if (e.code !== "ENOENT") throw e; }
             text += line + "\n";
           }
         }
@@ -678,13 +680,19 @@ export async function createHandlers({ vaultPath, templateRegistry, semanticInde
 
     // --- Anchor blending (Tier 3) ---
     if (args.anchor) {
-      const resolvedAnchor = resolveFuzzyPath(args.anchor, basenameMap, allFilesSet);
+      let resolvedAnchor;
+      try {
+        resolvedAnchor = resolveFuzzyPath(args.anchor, basenameMap, allFilesSet);
+      } catch (e) {
+        throw new Error(`Anchor note not found: ${args.anchor}. Provide a valid vault-relative path.`, { cause: e });
+      }
       const targetLimit = args.limit || 5;
       const rawResults = await semanticIndex.searchRaw({
         query: args.query,
         limit: targetLimit * 2,
         folder: args.folder,
-        threshold: args.threshold
+        threshold: args.threshold,
+        excludeFiles: new Set([resolvedAnchor])
       });
 
       const neighborhood = await exploreNeighborhood({
@@ -702,6 +710,9 @@ export async function createHandlers({ vaultPath, templateRegistry, semanticInde
       }
 
       const graphWeight = args.graph_weight ?? 0.3;
+      if (typeof graphWeight !== "number" || Number.isNaN(graphWeight) || graphWeight < 0 || graphWeight > 1) {
+        throw new Error(`graph_weight must be a number between 0 and 1, got: ${args.graph_weight}`);
+      }
       const blended = rawResults.map(r => {
         const depth = depthMap.get(r.path) ?? null;
         const proximity = computeProximityBonus(depth);
@@ -774,15 +785,19 @@ export async function createHandlers({ vaultPath, templateRegistry, semanticInde
       excludeFiles
     });
 
+    const candidateLimit = args.graph_context ? (args.limit || 5) * overfetch : (args.limit || 5);
     const suggestions = [];
     for (const r of results) {
-      if (suggestions.length >= (args.limit || 5)) break;
+      if (suggestions.length >= candidateLimit) break;
       const basename = path.basename(r.path, ".md").toLowerCase();
       if (linkedNames.has(basename)) continue;
       suggestions.push(r);
     }
 
     // --- Graph context blending (Tier 3) ---
+    if (args.graph_context && !sourcePath) {
+      throw new Error("graph_context requires 'path' parameter (cannot build graph neighborhood from raw content)");
+    }
     if (args.graph_context && sourcePath) {
       const resolvedSource = resolveFuzzyPath(sourcePath, basenameMap, allFilesSet);
       const neighborhood = await exploreNeighborhood({
@@ -810,18 +825,19 @@ export async function createHandlers({ vaultPath, templateRegistry, semanticInde
       });
 
       blended.sort((a, b) => b.combined - a.combined);
+      const trimmedBlended = blended.slice(0, args.limit || 5);
 
-      if (blended.length === 0) {
+      if (trimmedBlended.length === 0) {
         return { content: [{ type: "text", text: "No link suggestions found." }] };
       }
 
-      const formatted = blended.map(r => {
+      const formatted = trimmedBlended.map(r => {
         const graphInfo = r.depth !== null ? `graph: depth ${r.depth}` : "missing link";
         return `**${r.path}** (combined: ${r.combined}, semantic: ${r.score}, ${graphInfo})\n${r.preview}`;
       }).join("\n\n");
 
       return {
-        content: [{ type: "text", text: `Found ${blended.length} link suggestion${blended.length === 1 ? "" : "s"} for ${sourcePath}:\n\n${formatted}` }]
+        content: [{ type: "text", text: `Found ${trimmedBlended.length} link suggestion${trimmedBlended.length === 1 ? "" : "s"} for ${sourcePath}:\n\n${formatted}` }]
       };
     }
 
