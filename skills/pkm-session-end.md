@@ -44,10 +44,10 @@ Query the activity log to find all notes created or modified this session:
 vault_activity({ limit: 1 })
 ```
 
-The response header shows `current session: <id>`. Use that ID for a filtered query:
+The response header shows `current session: <id>` (an 8-character prefix). Use that prefix to filter:
 
 ```
-vault_activity({ session: "<id-from-above>", limit: 50 })
+vault_activity({ session: "<id-from-header>", limit: 50 })
 ```
 
 Note which files were created, modified, and searched.

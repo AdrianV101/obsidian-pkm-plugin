@@ -83,8 +83,9 @@ export class ActivityLog {
       params.push(tool);
     }
     if (session) {
-      sql += " AND session_id = ?";
-      params.push(session);
+      sql += " AND session_id LIKE ? ESCAPE '\\'";
+      const escaped = session.replace(/[%_\\]/g, "\\$&");
+      params.push(escaped + "%");
     }
     if (since) {
       sql += " AND timestamp >= ?";
@@ -121,8 +122,9 @@ export class ActivityLog {
     const params = [];
 
     if (session) {
-      sql += " AND session_id = ?";
-      params.push(session);
+      sql += " AND session_id LIKE ? ESCAPE '\\'";
+      const escaped = session.replace(/[%_\\]/g, "\\$&");
+      params.push(escaped + "%");
     }
     if (tool) {
       sql += " AND tool_name = ?";

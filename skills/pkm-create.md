@@ -50,6 +50,8 @@ Select the top **3–5** most relevant suggestions.
 
 If `vault_suggest_links` is unavailable (no `OPENAI_API_KEY`), use `vault_search` with key terms from the note's title/topic and `vault_query` with matching tags to manually identify good link targets.
 
+If **no suggestions are returned** (new vault or isolated topic), skip Steps 4–6 — the note's `## Related` section will be filled as the graph grows. Inform the user that no connections were found yet.
+
 ## Step 4: Draft Annotations
 
 For each selected link, write a one-line annotation explaining the relationship.
@@ -78,6 +80,8 @@ vault_append({
 Format: `- [[note-name]] — relationship explanation`
 
 If the template does not include a `## Related` section, first append the heading: `vault_append({ path, content: "\n## Related\n" })`, then insert the links. Templates with `## Related` built in: adr, permanent-note, research-note, troubleshooting-log, literature-note, moc, meeting-notes.
+
+Note: MOC notes created before this version may use `## Related Topics` instead of `## Related`. If `vault_append` fails with "Heading not found", check for the old heading name.
 
 ## Step 6: Bidirectional Linking
 

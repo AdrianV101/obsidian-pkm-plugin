@@ -100,6 +100,7 @@ describe("loadProjectContext", () => {
     );
     const ctx = await loadProjectContext(vaultPath, projectPath);
     assert.ok(ctx.includes("Sessions"));
+    assert.ok(ctx.includes("### Recent Development Activity"));
   });
 
   it("extracts only h3 entries from hybrid devlog with ## Sessions", async () => {
