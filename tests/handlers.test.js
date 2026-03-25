@@ -77,7 +77,6 @@ async function buildTemplateRegistry(tmpDir) {
   return templateRegistry;
 }
 
-// eslint-disable-next-line no-unused-vars
 function createMockSemanticIndex(results = []) {
   return {
     isAvailable: true,
@@ -1599,6 +1598,89 @@ describe("handleSuggestLinks", () => {
     const handler = mockHandlers.get("vault_suggest_links");
     const result = await handler({ content: "Some text." });
     assert.ok(result.content[0].text.includes("No link suggestions found"));
+  });
+});
+
+// ─── vault_suggest_links graph_context ─────────────────────────────────
+
+describe("vault_suggest_links graph_context", () => {
+  it("blends semantic and graph scores when graph_context is true", async () => {
+    const mockResults = [
+      { path: "notes/devlog.md", score: 0.9, preview: "Devlog content" },
+    ];
+    const freshHandlers = await createHandlers({
+      vaultPath: tmpDir,
+      templateRegistry: await buildTemplateRegistry(tmpDir),
+      semanticIndex: createMockSemanticIndex(mockResults),
+      activityLog: null,
+      sessionId: "test"
+    });
+    const result = await freshHandlers.get("vault_suggest_links")({
+      path: "notes/alpha.md",
+      graph_context: true
+    });
+    assert.ok(!result.isError);
+    const text = result.content[0].text;
+    assert.ok(text.includes("combined:"));
+    assert.ok(text.includes("semantic:"));
+  });
+
+  it("flags notes not in graph as missing_link", async () => {
+    const mockResults = [
+      { path: "notes/devlog.md", score: 0.8, preview: "Devlog content" },
+    ];
+    const freshHandlers = await createHandlers({
+      vaultPath: tmpDir,
+      templateRegistry: await buildTemplateRegistry(tmpDir),
+      semanticIndex: createMockSemanticIndex(mockResults),
+      activityLog: null,
+      sessionId: "test"
+    });
+    // gamma.md has no outgoing links, so devlog won't be in its graph neighborhood
+    const result = await freshHandlers.get("vault_suggest_links")({
+      path: "notes/gamma.md",
+      graph_context: true
+    });
+    const text = result.content[0].text;
+    assert.ok(text.includes("missing link"));
+  });
+
+  it("falls back to normal behavior when graph_context is false", async () => {
+    const mockResults = [
+      { path: "notes/devlog.md", score: 0.9, preview: "Devlog content" },
+    ];
+    const freshHandlers = await createHandlers({
+      vaultPath: tmpDir,
+      templateRegistry: await buildTemplateRegistry(tmpDir),
+      semanticIndex: createMockSemanticIndex(mockResults),
+      activityLog: null,
+      sessionId: "test"
+    });
+    const result = await freshHandlers.get("vault_suggest_links")({
+      path: "notes/alpha.md",
+      graph_context: false
+    });
+    const text = result.content[0].text;
+    assert.ok(!text.includes("combined:"));
+    assert.ok(text.includes("score:"));
+  });
+
+  it("works without graph_context param (backward compat)", async () => {
+    const mockResults = [
+      { path: "notes/devlog.md", score: 0.9, preview: "Devlog content" },
+    ];
+    const freshHandlers = await createHandlers({
+      vaultPath: tmpDir,
+      templateRegistry: await buildTemplateRegistry(tmpDir),
+      semanticIndex: createMockSemanticIndex(mockResults),
+      activityLog: null,
+      sessionId: "test"
+    });
+    const result = await freshHandlers.get("vault_suggest_links")({
+      path: "notes/alpha.md"
+    });
+    const text = result.content[0].text;
+    assert.ok(!text.includes("combined:"));
   });
 });
 

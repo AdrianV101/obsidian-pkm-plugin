@@ -475,7 +475,8 @@ Pass custom <%...%> variables via the 'variables' parameter.`,
             path: { type: "string", description: "Path to an existing note to suggest links for. Used if content is not provided." },
             limit: { type: "number", description: "Max suggestions to return (default: 5)", default: 5 },
             folder: { type: "string", description: "Optional: limit suggestions to this folder (e.g., '01-Projects')" },
-            threshold: { type: "number", description: "Minimum similarity score 0-1 (default: no threshold)" }
+            threshold: { type: "number", description: "Minimum similarity score 0-1 (default: no threshold)" },
+            graph_context: { type: "boolean", description: "Blend semantic scores with graph proximity (default: false). When enabled, results include combined scores and flag notes not in the graph as missing links." }
           }
         }
       });

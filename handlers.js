@@ -19,6 +19,7 @@ import {
   formatPeek,
   updateFrontmatter,
   compareFrontmatterValues,
+  computeProximityBonus,
   AUTO_REDIRECT_THRESHOLD,
   FORCE_HARD_CAP,
   CHUNK_SIZE,
@@ -669,9 +670,10 @@ export async function createHandlers({ vaultPath, templateRegistry, semanticInde
     const excludeFiles = new Set();
     if (sourcePath) excludeFiles.add(sourcePath);
 
+    const overfetch = args.graph_context ? 5 : 3;
     const results = await semanticIndex.searchRaw({
       query: body.slice(0, 8000),
-      limit: (args.limit || 5) * 3,
+      limit: (args.limit || 5) * overfetch,
       folder: args.folder,
       threshold: args.threshold,
       excludeFiles
@@ -683,6 +685,49 @@ export async function createHandlers({ vaultPath, templateRegistry, semanticInde
       const basename = path.basename(r.path, ".md").toLowerCase();
       if (linkedNames.has(basename)) continue;
       suggestions.push(r);
+    }
+
+    // --- Graph context blending (Tier 3) ---
+    if (args.graph_context && sourcePath) {
+      const resolvedSource = resolveFuzzyPath(sourcePath, basenameMap, allFilesSet);
+      const neighborhood = await exploreNeighborhood({
+        startPath: resolvedSource,
+        vaultPath,
+        depth: 2,
+        direction: "both",
+      });
+
+      // Build depth map: path -> minimum depth
+      const depthMap = new Map();
+      for (const [d, nodes] of neighborhood.depthGroups) {
+        for (const node of nodes) {
+          if (!depthMap.has(node.path)) depthMap.set(node.path, d);
+        }
+      }
+
+      const graphWeight = 0.3;
+      const blended = suggestions.map(r => {
+        const depth = depthMap.get(r.path) ?? null;
+        const proximity = computeProximityBonus(depth);
+        const combined = Math.round(((r.score * (1 - graphWeight)) + (proximity * graphWeight)) * 1000) / 1000;
+        const missingLink = depth === null;
+        return { ...r, combined, depth, missingLink };
+      });
+
+      blended.sort((a, b) => b.combined - a.combined);
+
+      if (blended.length === 0) {
+        return { content: [{ type: "text", text: "No link suggestions found." }] };
+      }
+
+      const formatted = blended.map(r => {
+        const graphInfo = r.depth !== null ? `graph: depth ${r.depth}` : "missing link";
+        return `**${r.path}** (combined: ${r.combined}, semantic: ${r.score}, ${graphInfo})\n${r.preview}`;
+      }).join("\n\n");
+
+      return {
+        content: [{ type: "text", text: `Found ${blended.length} link suggestion${blended.length === 1 ? "" : "s"} for ${sourcePath}:\n\n${formatted}` }]
+      };
     }
 
     if (suggestions.length === 0) {
