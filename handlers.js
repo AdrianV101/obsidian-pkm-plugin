@@ -23,7 +23,7 @@ import {
   FORCE_HARD_CAP,
   CHUNK_SIZE,
 } from "./helpers.js";
-import { exploreNeighborhood, formatNeighborhood, findFilesLinkingTo, rewriteWikilinks, extractWikilinks } from "./graph.js";
+import { exploreNeighborhood, formatNeighborhood, findFilesLinkingTo, rewriteWikilinks, extractWikilinks, resolveLink, buildIncomingIndex } from "./graph.js";
 import { getAllMarkdownFiles, extractFrontmatter } from "./utils.js";
 
 /**
@@ -924,6 +924,119 @@ export async function createHandlers({ vaultPath, templateRegistry, semanticInde
     return { content: [{ type: "text", text: summary }] };
   }
 
+  async function handleLinkHealth(args) {
+    const { checks = ["orphans", "broken", "weak", "ambiguous"], limit = 20 } = args;
+    const allFilesList = Array.from(allFilesSet);
+
+    // Scope to folder if specified
+    let scopedFiles;
+    if (args.folder) {
+      const resolvedFolder = resolveFolder(args.folder);
+      const relFolder = path.relative(vaultPath, resolvedFolder);
+      scopedFiles = allFilesList.filter(f => f.startsWith(relFolder + "/") || f.startsWith(relFolder + path.sep));
+    } else {
+      scopedFiles = allFilesList;
+    }
+
+    const sections = [];
+    const totalScanned = scopedFiles.length;
+
+    // Pre-compute: outgoing links per file (single pass)
+    const fileData = new Map();
+    for (const file of scopedFiles) {
+      let content;
+      try {
+        content = await fs.readFile(path.join(vaultPath, file), "utf-8");
+      } catch (e) {
+        if (e.code === "ENOENT") continue;
+        throw e;
+      }
+      const outgoing = extractWikilinks(content);
+      const resolved = outgoing.map(link => ({
+        raw: link,
+        ...resolveLink(link, basenameMap, allFilesSet)
+      }));
+      const fm = extractFrontmatter(content);
+      fileData.set(file, { outgoing, resolved, frontmatter: fm });
+    }
+
+    // Build incoming index once — O(M) instead of per-file findFilesLinkingTo O(N*M)
+    const needsIncoming = checks.includes("orphans") || checks.includes("weak");
+    const incomingIndex = needsIncoming
+      ? await buildIncomingIndex(vaultPath, allFilesList, basenameMap, allFilesSet)
+      : null;
+
+    if (checks.includes("orphans")) {
+      const orphans = [];
+      for (const file of scopedFiles) {
+        const data = fileData.get(file);
+        if (!data) continue;
+        const hasOutgoing = data.resolved.some(r => r.paths.length > 0);
+        const incomingCount = incomingIndex.get(file)?.size || 0;
+        if (!hasOutgoing && incomingCount === 0) {
+          const fm = data.frontmatter;
+          orphans.push(`- ${file} (type: ${fm?.type || "unknown"}, created: ${fm?.created || "unknown"})`);
+        }
+        if (orphans.length >= limit) break;
+      }
+      sections.push(`**Orphan notes** (${orphans.length}):\n${orphans.length > 0 ? orphans.join("\n") : "None found"}`);
+    }
+
+    if (checks.includes("broken")) {
+      const broken = [];
+      for (const file of scopedFiles) {
+        const data = fileData.get(file);
+        if (!data) continue;
+        for (const r of data.resolved) {
+          if (r.paths.length === 0) {
+            broken.push(`- ${file} → [[${r.raw}]] (no matching file)`);
+          }
+        }
+        if (broken.length >= limit) break;
+      }
+      sections.push(`**Broken links** (${broken.length}):\n${broken.length > 0 ? broken.join("\n") : "None found"}`);
+    }
+
+    if (checks.includes("weak")) {
+      const weak = [];
+      for (const file of scopedFiles) {
+        const data = fileData.get(file);
+        if (!data) continue;
+        const validOutgoing = data.resolved.filter(r => r.paths.length > 0).length;
+        const incomingCount = incomingIndex.get(file)?.size || 0;
+        const total = validOutgoing + incomingCount;
+        if (total === 1) {
+          weak.push(`- ${file} (${validOutgoing} outgoing, ${incomingCount} incoming)`);
+        }
+        if (weak.length >= limit) break;
+      }
+      sections.push(`**Weakly connected** (${weak.length}):\n${weak.length > 0 ? weak.join("\n") : "None found"}`);
+    }
+
+    if (checks.includes("ambiguous")) {
+      const ambiguous = [];
+      const seen = new Set();
+      for (const file of scopedFiles) {
+        const data = fileData.get(file);
+        if (!data) continue;
+        for (const r of data.resolved) {
+          if (r.ambiguous && !seen.has(r.raw)) {
+            seen.add(r.raw);
+            ambiguous.push(`- ${file} → [[${r.raw}]] resolves to ${r.paths.length} files`);
+          }
+        }
+        if (ambiguous.length >= limit) break;
+      }
+      sections.push(`**Ambiguous links** (${ambiguous.length}):\n${ambiguous.length > 0 ? ambiguous.join("\n") : "None found"}`);
+    }
+
+    const header = args.folder
+      ? `Link health report for ${args.folder}/ (${totalScanned} notes scanned)`
+      : `Link health report (${totalScanned} notes scanned)`;
+
+    return { content: [{ type: "text", text: `${header}\n\n${sections.join("\n\n")}` }] };
+  }
+
   async function handleCapture(args) {
     const { type, title, content } = args;
     if (!type || !title || !content) {
@@ -960,5 +1073,6 @@ export async function createHandlers({ vaultPath, templateRegistry, semanticInde
     ["vault_update_frontmatter", handleUpdateFrontmatter],
     ["vault_capture", handleCapture],
     ["vault_add_links", handleAddLinks],
+    ["vault_link_health", handleLinkHealth],
   ]);
 }

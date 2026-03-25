@@ -130,7 +130,7 @@ export function rewriteWikilinks(content, oldTarget, newTarget) {
  * @param {Set<string>} allFilesSet - vault-relative file paths as a Set
  * @returns {Promise<Map<string, Set<string>>>} targetPath -> Set<sourcePath>
  */
-async function buildIncomingIndex(vaultPath, allFiles, resolutionMap, allFilesSet) {
+export async function buildIncomingIndex(vaultPath, allFiles, resolutionMap, allFilesSet) {
   const index = new Map(); // targetPath -> Set<sourcePath>
 
   for (const file of allFiles) {
