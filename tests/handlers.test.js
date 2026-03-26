@@ -77,6 +77,21 @@ async function buildTemplateRegistry(tmpDir) {
   return templateRegistry;
 }
 
+function createMockSemanticIndex(results = []) {
+  return {
+    isAvailable: true,
+    searchRaw: async ({ _query, limit, _folder, _threshold, excludeFiles }) => {
+      return results.filter(r => !excludeFiles?.has(r.path)).slice(0, limit || 5);
+    },
+    search: async ({ _query, limit, _folder, _threshold }) => {
+      const filtered = results.slice(0, limit || 5);
+      if (filtered.length === 0) return "No semantically related notes found.";
+      const formatted = filtered.map(r => `**${r.path}** (score: ${r.score})\n${r.preview}`).join("\n\n");
+      return `Found ${filtered.length} semantically related note${filtered.length === 1 ? "" : "s"}:\n\n${formatted}`;
+    }
+  };
+}
+
 before(async () => {
   tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "handlers-test-"));
 
@@ -1586,6 +1601,175 @@ describe("handleSuggestLinks", () => {
   });
 });
 
+// ─── vault_suggest_links graph_context ─────────────────────────────────
+
+describe("vault_suggest_links graph_context", () => {
+  it("blends semantic and graph scores when graph_context is true", async () => {
+    const mockResults = [
+      { path: "notes/devlog.md", score: 0.9, preview: "Devlog content" },
+    ];
+    const freshHandlers = await createHandlers({
+      vaultPath: tmpDir,
+      templateRegistry: await buildTemplateRegistry(tmpDir),
+      semanticIndex: createMockSemanticIndex(mockResults),
+      activityLog: null,
+      sessionId: "test"
+    });
+    const result = await freshHandlers.get("vault_suggest_links")({
+      path: "notes/alpha.md",
+      graph_context: true
+    });
+    assert.ok(!result.isError);
+    const text = result.content[0].text;
+    assert.ok(text.includes("combined:"));
+    assert.ok(text.includes("semantic:"));
+  });
+
+  it("flags notes not in graph as missing_link", async () => {
+    const mockResults = [
+      { path: "notes/devlog.md", score: 0.8, preview: "Devlog content" },
+    ];
+    const freshHandlers = await createHandlers({
+      vaultPath: tmpDir,
+      templateRegistry: await buildTemplateRegistry(tmpDir),
+      semanticIndex: createMockSemanticIndex(mockResults),
+      activityLog: null,
+      sessionId: "test"
+    });
+    // gamma.md has no outgoing links, so devlog won't be in its graph neighborhood
+    const result = await freshHandlers.get("vault_suggest_links")({
+      path: "notes/gamma.md",
+      graph_context: true
+    });
+    const text = result.content[0].text;
+    assert.ok(text.includes("missing link"));
+  });
+
+  it("falls back to normal behavior when graph_context is false", async () => {
+    const mockResults = [
+      { path: "notes/devlog.md", score: 0.9, preview: "Devlog content" },
+    ];
+    const freshHandlers = await createHandlers({
+      vaultPath: tmpDir,
+      templateRegistry: await buildTemplateRegistry(tmpDir),
+      semanticIndex: createMockSemanticIndex(mockResults),
+      activityLog: null,
+      sessionId: "test"
+    });
+    const result = await freshHandlers.get("vault_suggest_links")({
+      path: "notes/alpha.md",
+      graph_context: false
+    });
+    const text = result.content[0].text;
+    assert.ok(!text.includes("combined:"));
+    assert.ok(text.includes("score:"));
+  });
+
+  it("works without graph_context param (backward compat)", async () => {
+    const mockResults = [
+      { path: "notes/devlog.md", score: 0.9, preview: "Devlog content" },
+    ];
+    const freshHandlers = await createHandlers({
+      vaultPath: tmpDir,
+      templateRegistry: await buildTemplateRegistry(tmpDir),
+      semanticIndex: createMockSemanticIndex(mockResults),
+      activityLog: null,
+      sessionId: "test"
+    });
+    const result = await freshHandlers.get("vault_suggest_links")({
+      path: "notes/alpha.md"
+    });
+    const text = result.content[0].text;
+    assert.ok(!text.includes("combined:"));
+  });
+});
+
+// ─── vault_semantic_search anchor ──────────────────────────────────────
+
+describe("vault_semantic_search anchor", () => {
+  it("blends semantic scores with graph proximity when anchor is provided", async () => {
+    const mockResults = [
+      { path: "notes/beta.md", score: 0.8, preview: "Beta content" },
+      { path: "notes/gamma.md", score: 0.9, preview: "Gamma content" },
+    ];
+    const freshHandlers = await createHandlers({
+      vaultPath: tmpDir,
+      templateRegistry: await buildTemplateRegistry(tmpDir),
+      semanticIndex: createMockSemanticIndex(mockResults),
+      activityLog: null,
+      sessionId: "test"
+    });
+    const result = await freshHandlers.get("vault_semantic_search")({
+      query: "test query",
+      anchor: "notes/alpha.md"
+    });
+    const text = result.content[0].text;
+    assert.ok(text.includes("combined:"));
+    assert.ok(text.includes("semantic:"));
+  });
+
+  it("uses default graph_weight of 0.3", async () => {
+    const mockResults = [
+      { path: "notes/beta.md", score: 0.8, preview: "Beta" },
+    ];
+    const freshHandlers = await createHandlers({
+      vaultPath: tmpDir,
+      templateRegistry: await buildTemplateRegistry(tmpDir),
+      semanticIndex: createMockSemanticIndex(mockResults),
+      activityLog: null,
+      sessionId: "test"
+    });
+    // beta is at depth 1 from alpha (alpha links to beta), proximity = 1.0
+    // combined = (0.8 * 0.7) + (1.0 * 0.3) = 0.56 + 0.3 = 0.86
+    const result = await freshHandlers.get("vault_semantic_search")({
+      query: "test",
+      anchor: "notes/alpha.md"
+    });
+    const text = result.content[0].text;
+    assert.ok(text.includes("0.86"));
+  });
+
+  it("respects custom graph_weight", async () => {
+    const mockResults = [
+      { path: "notes/beta.md", score: 0.8, preview: "Beta" },
+    ];
+    const freshHandlers = await createHandlers({
+      vaultPath: tmpDir,
+      templateRegistry: await buildTemplateRegistry(tmpDir),
+      semanticIndex: createMockSemanticIndex(mockResults),
+      activityLog: null,
+      sessionId: "test"
+    });
+    // beta at depth 1, proximity = 1.0
+    // combined = (0.8 * 0.5) + (1.0 * 0.5) = 0.4 + 0.5 = 0.9
+    const result = await freshHandlers.get("vault_semantic_search")({
+      query: "test",
+      anchor: "notes/alpha.md",
+      graph_weight: 0.5
+    });
+    const text = result.content[0].text;
+    assert.ok(text.includes("0.9"));
+  });
+
+  it("preserves normal behavior without anchor", async () => {
+    const mockResults = [
+      { path: "notes/beta.md", score: 0.8, preview: "Beta" },
+    ];
+    const freshHandlers = await createHandlers({
+      vaultPath: tmpDir,
+      templateRegistry: await buildTemplateRegistry(tmpDir),
+      semanticIndex: createMockSemanticIndex(mockResults),
+      activityLog: null,
+      sessionId: "test"
+    });
+    const result = await freshHandlers.get("vault_semantic_search")({
+      query: "test"
+    });
+    const text = result.content[0].text;
+    assert.ok(!text.includes("combined:"));
+  });
+});
+
 // ─── vault_list glob matching (H1 ReDoS fix) ─────────────────────────
 
 describe("handleList glob pattern matching", () => {
@@ -2548,5 +2732,71 @@ Links to [[lh-dup]] which is ambiguous.
     assert.ok(text.includes("lh-dup"), "reports the ambiguous link");
     assert.ok(text.includes("2 files"), "reports number of matching files");
     await fs.rm(dir, { recursive: true });
+  });
+});
+
+describe("vault_neighborhood include_semantic", () => {
+  it("appends semantic results when include_semantic is true", async () => {
+    const mockResults = [
+      { path: "notes/devlog.md", score: 0.85, preview: "Devlog note" },
+      { path: "notes/alpha.md", score: 0.7, preview: "Alpha note" },
+    ];
+    const freshHandlers = await createHandlers({
+      vaultPath: tmpDir,
+      templateRegistry: await buildTemplateRegistry(tmpDir),
+      semanticIndex: createMockSemanticIndex(mockResults),
+      activityLog: null,
+      sessionId: "test"
+    });
+    const result = await freshHandlers.get("vault_neighborhood")({
+      path: "notes/alpha.md",
+      include_semantic: true
+    });
+    const text = result.content[0].text;
+    assert.ok(text.includes("Graph neighborhood"));
+    assert.ok(text.includes("Semantically related"), "should include semantic section header");
+    // devlog.md is not in alpha's structural graph, so it should appear as semantically related
+    assert.ok(text.includes("devlog.md"), "should list devlog as semantically related");
+  });
+
+  it("excludes notes already in structural graph from semantic results", async () => {
+    const mockResults = [
+      { path: "notes/beta.md", score: 0.9, preview: "Beta is linked" },
+      { path: "notes/gamma.md", score: 0.7, preview: "Gamma not linked from beta" },
+    ];
+    const freshHandlers = await createHandlers({
+      vaultPath: tmpDir,
+      templateRegistry: await buildTemplateRegistry(tmpDir),
+      semanticIndex: createMockSemanticIndex(mockResults),
+      activityLog: null,
+      sessionId: "test"
+    });
+    const result = await freshHandlers.get("vault_neighborhood")({
+      path: "notes/beta.md",
+      include_semantic: true,
+      semantic_limit: 5
+    });
+    const text = result.content[0].text;
+    assert.ok(text.includes("Graph neighborhood"));
+  });
+
+  it("preserves normal behavior when include_semantic is false", async () => {
+    const result = await handlers.get("vault_neighborhood")({
+      path: "notes/alpha.md",
+      include_semantic: false
+    });
+    const text = result.content[0].text;
+    assert.ok(text.includes("Graph neighborhood"));
+    assert.ok(!text.includes("Semantically related"));
+  });
+
+  it("gracefully handles when semanticIndex is null", async () => {
+    const result = await handlers.get("vault_neighborhood")({
+      path: "notes/alpha.md",
+      include_semantic: true
+    });
+    const text = result.content[0].text;
+    assert.ok(text.includes("Graph neighborhood"));
+    assert.ok(!text.includes("Semantically related"));
   });
 });

@@ -232,6 +232,14 @@ Pass custom <%...%> variables via the 'variables' parameter.`,
               enum: ["both", "outgoing", "incoming"],
               description: "Link direction to follow (default: both)",
               default: "both"
+            },
+            include_semantic: {
+              type: "boolean",
+              description: "Append semantically related but unlinked notes (requires OPENAI_API_KEY, default: false)"
+            },
+            semantic_limit: {
+              type: "number",
+              description: "Max semantic results to include (default: 5)"
             }
           },
           required: ["path"]
@@ -460,7 +468,15 @@ Pass custom <%...%> variables via the 'variables' parameter.`,
             query: { type: "string", description: "Natural language search query (e.g., 'managing information overload')" },
             limit: { type: "number", description: "Max results to return (default: 5)", default: 5 },
             folder: { type: "string", description: "Optional: limit search to this folder (e.g., '01-Projects')" },
-            threshold: { type: "number", description: "Minimum similarity score 0-1 (default: no threshold)" }
+            threshold: { type: "number", description: "Minimum similarity score 0-1 (default: no threshold)" },
+            anchor: {
+              type: "string",
+              description: "Vault-relative path of a note to bias results toward (graph-distance weighting). Results closer to the anchor in the wikilink graph rank higher."
+            },
+            graph_weight: {
+              type: "number",
+              description: "Weight of graph proximity vs semantic similarity (0-1, default: 0.3). Higher values bias more toward graph neighbors."
+            }
           },
           required: ["query"]
         }
@@ -475,7 +491,8 @@ Pass custom <%...%> variables via the 'variables' parameter.`,
             path: { type: "string", description: "Path to an existing note to suggest links for. Used if content is not provided." },
             limit: { type: "number", description: "Max suggestions to return (default: 5)", default: 5 },
             folder: { type: "string", description: "Optional: limit suggestions to this folder (e.g., '01-Projects')" },
-            threshold: { type: "number", description: "Minimum similarity score 0-1 (default: no threshold)" }
+            threshold: { type: "number", description: "Minimum similarity score 0-1 (default: no threshold)" },
+            graph_context: { type: "boolean", description: "Blend semantic scores with graph proximity (default: false). When enabled, results include combined scores and flag notes not in the graph as missing links." }
           }
         }
       });

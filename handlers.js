@@ -19,6 +19,7 @@ import {
   formatPeek,
   updateFrontmatter,
   compareFrontmatterValues,
+  computeProximityBonus,
   AUTO_REDIRECT_THRESHOLD,
   FORCE_HARD_CAP,
   CHUNK_SIZE,
@@ -450,11 +451,56 @@ export async function createHandlers({ vaultPath, templateRegistry, semanticInde
       direction,
     });
 
-    const text = formatNeighborhood(result, {
+    let text = formatNeighborhood(result, {
       startPath: resolvedPath,
       depth,
       direction,
     });
+
+    // --- Semantic expansion (Tier 3) ---
+    if (args.include_semantic && !semanticIndex?.isAvailable) {
+      text += "\n(Semantic expansion skipped: OPENAI_API_KEY not set)\n";
+    } else if (args.include_semantic && semanticIndex?.isAvailable) {
+      const filePath = resolvePath(resolvedPath);
+      const noteContent = await fs.readFile(filePath, "utf-8");
+      let body = noteContent;
+      if (body.startsWith("---")) {
+        const endIdx = body.indexOf("\n---", 3);
+        if (endIdx !== -1) body = body.slice(endIdx + 4).trim();
+      }
+
+      if (body) {
+        const semanticLimit = args.semantic_limit || 5;
+        const semanticResults = await semanticIndex.searchRaw({
+          query: body.slice(0, 8000),
+          limit: semanticLimit * 2,
+          excludeFiles: new Set([resolvedPath])
+        });
+
+        const graphPaths = new Set();
+        for (const [, nodes] of result.depthGroups) {
+          for (const node of nodes) graphPaths.add(node.path);
+        }
+
+        const unlinked = semanticResults.filter(r => !graphPaths.has(r.path)).slice(0, semanticLimit);
+
+        if (unlinked.length > 0) {
+          text += `\n**Semantically related (unlinked)** (${unlinked.length} node${unlinked.length === 1 ? "" : "s"})\n`;
+          for (const r of unlinked) {
+            let line = `- ${r.path} (similarity: ${r.score})`;
+            try {
+              const fc = await fs.readFile(path.join(vaultPath, r.path), "utf-8");
+              const fm = extractFrontmatter(fc);
+              const meta = [];
+              if (fm?.type) meta.push(`type: ${fm.type}`);
+              if (fm?.tags?.length) meta.push(`tags: ${fm.tags.join(", ")}`);
+              if (meta.length > 0) line += `\n  ${meta.join(" | ")}`;
+            } catch (e) { if (e.code !== "ENOENT") throw e; }
+            text += line + "\n";
+          }
+        }
+      }
+    }
 
     return { content: [{ type: "text", text }] };
   }
@@ -631,6 +677,67 @@ export async function createHandlers({ vaultPath, templateRegistry, semanticInde
     if (!semanticIndex?.isAvailable) {
       throw new Error("Semantic search not available (OPENAI_API_KEY not set)");
     }
+
+    // --- Anchor blending (Tier 3) ---
+    if (args.anchor) {
+      let resolvedAnchor;
+      try {
+        resolvedAnchor = resolveFuzzyPath(args.anchor, basenameMap, allFilesSet);
+      } catch (e) {
+        throw new Error(`Anchor note not found: ${args.anchor}. Provide a valid vault-relative path.`, { cause: e });
+      }
+      const targetLimit = args.limit || 5;
+      const rawResults = await semanticIndex.searchRaw({
+        query: args.query,
+        limit: targetLimit * 2,
+        folder: args.folder,
+        threshold: args.threshold,
+        excludeFiles: new Set([resolvedAnchor])
+      });
+
+      const neighborhood = await exploreNeighborhood({
+        startPath: resolvedAnchor,
+        vaultPath,
+        depth: 3,
+        direction: "both",
+      });
+
+      const depthMap = new Map();
+      for (const [d, nodes] of neighborhood.depthGroups) {
+        for (const node of nodes) {
+          if (!depthMap.has(node.path)) depthMap.set(node.path, d);
+        }
+      }
+
+      const graphWeight = args.graph_weight ?? 0.3;
+      if (typeof graphWeight !== "number" || Number.isNaN(graphWeight) || graphWeight < 0 || graphWeight > 1) {
+        throw new Error(`graph_weight must be a number between 0 and 1, got: ${args.graph_weight}`);
+      }
+      const blended = rawResults.map(r => {
+        const depth = depthMap.get(r.path) ?? null;
+        const proximity = computeProximityBonus(depth);
+        const combined = Math.round(((r.score * (1 - graphWeight)) + (proximity * graphWeight)) * 1000) / 1000;
+        return { ...r, combined, depth };
+      });
+
+      blended.sort((a, b) => b.combined - a.combined);
+      const trimmed = blended.slice(0, targetLimit);
+
+      if (trimmed.length === 0) {
+        return { content: [{ type: "text", text: "No semantically related notes found." }] };
+      }
+
+      const formatted = trimmed.map(r => {
+        const graphInfo = r.depth !== null ? `graph: depth ${r.depth}` : "not in graph";
+        return `**${r.path}** (combined: ${r.combined}, semantic: ${r.score}, ${graphInfo})\n${r.preview}`;
+      }).join("\n\n");
+
+      return {
+        content: [{ type: "text", text: `Found ${trimmed.length} result${trimmed.length === 1 ? "" : "s"} (anchored to ${args.anchor}):\n\n${formatted}` }]
+      };
+    }
+
+    // Normal path (no anchor)
     const text = await semanticIndex.search({
       query: args.query,
       limit: args.limit || 5,
@@ -669,20 +776,69 @@ export async function createHandlers({ vaultPath, templateRegistry, semanticInde
     const excludeFiles = new Set();
     if (sourcePath) excludeFiles.add(sourcePath);
 
+    const overfetch = args.graph_context ? 5 : 3;
     const results = await semanticIndex.searchRaw({
       query: body.slice(0, 8000),
-      limit: (args.limit || 5) * 3,
+      limit: (args.limit || 5) * overfetch,
       folder: args.folder,
       threshold: args.threshold,
       excludeFiles
     });
 
+    const candidateLimit = args.graph_context ? (args.limit || 5) * overfetch : (args.limit || 5);
     const suggestions = [];
     for (const r of results) {
-      if (suggestions.length >= (args.limit || 5)) break;
+      if (suggestions.length >= candidateLimit) break;
       const basename = path.basename(r.path, ".md").toLowerCase();
       if (linkedNames.has(basename)) continue;
       suggestions.push(r);
+    }
+
+    // --- Graph context blending (Tier 3) ---
+    if (args.graph_context && !sourcePath) {
+      throw new Error("graph_context requires 'path' parameter (cannot build graph neighborhood from raw content)");
+    }
+    if (args.graph_context && sourcePath) {
+      const resolvedSource = resolveFuzzyPath(sourcePath, basenameMap, allFilesSet);
+      const neighborhood = await exploreNeighborhood({
+        startPath: resolvedSource,
+        vaultPath,
+        depth: 2,
+        direction: "both",
+      });
+
+      // Build depth map: path -> minimum depth
+      const depthMap = new Map();
+      for (const [d, nodes] of neighborhood.depthGroups) {
+        for (const node of nodes) {
+          if (!depthMap.has(node.path)) depthMap.set(node.path, d);
+        }
+      }
+
+      const graphWeight = 0.3;
+      const blended = suggestions.map(r => {
+        const depth = depthMap.get(r.path) ?? null;
+        const proximity = computeProximityBonus(depth);
+        const combined = Math.round(((r.score * (1 - graphWeight)) + (proximity * graphWeight)) * 1000) / 1000;
+        const missingLink = depth === null;
+        return { ...r, combined, depth, missingLink };
+      });
+
+      blended.sort((a, b) => b.combined - a.combined);
+      const trimmedBlended = blended.slice(0, args.limit || 5);
+
+      if (trimmedBlended.length === 0) {
+        return { content: [{ type: "text", text: "No link suggestions found." }] };
+      }
+
+      const formatted = trimmedBlended.map(r => {
+        const graphInfo = r.depth !== null ? `graph: depth ${r.depth}` : "missing link";
+        return `**${r.path}** (combined: ${r.combined}, semantic: ${r.score}, ${graphInfo})\n${r.preview}`;
+      }).join("\n\n");
+
+      return {
+        content: [{ type: "text", text: `Found ${trimmedBlended.length} link suggestion${trimmedBlended.length === 1 ? "" : "s"} for ${sourcePath}:\n\n${formatted}` }]
+      };
     }
 
     if (suggestions.length === 0) {
