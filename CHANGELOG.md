@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [2.1.3] - 2026-03-26
+
+### Fixed
+- Remove `OPENAI_API_KEY` from `.mcp.json` env block — Claude Code requires declared env vars to be set, but this key is optional. The server reads it from process.env automatically when available.
+- Remove explicit `hooks` field from `plugin.json` — Claude Code auto-discovers `hooks/hooks.json` at the standard location; declaring it explicitly caused a "duplicate hooks file" error.
+
 ## [2.1.2] - 2026-03-26
 
 ### Fixed
@@ -251,7 +257,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Atomic file creation in `vault_write` (`wx` flag) prevents race conditions
 - Error messages sanitized to prevent leaking absolute vault paths
 
-[Unreleased]: https://github.com/AdrianV101/obsidian-pkm-plugin/compare/v2.1.2...HEAD
+[Unreleased]: https://github.com/AdrianV101/obsidian-pkm-plugin/compare/v2.1.3...HEAD
+[2.1.3]: https://github.com/AdrianV101/obsidian-pkm-plugin/compare/v2.1.2...v2.1.3
 [2.1.2]: https://github.com/AdrianV101/obsidian-pkm-plugin/compare/v2.1.1...v2.1.2
 [2.1.1]: https://github.com/AdrianV101/obsidian-pkm-plugin/compare/v2.1.0...v2.1.1
 [2.1.0]: https://github.com/AdrianV101/obsidian-pkm-plugin/compare/v2.0.0...v2.1.0

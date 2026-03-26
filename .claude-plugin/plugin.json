@@ -1,6 +1,6 @@
 {
   "name": "obsidian-pkm",
-  "version": "2.1.2",
+  "version": "2.1.3",
   "description": "Bidirectional knowledge flow between Claude Code and Obsidian — tools, skills, and hooks for PKM",
   "author": {
     "name": "Adrian Verhoosel"
@@ -8,8 +8,5 @@
   "repository": "https://github.com/AdrianV101/obsidian-pkm-plugin",
   "license": "MIT",
   "keywords": ["obsidian", "pkm", "knowledge-management", "mcp", "claude-code"],
-  "mcpServers": "./.mcp.json",
-  "hooks": "./hooks/hooks.json",
-  "commands": ["./commands"],
-  "skills": ["./skills"]
+  "mcpServers": "./.mcp.json"
 }
