@@ -197,7 +197,7 @@ This enables `vault_semantic_search` and `vault_suggest_links`. Uses `text-embed
 
 ### 5. Enable PKM Hooks (optional)
 
-The hook system adds automatic context loading at session start and passive knowledge capture during coding. Requires the [Claude CLI](https://docs.anthropic.com/en/docs/claude-cli) installed and authenticated.
+The hook system adds automatic context loading at session start. Passive knowledge capture is handled by the canonical agents (knowledge-sweeper, devlog-updater) — see the Agents section below. Requires the [Claude CLI](https://docs.anthropic.com/en/docs/claude-cli) installed and authenticated.
 
 Add to your `~/.claude/settings.json` (alongside the `mcpServers` block):
 
@@ -284,7 +284,9 @@ graph LR
 ├── embeddings.js     # Semantic index (OpenAI embeddings, SQLite + sqlite-vec)
 ├── activity.js       # Activity log (session tracking, SQLite)
 ├── utils.js          # Shared utilities (frontmatter parsing, file listing)
-├── hooks/            # Claude Code hooks (session context, passive capture)
+├── hooks/            # Claude Code hooks (session context loading)
+├── agents/           # Specialized AI agents (vault-explorer, devlog-updater, knowledge-sweeper, link-auditor)
+├── skills/           # PKM workflow skills (pkm-write, pkm-explore, pkm-session-end)
 ├── templates/        # Obsidian note templates
 └── sample-project/   # Sample CLAUDE.md for your repos
 ```

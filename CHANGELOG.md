@@ -14,6 +14,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Changed
 - pkm-explore and pkm-session-end skills adapted for dual-context use (subagent + main conversation)
 - hooks.json simplified to SessionStart only
+- Tool count: 21 -> 20 (removed vault_capture)
 
 ### Removed
 - `vault_capture` MCP tool (replaced by pkm-write skill + knowledge-sweeper agent)
