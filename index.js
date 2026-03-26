@@ -553,7 +553,7 @@ Pass custom <%...%> variables via the 'variables' parameter.`,
     }
 
     const openaiApiKey = process.env.OPENAI_API_KEY;
-    if (openaiApiKey) {
+    if (openaiApiKey && !openaiApiKey.startsWith("${")) {
       try {
         semanticIndex = new SemanticIndex({ vaultPath: VAULT_PATH, openaiApiKey });
         await semanticIndex.initialize();

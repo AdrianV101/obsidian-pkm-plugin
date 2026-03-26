@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [2.1.2] - 2026-03-26
+
+### Fixed
+- Unresolved `${OPENAI_API_KEY}` template string treated as valid key — server now detects unresolved template variables and gracefully disables semantic search
+- `vault_capture` PostToolUse hook matcher used old MCP prefix (`mcp__obsidian-pkm__vault_capture`) that doesn't match plugin tool name — changed to `vault_capture` for portability
+
 ## [2.1.1] - 2026-03-26
 
 ### Fixed
@@ -245,7 +251,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Atomic file creation in `vault_write` (`wx` flag) prevents race conditions
 - Error messages sanitized to prevent leaking absolute vault paths
 
-[Unreleased]: https://github.com/AdrianV101/obsidian-pkm-plugin/compare/v2.1.1...HEAD
+[Unreleased]: https://github.com/AdrianV101/obsidian-pkm-plugin/compare/v2.1.2...HEAD
+[2.1.2]: https://github.com/AdrianV101/obsidian-pkm-plugin/compare/v2.1.1...v2.1.2
 [2.1.1]: https://github.com/AdrianV101/obsidian-pkm-plugin/compare/v2.1.0...v2.1.1
 [2.1.0]: https://github.com/AdrianV101/obsidian-pkm-plugin/compare/v2.0.0...v2.1.0
 [2.0.0]: https://github.com/AdrianV101/obsidian-pkm-plugin/compare/v1.6.0...v2.0.0
