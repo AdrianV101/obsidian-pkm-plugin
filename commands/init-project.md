@@ -63,7 +63,7 @@ The annotation must be on its own line at the top of the file, before any other 
 # PKM: 01-Projects/<name>
 ```
 
-- If the file already has a `# PKM:` line (regex: `/^# PKM:\s*.+$/m`), replace it with the correct path
+- If the file already has a `# PKM:` line (regex: `/^#\s+PKM:\s*.+$/m`), replace it with the correct path
 - If not, prepend it to the file with a blank line after it
 
 ### 4b: Add/update `## PKM Integration` section

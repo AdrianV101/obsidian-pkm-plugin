@@ -102,6 +102,7 @@ describe("session-start.js", () => {
     assert.ok(result.systemMessage);
     assert.ok(result.systemMessage.includes("init-project"));
     assert.ok(result.hookSpecificOutput.additionalContext.includes("not configured"));
+    assert.ok(result.hookSpecificOutput.additionalContext.includes("PKM Project Context"));
   });
 
   it("returns systemMessage when no CLAUDE.md exists", async () => {

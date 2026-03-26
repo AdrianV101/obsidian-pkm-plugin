@@ -69,16 +69,20 @@ async function main() {
   try {
     const claudeMdContent = await fs.readFile(path.join(cwd, "CLAUDE.md"), "utf-8");
     hasPkmSection = /^## PKM Integration/m.test(claudeMdContent);
-  } catch {
-    // No CLAUDE.md or unreadable — hasPkmSection stays false
+  } catch (e) {
+    if (e.code !== "ENOENT") {
+      console.error(`PKM session-start: error reading CLAUDE.md: ${e.message}`);
+    }
+    // hasPkmSection stays false
   }
 
   if (!hasPkmSection) {
     let context = "";
     try {
       context = await loadProjectContext(VAULT_PATH, projectPath);
-    } catch {
-      // If context loading fails, still show the nudge
+    } catch (e) {
+      console.error(`PKM session-start: failed to load project context: ${e.message}`);
+      // context stays "" — still show the nudge
     }
 
     const output = {
