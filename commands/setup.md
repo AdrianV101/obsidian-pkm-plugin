@@ -15,18 +15,35 @@ Ask the user for their Obsidian vault path. Validate that:
 - It contains at least one `.md` file
 - Suggest `~/Documents/PKM` as a default
 
-If the path is valid, instruct the user to add `export VAULT_PATH="/absolute/path/to/vault"` to their shell profile (`~/.zshrc` or `~/.bashrc`) if not already set. Verify with `echo $VAULT_PATH`.
+If the path is valid, add it to `~/.claude/settings.json` under the `env` block:
+
+```json
+{
+  "env": {
+    "VAULT_PATH": "/absolute/path/to/vault"
+  }
+}
+```
+
+Read the file first, merge with existing env vars (don't overwrite other settings), and write back. Verify the MCP server can connect after setting it.
 
 ## Step 2: OpenAI API Key (Optional)
 
 Ask if they want semantic search features (vault_semantic_search, vault_suggest_links). If yes:
+
 - **NEVER ask the user to type their API key in the chat** — it would be stored in conversation history
-- Instead, tell them to run this command themselves (they should type `!` followed by the command in the prompt, or run it in a separate terminal):
+- Tell them to open `~/.claude/settings.json` in their text editor (outside of Claude Code) and add `OPENAI_API_KEY` to the `env` block:
+  ```json
+  {
+    "env": {
+      "VAULT_PATH": "/path/to/vault",
+      "OPENAI_API_KEY": "sk-your-key-here"
+    }
+  }
   ```
-  echo 'export OPENAI_API_KEY="sk-YOUR-KEY-HERE"' >> ~/.zshrc && source ~/.zshrc
-  ```
+- Explain they can get a key from https://platform.openai.com/api-keys
 - Explain this enables 2 additional tools (semantic search + link suggestions) but is completely optional
-- Explain they need to replace `sk-YOUR-KEY-HERE` with their actual key from https://platform.openai.com/api-keys
+- Tell them to restart Claude Code after saving the file
 
 ## Step 3: Verify Setup
 
@@ -51,4 +68,4 @@ If found:
 Confirm setup is complete. Tell the user:
 - "Your Obsidian PKM plugin is configured. Try asking me to list your vault folders to verify."
 - If OPENAI_API_KEY was set: "Semantic search will build its index in the background on first use."
-- **Important**: "If you just added environment variables to your shell profile, you'll need to restart your Claude Code session (or run `source ~/.zshrc`) for the MCP server and hooks to pick them up."
+- **Important**: "Restart your Claude Code session for the MCP server to pick up the new environment variables."

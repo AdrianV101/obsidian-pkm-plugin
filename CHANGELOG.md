@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [2.1.4] - 2026-03-26
+
+### Security
+- Setup command no longer asks user to type API key in chat — keys are configured via `~/.claude/settings.json` env block, never exposed in conversation history
+
+### Changed
+- Setup command uses `~/.claude/settings.json` env block for both `VAULT_PATH` and `OPENAI_API_KEY` (was recommending `.zshrc`) — Claude Code-native, scoped to Claude Code only
+
 ## [2.1.3] - 2026-03-26
 
 ### Fixed
@@ -257,7 +265,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Atomic file creation in `vault_write` (`wx` flag) prevents race conditions
 - Error messages sanitized to prevent leaking absolute vault paths
 
-[Unreleased]: https://github.com/AdrianV101/obsidian-pkm-plugin/compare/v2.1.3...HEAD
+[Unreleased]: https://github.com/AdrianV101/obsidian-pkm-plugin/compare/v2.1.4...HEAD
+[2.1.4]: https://github.com/AdrianV101/obsidian-pkm-plugin/compare/v2.1.3...v2.1.4
 [2.1.3]: https://github.com/AdrianV101/obsidian-pkm-plugin/compare/v2.1.2...v2.1.3
 [2.1.2]: https://github.com/AdrianV101/obsidian-pkm-plugin/compare/v2.1.1...v2.1.2
 [2.1.1]: https://github.com/AdrianV101/obsidian-pkm-plugin/compare/v2.1.0...v2.1.1
