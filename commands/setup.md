@@ -45,14 +45,24 @@ Ask if they want semantic search features (vault_semantic_search, vault_suggest_
 - Explain this enables 2 additional tools (semantic search + link suggestions) but is completely optional
 - Tell them to restart Claude Code after saving the file
 
-## Step 3: Verify Setup
+## Step 3: Tool Permissions
+
+Ask the user if they want to auto-approve all PKM vault tools (so they don't get prompted for each tool call). If yes, add this to the `permissions.allow` array in `~/.claude/settings.json`:
+
+```
+mcp__plugin_obsidian-pkm_obsidian-pkm__*
+```
+
+Read the file first, merge with existing permissions (don't overwrite), and write back. This allows all vault_read, vault_write, vault_search, etc. tools to run without per-call confirmation.
+
+## Step 4: Verify Setup
 
 Run these checks:
 1. `echo $VAULT_PATH` — confirm it's set
 2. Count `.md` files in the vault: `find "$VAULT_PATH" -name "*.md" | wc -l`
 3. Check if templates exist: `ls "$VAULT_PATH/05-Templates/"` — if missing, offer to run `obsidian-pkm init` to scaffold the vault structure
 
-## Step 4: Migration Check
+## Step 5: Migration Check
 
 Check if the old `pkm-mcp-server` is installed:
 1. Run `npm list -g pkm-mcp-server --depth=0 2>/dev/null`
@@ -63,7 +73,7 @@ If found:
 - Suggest removing `~/.claude/hooks/pkm/` directory (hooks are now managed by the plugin)
 - Check `~/.claude/settings.json` for old hook entries and offer to clean them up
 
-## Step 5: Done
+## Step 6: Done
 
 Confirm setup is complete. Tell the user:
 - "Your Obsidian PKM plugin is configured. Try asking me to list your vault folders to verify."
