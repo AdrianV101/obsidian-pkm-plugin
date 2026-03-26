@@ -78,7 +78,7 @@ Run a targeted link health check on files touched during this session:
 vault_link_health({ folder: "<project-folder>", checks: ["orphans", "broken"] })
 ```
 
-Fix any **broken links** found using vault_add_links. For deeper audit (weak connections, ambiguous links, full vault scan), delegate to the link-auditor agent separately.
+For any **orphan** or **weak** notes found, add connections using vault_add_links. For deeper audit (weak connections, ambiguous links, full vault scan), delegate to the link-auditor agent separately.
 
 ## Step 5: Index Update
 

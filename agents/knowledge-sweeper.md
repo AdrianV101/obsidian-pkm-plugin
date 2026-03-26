@@ -54,6 +54,8 @@ TRANSCRIPT=$(ls -t ~/.claude/projects/$PROJECT_HASH/*.jsonl | head -1)
 
 Read the tail portion of the transcript (the most recent work block). Focus on the latest significant work — not the entire session history.
 
+If no .jsonl files are found at the expected path, fall back to `vault_activity({ limit: 50 })` to review recent tool calls and infer what work was done.
+
 **Step 2 — Classify (be conservative):**
 
 Most work produces NOTHING worth capturing. Skip:

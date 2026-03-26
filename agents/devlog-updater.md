@@ -41,6 +41,7 @@ background: true
 disallowedTools: Write, Edit
 skills:
   - pkm-session-end
+  - pkm-write
 ---
 
 You are a session scribe. Your job is to update the project devlog with an accurate, detailed summary of what happened during the current development session.
@@ -61,6 +62,8 @@ Read the transcript using the Read tool. For large transcripts (>500KB), read th
 - If this is a **subsequent update**: search for content after the previous entry timestamp, read from there
 
 The delegation prompt tells you which case applies and provides the previous entry timestamp if relevant.
+
+If no .jsonl files are found at the expected path, fall back to `vault_activity` as the primary source of session work, supplemented by `git log` and `git diff`.
 
 **Supplementary sources** (use after transcript):
 - `vault_activity` — MCP tool call history for this session
