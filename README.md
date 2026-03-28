@@ -200,14 +200,16 @@ Vault/
 
 ## Architecture
 
+Module dependencies:
+
 ```mermaid
 graph LR
     CC[Claude Code] -->|MCP protocol| IDX[index.js]
     IDX --> HND[handlers.js]
+    IDX --> E[embeddings.js]
+    IDX --> A[activity.js]
     HND --> H[helpers.js]
     HND --> G[graph.js]
-    HND --> E[embeddings.js]
-    HND --> A[activity.js]
     HND --> U[utils.js]
     HND -->|read/write| V[(Obsidian Vault)]
     E -->|embeddings API| OAI[OpenAI]
@@ -215,25 +217,32 @@ graph LR
     A -->|activity log| DB2[(SQLite)]
 ```
 
+File layout:
+
 ```
-├── index.js          # MCP server, tool definitions, request routing
+├── index.js          # MCP server setup, tool registration, lifecycle
 ├── handlers.js       # Tool handler implementations
-├── helpers.js        # Pure functions (path security, filtering, templates)
+├── helpers.js        # Pure functions (path security, filtering, templates, frontmatter)
 ├── graph.js          # Wikilink resolution and BFS graph traversal
 ├── embeddings.js     # Semantic index (OpenAI embeddings, SQLite + sqlite-vec)
 ├── activity.js       # Activity log (session tracking, SQLite)
 ├── utils.js          # Shared utilities (frontmatter parsing, file listing)
 ├── cli.js            # CLI entry point (routes `init` subcommand or starts server)
 ├── init.js           # Vault scaffolding wizard (templates, PARA folders)
-├── hooks/            # Claude Code hooks (session context loading)
-├── agents/           # Specialized AI agents (vault-explorer, devlog-updater, knowledge-sweeper, link-auditor)
+├── plugin.json       # Plugin manifest (identity, components, permissions)
+├── marketplace.json  # Self-hosted marketplace entry
+├── .mcp.json         # MCP server declaration for plugin system
+├── hooks/            # Claude Code hooks (context loading, project resolution, session start)
+├── agents/           # Specialized agents (vault-explorer, devlog-updater, knowledge-sweeper, link-auditor)
 ├── skills/           # PKM workflow skills (pkm-write, pkm-explore, pkm-session-end)
 ├── commands/         # Slash commands (setup, init-project)
 ├── templates/        # Obsidian note templates
-└── sample-project/   # Sample CLAUDE.md for your repos
+├── tests/            # Test suite (Node.js built-in test runner)
+├── sample-project/   # Sample CLAUDE.md for your repos
+└── docs/             # Supplementary documentation
 ```
 
-All paths passed to tools are relative to vault root. The server includes path security to prevent directory traversal.
+`index.js` initializes the semantic index and activity log, then injects them into `createHandlers()`. All paths passed to tools are relative to vault root. The server includes path security to prevent directory traversal.
 
 ## How It Works
 
