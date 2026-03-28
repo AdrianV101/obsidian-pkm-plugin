@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [3.0.5] - 2026-03-28
+
+### Changed
+- Marketplace plugin source changed from pinned git SHA to relative path (`"."`) — eliminates manual SHA updates on every release
+
 ## [3.0.4] - 2026-03-28
 
 ### Fixed
