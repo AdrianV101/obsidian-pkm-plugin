@@ -7,6 +7,18 @@ import path from "node:path";
 
 const VAULT_PATH = process.env.VAULT_PATH;
 
+async function getSemanticStats(vaultPath) {
+  try {
+    const statsPath = path.join(vaultPath, ".obsidian", "semantic-stats.json");
+    const raw = await fs.readFile(statsPath, "utf-8");
+    const stats = JSON.parse(raw);
+    if (typeof stats.indexed_files !== "number") return null;
+    return stats;
+  } catch {
+    return null;
+  }
+}
+
 async function main() {
   let inputJson = "";
   for await (const chunk of process.stdin) {
@@ -127,6 +139,15 @@ async function main() {
   if (loaded.length > 0) msg += ` (${loaded.join(", ")})`;
   if (missing.length > 0) msg += ` [missing: ${missing.join(", ")}]`;
   msg += ` \u2014 ${context.length.toLocaleString()} chars`;
+
+  const stats = await getSemanticStats(VAULT_PATH);
+  if (stats) {
+    if (stats.vault_files > 0 && stats.indexed_files < stats.vault_files) {
+      msg += ` | semantic: ${stats.indexed_files}/${stats.vault_files} notes`;
+    } else {
+      msg += ` | semantic: ${stats.indexed_files} notes`;
+    }
+  }
 
   const output = {
     hookSpecificOutput: {

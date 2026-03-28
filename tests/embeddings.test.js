@@ -349,6 +349,40 @@ A note about project management and agile methodology.
     assert.equal(idx.db, null, "DB should be null after shutdown");
   });
 
+  it("initialize() writes semantic-stats.json with expected fields", async () => {
+    globalThis.fetch = mockFetch;
+    fetchCallCount = 0;
+
+    const dbPath = path.join(tmpDir, "test-stats.db");
+    const idx = new SemanticIndex({
+      vaultPath: tmpDir,
+      openaiApiKey: "test-key",
+      dbPath,
+    });
+    await idx.initialize();
+
+    const statsPath = path.join(tmpDir, ".obsidian", "semantic-stats.json");
+    const raw = await fs.readFile(statsPath, "utf-8");
+    const stats = JSON.parse(raw);
+    assert.equal(typeof stats.indexed_files, "number");
+    assert.equal(typeof stats.total_chunks, "number");
+    assert.equal(typeof stats.vault_files, "number");
+    assert.equal(stats.indexed_files, 0);
+    assert.equal(stats.total_chunks, 0);
+
+    await idx.shutdown();
+  });
+
+  it("_writeStats() is a no-op when db is null", () => {
+    const idx = new SemanticIndex({
+      vaultPath: tmpDir,
+      openaiApiKey: "test-key",
+      dbPath: path.join(tmpDir, "test-stats-noop.db"),
+    });
+    // db is null (not initialized)
+    idx._writeStats(); // should not throw
+  });
+
   it("isAvailable is false without API key", async () => {
     const idx = new SemanticIndex({
       vaultPath: tmpDir,

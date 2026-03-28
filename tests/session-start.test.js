@@ -130,4 +130,69 @@ describe("session-start.js", () => {
     assert.ok(result.systemMessage.includes("chars"));
     assert.ok(result.hookSpecificOutput.additionalContext.includes("MyApp"));
   });
+
+  it("includes semantic stats in systemMessage when stats file exists", async () => {
+    const cwdDir = path.join(tmpDir, "MyApp");
+    await fs.mkdir(cwdDir, { recursive: true });
+    await fs.writeFile(
+      path.join(cwdDir, "CLAUDE.md"),
+      "# PKM: 01-Projects/MyApp\n\n## PKM Integration\n\nConfigured.\n"
+    );
+    await fs.mkdir(path.join(vaultPath, ".obsidian"), { recursive: true });
+    await fs.writeFile(
+      path.join(vaultPath, ".obsidian", "semantic-stats.json"),
+      JSON.stringify({ indexed_files: 42, total_chunks: 100, vault_files: 50, last_sync: null })
+    );
+
+    const result = await runHook({ cwd: cwdDir });
+    assert.ok(result.systemMessage.includes("semantic: 42/50 notes"));
+  });
+
+  it("shows simple count when all notes indexed", async () => {
+    const cwdDir = path.join(tmpDir, "MyApp");
+    await fs.mkdir(cwdDir, { recursive: true });
+    await fs.writeFile(
+      path.join(cwdDir, "CLAUDE.md"),
+      "# PKM: 01-Projects/MyApp\n\n## PKM Integration\n\nConfigured.\n"
+    );
+    await fs.mkdir(path.join(vaultPath, ".obsidian"), { recursive: true });
+    await fs.writeFile(
+      path.join(vaultPath, ".obsidian", "semantic-stats.json"),
+      JSON.stringify({ indexed_files: 50, total_chunks: 120, vault_files: 50, last_sync: null })
+    );
+
+    const result = await runHook({ cwd: cwdDir });
+    assert.ok(result.systemMessage.includes("semantic: 50 notes"));
+    assert.ok(!result.systemMessage.includes("50/50"));
+  });
+
+  it("omits semantic stats when stats file missing", async () => {
+    const cwdDir = path.join(tmpDir, "MyApp");
+    await fs.mkdir(cwdDir, { recursive: true });
+    await fs.writeFile(
+      path.join(cwdDir, "CLAUDE.md"),
+      "# PKM: 01-Projects/MyApp\n\n## PKM Integration\n\nConfigured.\n"
+    );
+
+    const result = await runHook({ cwd: cwdDir });
+    assert.ok(!result.systemMessage.includes("semantic"));
+  });
+
+  it("ignores malformed stats file gracefully", async () => {
+    const cwdDir = path.join(tmpDir, "MyApp");
+    await fs.mkdir(cwdDir, { recursive: true });
+    await fs.writeFile(
+      path.join(cwdDir, "CLAUDE.md"),
+      "# PKM: 01-Projects/MyApp\n\n## PKM Integration\n\nConfigured.\n"
+    );
+    await fs.mkdir(path.join(vaultPath, ".obsidian"), { recursive: true });
+    await fs.writeFile(
+      path.join(vaultPath, ".obsidian", "semantic-stats.json"),
+      "not valid json"
+    );
+
+    const result = await runHook({ cwd: cwdDir });
+    assert.ok(result.systemMessage);
+    assert.ok(!result.systemMessage.includes("semantic"));
+  });
 });

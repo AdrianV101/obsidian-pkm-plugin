@@ -35,6 +35,8 @@ export class SemanticIndex {
     this._syncState = { syncing: false, total: 0, done: 0 };
     this._inflight = new Set();
     this._abortController = null;
+    this._lastKnownVaultFiles = 0;
+    this.statsPath = path.join(vaultPath, ".obsidian", "semantic-stats.json");
   }
 
   get isAvailable() {
@@ -77,6 +79,9 @@ export class SemanticIndex {
 
       CREATE INDEX IF NOT EXISTS idx_chunks_file ON chunks(file_path);
     `);
+
+    // Write initial stats (existing DB state from prior runs)
+    this._writeStats();
 
     // Start background sync (non-blocking)
     this._abortController = new AbortController();
@@ -390,6 +395,31 @@ export class SemanticIndex {
 
   // --- Private methods ---
 
+  /**
+   * Write embedding stats to a JSON sidecar file for the session-start hook.
+   * Fire-and-forget — errors are logged but never thrown.
+   */
+  _writeStats() {
+    try {
+      if (!this.db) return;
+      const { indexed_files } = this.db.prepare("SELECT COUNT(*) as indexed_files FROM files").get();
+      const { total_chunks } = this.db.prepare("SELECT COUNT(*) as total_chunks FROM chunks").get();
+      const row = this.db.prepare("SELECT MAX(updated_at) as last_sync FROM files").get();
+      const stats = {
+        indexed_files,
+        total_chunks,
+        vault_files: this._lastKnownVaultFiles,
+        last_sync: row.last_sync || null
+      };
+      fsSync.mkdirSync(path.dirname(this.statsPath), { recursive: true });
+      const tmp = this.statsPath + ".tmp";
+      fsSync.writeFileSync(tmp, JSON.stringify(stats));
+      fsSync.renameSync(tmp, this.statsPath);
+    } catch (e) {
+      console.error(`Semantic index: failed to write stats: ${e.message}`);
+    }
+  }
+
   async _startupSync() {
     this._syncState.syncing = true;
 
@@ -402,6 +432,8 @@ export class SemanticIndex {
       for (const row of this.db.prepare("SELECT path, mtime_ms, content_hash FROM files").all()) {
         indexedFiles.set(row.path, row);
       }
+
+      this._lastKnownVaultFiles = vaultFiles.length;
 
       // Find files needing reindex
       const toReindex = [];
@@ -455,6 +487,7 @@ export class SemanticIndex {
       console.error(`Semantic index: sync complete (${toReindex.length} files updated)`);
     } finally {
       this._syncState.syncing = false;
+      this._writeStats();
     }
   }
 
