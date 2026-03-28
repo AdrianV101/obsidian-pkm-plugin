@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [3.0.6] - 2026-03-28
+
+### Fixed
+- Marketplace source `"."` rejected by schema validator — changed to `"./"` (relative paths must start with `./`)
+
 ## [3.0.5] - 2026-03-28
 
 ### Changed

@@ -11,7 +11,7 @@
       "name": "obsidian-pkm",
       "description": "Bidirectional knowledge flow between Claude Code and Obsidian — 20 MCP tools, skills, and hooks for PKM",
       "category": "productivity",
-      "source": ".",
+      "source": "./",
       "homepage": "https://github.com/AdrianV101/obsidian-pkm-plugin"
     }
   ]
