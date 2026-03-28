@@ -88,36 +88,37 @@ https://github.com/user-attachments/assets/58ad9c9b-d987-4728-89e7-33de20b73a38
 
 ## Quick Start
 
-### 1. Install and Set Up
-
-**Via Claude Code plugin marketplace** (recommended):
+### 1. Install the Plugin
 
 ```bash
 claude plugin marketplace add AdrianV101/obsidian-pkm-plugin
 claude plugin install obsidian-pkm
 ```
 
-Then run the setup skill in Claude Code:
+### 2. Configure
+
+Run the setup skill in Claude Code:
 
 ```
 /obsidian-pkm:setup
 ```
 
-The setup skill walks you through vault path, templates, folder structure, semantic search, and Claude Code registration.
+The setup skill walks you through vault path, API keys, tool permissions, and verification. Hooks are registered automatically by the plugin system.
 
-**Via npm** (fallback):
+### 3. Scaffold Your Vault (optional)
+
+If you need templates and the PARA folder structure:
 
 ```bash
-npm install -g obsidian-pkm
-obsidian-pkm init
+npx obsidian-pkm init
 ```
 
-The setup wizard walks you through vault path, templates, folder structure, semantic search, and Claude Code registration. Nothing is written until you confirm each step, and you can press Ctrl+C at any time to cancel.
+This sets up your vault's directory structure (PARA folders, note templates). Nothing is written until you confirm each step.
 
 <details>
-<summary>Wizard step details</summary>
+<summary>Scaffold details</summary>
 
-**Step 1 — Vault path.** Point to an existing Obsidian vault or create a new one. The wizard resolves `~`, `$HOME`, and relative paths automatically. Safety checks prevent using system directories (`/`, `/home`, etc.) as a vault. For existing non-empty directories you can use it as-is, create a subfolder inside it, or wipe it (with triple confirmation). You'll be offered an optional backup before any changes — this creates a timestamped copy next to the vault (e.g. `PKM-backup-2026-03-21T14-30-00/`).
+**Step 1 — Vault path.** Point to an existing Obsidian vault or create a new one. The wizard resolves `~`, `$HOME`, and relative paths automatically. Safety checks prevent using system directories (`/`, `/home`, etc.) as a vault. For existing non-empty directories you can use it as-is, create a subfolder inside it, or wipe it (with triple confirmation). You'll be offered an optional backup before any changes.
 
 **Step 2 — Note templates.** Copies template files into `<vault>/05-Templates/`. Three options:
 - **Full set** — all 13 templates (`adr`, `daily-note`, `devlog`, `fleeting-note`, `literature-note`, `meeting-notes`, `moc`, `note`, `permanent-note`, `project-index`, `research-note`, `task`, `troubleshooting-log`)
@@ -140,44 +141,9 @@ Existing templates are never overwritten.
 
 Each `_index.md` has `type: moc` frontmatter. Existing folders and index files are skipped.
 
-**Step 4 — OpenAI API key (optional).** Enables `vault_semantic_search` and `vault_suggest_links`. The key is stored only in your Claude Code MCP server configuration and is used solely for generating text embeddings. You can add this later — see [Enable Semantic Search](#4-enable-semantic-search-optional).
-
-**Step 5 — Claude Code registration.** Registers the MCP server via `claude mcp add -s user`. If `obsidian-pkm` is already registered, you'll be asked whether to overwrite. The exact command is shown for confirmation before running. If the `claude` CLI is not found on PATH, the wizard prints the manual registration command instead.
-
-**Step 6 — PKM hooks (optional).** Copies hook scripts to `~/.claude/hooks/pkm/` and merges the SessionStart hook configuration into `~/.claude/settings.json`. This enables automatic project context loading at the start of each Claude Code session. Skipped if the `claude` CLI is not available or MCP registration was skipped.
-
 </details>
 
-Restart Claude Code after setup. The server provides all tools except semantic search out of the box.
-
-**From source:**
-
-```bash
-git clone https://github.com/AdrianV101/obsidian-pkm-plugin.git
-cd obsidian-pkm-plugin
-npm install
-node cli.js init
-```
-
-You can also run the wizard without a global install: `npx obsidian-pkm init`.
-
-### 2. Manual Registration (alternative)
-
-If you prefer to skip the wizard, register directly with the Claude CLI:
-
-```bash
-claude mcp add -s user -e VAULT_PATH=/absolute/path/to/your/vault -- obsidian-pkm npx -y obsidian-pkm@^3
-```
-
-For a source install:
-
-```bash
-claude mcp add -s user -e VAULT_PATH=/absolute/path/to/your/vault -- obsidian-pkm node /absolute/path/to/cli.js
-```
-
-Verify with `claude mcp list` — you should see `obsidian-pkm: ... - Connected`.
-
-### 3. Verify It Works
+### 4. Verify It Works
 
 Open Claude Code and try:
 
@@ -185,57 +151,22 @@ Open Claude Code and try:
 
 Claude should call `vault_list` and show your vault's directory structure. If it works, the server is connected and ready.
 
-### 4. Enable Semantic Search (optional)
+### 5. Enable Semantic Search (optional)
 
-If you didn't set this up during `init`, add your OpenAI API key by re-registering:
-
-```bash
-claude mcp remove obsidian-pkm
-claude mcp add -s user \
-  -e VAULT_PATH=/absolute/path/to/your/vault \
-  -e OBSIDIAN_PKM_OPENAI_KEY=sk-... \
-  -- obsidian-pkm npx -y obsidian-pkm@^3
-```
-
-Use `OBSIDIAN_PKM_OPENAI_KEY` (preferred) to avoid conflicts with project-level OpenAI keys. `OPENAI_API_KEY` is also accepted as a fallback.
-
-This enables `vault_semantic_search` and `vault_suggest_links`. Uses `text-embedding-3-large` with a SQLite + sqlite-vec index stored at `.obsidian/semantic-index.db`. The index rebuilds automatically — delete the DB file to force a full re-embed.
-
-### 5. Enable PKM Hooks (optional)
-
-> If you ran `obsidian-pkm init`, hooks are already configured. The manual setup below is for source installs or custom configurations.
-
-The hook system adds automatic context loading at session start. Passive knowledge capture is handled by the canonical agents (knowledge-sweeper, devlog-updater) — see the Agents section above. Requires the [Claude CLI](https://docs.anthropic.com/en/docs/claude-cli) installed and authenticated.
-
-Add to your `~/.claude/settings.json` (alongside the `mcpServers` block):
+Add your OpenAI API key to `~/.claude/settings.json` under the `env` block:
 
 ```json
 {
-  "hooks": {
-    "SessionStart": [
-      {
-        "matcher": "startup|clear|compact",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "VAULT_PATH=\"/path/to/your/vault\" node /path/to/obsidian-pkm-plugin/hooks/session-start.js",
-            "timeout": 15,
-            "statusMessage": "Loading PKM project context..."
-          }
-        ]
-      }
-    ]
+  "env": {
+    "VAULT_PATH": "/path/to/vault",
+    "OBSIDIAN_PKM_OPENAI_KEY": "sk-your-key-here"
   }
 }
 ```
 
-Replace `/path/to/your/vault` with your Obsidian vault path and `/path/to/obsidian-pkm-plugin` with the path to this repo (or the global npm install location).
+Use `OBSIDIAN_PKM_OPENAI_KEY` (preferred) to avoid conflicts with project-level OpenAI keys. `OPENAI_API_KEY` is also accepted as a fallback. Restart Claude Code after saving.
 
-| Hook | Event | What it does |
-|------|-------|--------------|
-| `session-start.js` | SessionStart | Loads project context (index, devlog, active tasks) at session start |
-
-See [hooks/README.md](hooks/README.md) for architecture details and troubleshooting.
+This enables `vault_semantic_search` and `vault_suggest_links`. Uses `text-embedding-3-large` with a SQLite + sqlite-vec index stored at `.obsidian/semantic-index.db`. The index rebuilds automatically — delete the DB file to force a full re-embed.
 
 ## Vault Structure
 
@@ -259,7 +190,7 @@ Vault/
 
 ### Templates
 
-`vault_write` loads all `.md` files from `05-Templates/` at startup and enforces frontmatter on every note created. The setup wizard (`obsidian-pkm init`) installs these automatically — or you can copy the files from `templates/` manually.
+`vault_write` loads all `.md` files from `05-Templates/` at startup and enforces frontmatter on every note created. Run `npx obsidian-pkm init` to install them automatically, or copy the files from `templates/` manually.
 
 13 included templates: `adr`, `daily-note`, `devlog`, `fleeting-note`, `literature-note`, `meeting-notes`, `moc`, `note`, `permanent-note`, `project-index`, `research-note`, `task`, `troubleshooting-log`. Add your own templates to `05-Templates/` and they become available to `vault_write` automatically.
 
@@ -293,7 +224,7 @@ graph LR
 ├── activity.js       # Activity log (session tracking, SQLite)
 ├── utils.js          # Shared utilities (frontmatter parsing, file listing)
 ├── cli.js            # CLI entry point (routes `init` subcommand or starts server)
-├── init.js           # Interactive setup wizard
+├── init.js           # Vault scaffolding wizard (templates, PARA folders)
 ├── hooks/            # Claude Code hooks (session context loading)
 ├── agents/           # Specialized AI agents (vault-explorer, devlog-updater, knowledge-sweeper, link-auditor)
 ├── skills/           # PKM workflow skills (pkm-write, pkm-explore, pkm-session-end)
@@ -324,16 +255,16 @@ All paths passed to tools are relative to vault root. The server includes path s
 You need C++ build tools. See [Prerequisites](#prerequisites) for your platform. On Linux, `sudo apt install build-essential python3` usually fixes it.
 
 **Server starts but all tool calls fail with ENOENT**
-Your `VAULT_PATH` is wrong or missing. The server validates this at startup and exits with a clear error. Re-register with the correct path: `claude mcp remove obsidian-pkm && claude mcp add -s user -e VAULT_PATH=/correct/path -- obsidian-pkm npx -y obsidian-pkm@^3`
+Your `VAULT_PATH` is wrong or missing. The server validates this at startup and exits with a clear error. Run `/obsidian-pkm:setup` to reconfigure the vault path.
 
 **`vault_write` says "no templates available"**
-Run `obsidian-pkm init` to install templates, or copy the `templates/` files from this repo into your vault's `05-Templates/` directory. The server loads templates from there at startup.
+Run `npx obsidian-pkm init` to install templates, or copy the `templates/` files from this repo into your vault's `05-Templates/` directory. The server loads templates from there at startup.
 
 **Semantic search not appearing in tool list**
-Set `OPENAI_API_KEY` in your MCP server registration. See [Enable Semantic Search](#4-enable-semantic-search-optional). Without it, `vault_semantic_search` and `vault_suggest_links` are hidden entirely.
+Set `OBSIDIAN_PKM_OPENAI_KEY` in `~/.claude/settings.json`. See [Enable Semantic Search](#5-enable-semantic-search-optional). Without it, `vault_semantic_search` and `vault_suggest_links` are hidden entirely.
 
 **Server not showing up in Claude Code after install**
-Run `claude mcp list` to check. If `obsidian-pkm` is missing, register it with `claude mcp add` (see [Manual Registration](#2-manual-registration-alternative)). Note: editing `~/.claude/settings.json` directly does **not** register MCP servers — use the CLI.
+Run `claude mcp list` to check. If `obsidian-pkm` is missing, reinstall the plugin: `claude plugin install obsidian-pkm`. Then run `/obsidian-pkm:setup` to configure it.
 
 **Semantic index not updating after file changes**
 Check your Node version with `node -v`. The file watcher uses `fs.watch({ recursive: true })` which requires Node.js >= 20.

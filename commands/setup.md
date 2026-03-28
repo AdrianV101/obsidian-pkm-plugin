@@ -56,14 +56,19 @@ mcp__plugin_obsidian-pkm_obsidian-pkm__*
 
 Read the file first, merge with existing permissions (don't overwrite), and write back. This allows all vault_read, vault_write, vault_search, etc. tools to run without per-call confirmation.
 
-## Step 4: Verify Setup
+## Step 4: Vault Scaffolding
+
+Check if the vault has templates:
+1. Check if templates exist: `ls "$VAULT_PATH/05-Templates/" 2>/dev/null`
+2. If missing, tell the user to run `npx obsidian-pkm init` in their terminal to scaffold the vault with templates and PARA folder structure. This is a separate interactive tool that handles vault scaffolding.
+
+## Step 5: Verify Setup
 
 Run these checks:
 1. `echo $VAULT_PATH` — confirm it's set
 2. Count `.md` files in the vault: `find "$VAULT_PATH" -name "*.md" | wc -l`
-3. Check if templates exist: `ls "$VAULT_PATH/05-Templates/"` — if missing, offer to run `obsidian-pkm init` to scaffold the vault structure
 
-## Step 5: Migration Check
+## Step 6: Migration Check
 
 Check if the old `pkm-mcp-server` is installed:
 1. Run `npm list -g pkm-mcp-server --depth=0 2>/dev/null`
@@ -74,7 +79,7 @@ If found:
 - Suggest removing `~/.claude/hooks/pkm/` directory (hooks are now managed by the plugin)
 - Check `~/.claude/settings.json` for old hook entries and offer to clean them up
 
-## Step 6: Done
+## Step 7: Done
 
 Confirm setup is complete. Tell the user:
 - "Your Obsidian PKM plugin is configured. Try asking me to list your vault folders to verify."

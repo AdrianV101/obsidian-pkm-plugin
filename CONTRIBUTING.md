@@ -20,7 +20,7 @@ Be respectful, constructive, and inclusive. We follow the [Contributor Covenant]
 2. Set required environment variables:
    ```bash
    export VAULT_PATH="/path/to/test/vault"
-   # Optional: export OPENAI_API_KEY="sk-..." for semantic search
+   # Optional: export OBSIDIAN_PKM_OPENAI_KEY="sk-..." for semantic search
    ```
 
 3. Run the server:
@@ -42,7 +42,7 @@ Be respectful, constructive, and inclusive. We follow the [Contributor Covenant]
 
 ```
 index.js        - MCP server setup, tool definitions, request routing
-handlers.js     - Tool handler implementations (all 19 handlers)
+handlers.js     - Tool handler implementations (all 20 handlers)
 helpers.js      - Pure helper functions (path resolution, filtering, templates, fuzzy matching, peek/redirect)
 graph.js        - Wikilink resolution and BFS graph traversal
 embeddings.js   - Semantic search (OpenAI embeddings, SQLite + sqlite-vec)

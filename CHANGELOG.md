@@ -6,6 +6,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [3.1.0] - 2026-03-28
+
+### Changed
+- `obsidian-pkm init` is now a vault scaffolding tool only — no longer registers the MCP server, copies hooks, or prompts for OpenAI API key. These are handled by the plugin system (`claude plugin install` + `/obsidian-pkm:setup`).
+- README: plugin marketplace is now the only documented install method. `npx obsidian-pkm init` reframed as optional vault scaffolding.
+- hooks/README.md: plugin-based setup is primary; manual JSON config demoted to source-install details.
+
+### Removed
+- Removed MCP registration, hook copying, and OpenAI key setup from `init.js` (34 tests removed with them)
+- Removed exported functions: `buildMcpAddArgs`, `checkClaudeCli`, `checkExistingRegistration`, `detectInstallType`, `isPkmHookEntry`, `buildHookEntries`, `mergeHooksIntoSettings`, `copyHooks`
+
+### Fixed
+- Dead `steps` array in `init.js` (populated but never read)
+- `CONTRIBUTING.md`: handler count corrected from 19 to 20
+- `CONTRIBUTING.md`: env var updated from `OPENAI_API_KEY` to preferred `OBSIDIAN_PKM_OPENAI_KEY`
+- `sample-project/CLAUDE.md`: stale `settings.json` reference replaced with plugin reference
+- `commands/setup.md`: scaffolding check description now matches what it actually checks
+
 ## [3.0.6] - 2026-03-28
 
 ### Fixed

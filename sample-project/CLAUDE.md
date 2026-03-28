@@ -5,7 +5,7 @@
 ## PKM Integration
 
 - **Vault project path**: `01-Projects/[YourProjectName]/`
-- **MCP Server**: `obsidian-pkm` (configured in `~/.claude/settings.json`)
+- **MCP Server**: `obsidian-pkm` plugin
 
 ### PKM Skills
 

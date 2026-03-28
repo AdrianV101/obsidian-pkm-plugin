@@ -1,3 +1,5 @@
+# PKM: 01-Projects/Obsidian-MCP
+
 # CLAUDE.md
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
@@ -15,7 +17,7 @@ npm install
 # Run the MCP server (for testing)
 VAULT_PATH="/path/to/your/vault" node cli.js
 
-# Interactive setup wizard
+# Vault scaffolding wizard (templates, PARA folders)
 node cli.js init
 
 # Start the server
@@ -267,27 +269,14 @@ The plugin provides 4 specialized agents (visible in `/agents`). Delegate to the
 
 ## Claude Code Configuration
 
-**Via Claude Code plugin marketplace** (recommended):
-
 ```bash
 claude plugin marketplace add AdrianV101/obsidian-pkm-plugin
 claude plugin install obsidian-pkm
 ```
 
-Then run `/obsidian-pkm:setup` in Claude Code.
+Then run `/obsidian-pkm:setup` in Claude Code to configure vault path, API keys, and permissions.
 
-**Via npm** (fallback):
-
-```bash
-# Interactive setup
-obsidian-pkm init
-
-# Or register manually
-claude mcp add -s user \
-  -e VAULT_PATH=/absolute/path/to/obsidian/vault \
-  -e OBSIDIAN_PKM_OPENAI_KEY=sk-... \
-  -- obsidian-pkm npx -y obsidian-pkm@^3
-```
+For vault scaffolding (templates, PARA folders): `npx obsidian-pkm init`
 
 `OBSIDIAN_PKM_OPENAI_KEY` (or `OPENAI_API_KEY`) is optional — without it, all tools except `vault_semantic_search` and `vault_suggest_links` work normally. The plugin-scoped name avoids conflicts with project-level OpenAI keys.
 
@@ -333,3 +322,14 @@ status: <status>    # If applicable for the type
 Common types: `fleeting`, `research`, `adr`, `bug`, `planning`, `transcript`, `permanent`, `task`
 
 **Never create notes without frontmatter** — even quick research docs or ad-hoc files.
+
+## PKM Integration
+
+- **Vault project**: `01-Projects/Obsidian-MCP/`
+- **MCP Server**: `obsidian-pkm` plugin
+
+Document decisions, research findings, and debugging sessions as you work. The `knowledge-sweeper` agent captures PKM-worthy content in the background, or use the `obsidian-pkm:pkm-write` skill for structured notes with linking.
+
+Use `obsidian-pkm:pkm-explore` to research what the vault already knows about a topic before creating new content.
+
+At the end of each session, run `obsidian-pkm:pkm-session-end` to update the devlog and capture undocumented work.

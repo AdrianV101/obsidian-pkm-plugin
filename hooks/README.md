@@ -18,15 +18,19 @@ Passive knowledge capture (decisions, research findings, tasks, bug root causes)
 
 ## Setup
 
-### Prerequisites
+Hooks are registered automatically when you install the plugin:
 
-- [Claude CLI](https://docs.anthropic.com/en/docs/claude-cli) installed and authenticated
-- This repository cloned locally
-- An Obsidian vault following the [vault structure convention](../CLAUDE.md#vault-structure-convention)
+```bash
+claude plugin marketplace add AdrianV101/obsidian-pkm-plugin
+claude plugin install obsidian-pkm
+```
 
-### Configuration
+The plugin's `hooks/hooks.json` declares the SessionStart hook, and Claude Code manages the lifecycle. No manual configuration needed.
 
-Add the following to your `~/.claude/settings.json`:
+<details>
+<summary>Manual setup (source installs / development)</summary>
+
+If you're running from a local clone instead of the plugin, add this to `~/.claude/settings.json`:
 
 ```json
 {
@@ -48,7 +52,9 @@ Add the following to your `~/.claude/settings.json`:
 }
 ```
 
-Replace `/path/to/your/vault` with the absolute path to your Obsidian vault (e.g., `~/Documents/PKM`), and `/path/to/obsidian-pkm-plugin` with the absolute path to this repository.
+Replace `/path/to/your/vault` with the absolute path to your Obsidian vault, and `/path/to/obsidian-pkm-plugin` with the absolute path to this repository.
+
+</details>
 
 ## Architecture Notes
 
@@ -71,9 +77,8 @@ The hook system uses a `type: "command"` hook that runs synchronously. `session-
 
 ### Hook not firing
 
-- Verify the hook config is valid JSON in `~/.claude/settings.json`
-- Check that the `matcher` pattern matches (`"startup|clear|compact"`)
-- Ensure the script path is absolute
+- If using the plugin: verify it's installed with `claude plugin list` and check that `VAULT_PATH` is set in `~/.claude/settings.json` under `env`
+- If using manual config: verify the hook config is valid JSON in `~/.claude/settings.json`, the `matcher` pattern matches (`"startup|clear|compact"`), and the script path is absolute
 
 ### Script errors
 

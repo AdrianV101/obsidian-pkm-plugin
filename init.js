@@ -2,10 +2,6 @@ import os from "os";
 import path from "path";
 import fs from "fs/promises";
 import { fileURLToPath } from "url";
-import { execFile as execFileCb } from "child_process";
-import { promisify } from "util";
-
-const execFileAsync = promisify(execFileCb);
 
 /**
  * Resolve user-provided path input: expand ~, $HOME, resolve relative, normalise.
@@ -123,47 +119,6 @@ export async function backupVault(vaultPath) {
 }
 
 /**
- * Build argument array for `claude mcp add` command.
- * @param {{ vaultPath: string, openaiKey: string|null, installType: { command: string, args: string[] } }} opts
- * @returns {string[]}
- */
-export function buildMcpAddArgs({ vaultPath, openaiKey, installType }) {
-  const args = ["mcp", "add", "-s", "user"];
-  args.push("-e", `VAULT_PATH=${vaultPath}`);
-  if (openaiKey) {
-    args.push("-e", `OPENAI_API_KEY=${openaiKey}`);
-  }
-  args.push("--", "obsidian-pkm", installType.command, ...installType.args);
-  return args;
-}
-
-/**
- * Check if the `claude` CLI is available on PATH.
- * @returns {Promise<boolean>}
- */
-export async function checkClaudeCli() {
-  try {
-    await execFileAsync("claude", ["--version"]);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-/**
- * Check if obsidian-pkm is already registered in Claude Code.
- * @returns {Promise<boolean>}
- */
-export async function checkExistingRegistration() {
-  try {
-    await execFileAsync("claude", ["mcp", "get", "obsidian-pkm"]);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-/**
  * Calculate total size of a directory (in bytes). Skips symlinks.
  * @param {string} dirPath
  * @returns {Promise<number>}
@@ -184,127 +139,6 @@ export async function dirSize(dirPath) {
   return total;
 }
 
-/**
- * Detect whether running from npm install or from source.
- * @param {string} [filePath] - Override path for testing (defaults to current file)
- * @returns {{ command: string, args: string[] }}
- */
-export function detectInstallType(filePath) {
-  const thisFile = filePath || fileURLToPath(import.meta.url);
-  if (thisFile.includes("node_modules")) {
-    return { command: "npx", args: ["-y", "obsidian-pkm@^3"] };
-  }
-  const cliPath = path.join(path.dirname(thisFile), "cli.js");
-  return { command: "node", args: [cliPath] };
-}
-
-
-const PKM_HOOK_BASENAMES = new Set(["session-start.js", "stop-sweep.js", "capture-handler.sh"]);
-
-/**
- * Detect if a hook entry is a PKM hook (by path substring or script basename).
- * @param {object} entry - A hook event entry with `hooks` array
- * @returns {boolean}
- */
-export function isPkmHookEntry(entry) {
-  if (!entry.hooks || !Array.isArray(entry.hooks)) return false;
-  return entry.hooks.some(h => {
-    const cmd = h.command || "";
-    if (cmd.includes("hooks/pkm/")) return true;
-    for (const basename of PKM_HOOK_BASENAMES) {
-      if (cmd.includes(basename)) return true;
-    }
-    return false;
-  });
-}
-
-/**
- * Build settings.json hook config entries for enabled hooks.
- * @param {string} vaultPath - Absolute vault path
- * @param {string} hooksDir - Absolute path to installed hooks directory
- * @param {{ sessionStart: boolean }} enabledHooks
- * @returns {Object} Hook entries keyed by event name (SessionStart)
- */
-export function buildHookEntries(vaultPath, hooksDir, enabledHooks) {
-  const entries = {};
-
-  if (enabledHooks.sessionStart) {
-    entries.SessionStart = [{
-      matcher: "startup|clear|compact",
-      hooks: [{
-        type: "command",
-        command: `VAULT_PATH="${vaultPath}" node ${path.join(hooksDir, "session-start.js")}`,
-        timeout: 15,
-        statusMessage: "Loading PKM project context...",
-      }],
-    }];
-  }
-
-  return entries;
-}
-
-/**
- * Merge PKM hook entries into ~/.claude/settings.json.
- * @param {string} settingsPath - Path to settings.json
- * @param {Object} hookEntries - Entries to add, keyed by event name
- * @param {string[]} disabledEvents - Event names where PKM hooks should be removed
- * @returns {Promise<{ error?: string }>}
- */
-export async function mergeHooksIntoSettings(settingsPath, hookEntries, disabledEvents) {
-  let settings = {};
-
-  try {
-    const raw = await fs.readFile(settingsPath, "utf8");
-    try {
-      settings = JSON.parse(raw);
-    } catch {
-      return { error: `${settingsPath} contains invalid JSON. Fix it manually and re-run init.` };
-    }
-  } catch (e) {
-    if (e.code !== "ENOENT") throw e;
-    // File doesn't exist — start fresh
-  }
-
-  if (!settings.hooks) settings.hooks = {};
-
-  // Add/replace enabled hooks
-  for (const [eventName, entries] of Object.entries(hookEntries)) {
-    if (!settings.hooks[eventName]) settings.hooks[eventName] = [];
-    // Remove existing PKM entries
-    settings.hooks[eventName] = settings.hooks[eventName].filter(e => !isPkmHookEntry(e));
-    // Append new entries
-    settings.hooks[eventName].push(...entries);
-  }
-
-  // Remove disabled hooks
-  for (const eventName of disabledEvents) {
-    if (!settings.hooks[eventName]) continue;
-    settings.hooks[eventName] = settings.hooks[eventName].filter(e => !isPkmHookEntry(e));
-    if (settings.hooks[eventName].length === 0) {
-      delete settings.hooks[eventName];
-    }
-  }
-
-  await fs.mkdir(path.dirname(settingsPath), { recursive: true });
-  await fs.writeFile(settingsPath, JSON.stringify(settings, null, 2) + "\n");
-  return {};
-}
-
-const HOOK_FILES = ["session-start.js", "resolve-project.js", "load-context.js"];
-
-/**
- * Copy hook scripts to destination directory.
- * @param {string} src - Source hooks directory
- * @param {string} dest - Destination directory (e.g. ~/.claude/hooks/pkm/)
- */
-export async function copyHooks(src, dest) {
-  await fs.mkdir(dest, { recursive: true });
-
-  for (const file of HOOK_FILES) {
-    await fs.copyFile(path.join(src, file), path.join(dest, file));
-  }
-}
-
 const SYSTEM_DIRS = new Set(["/", "/home", "/usr", "/var", "/etc", "/tmp", "/opt", "/bin", "/sbin"]);
 
 function formatBytes(bytes) {
@@ -315,30 +149,31 @@ function formatBytes(bytes) {
 }
 
 /**
- * Interactive setup wizard for the PKM MCP server.
+ * Interactive vault scaffolding wizard.
+ * Sets up vault structure (templates, PARA folders) for use with the obsidian-pkm plugin.
+ * MCP registration and hooks are handled by the plugin system — use `/obsidian-pkm:setup` in Claude Code.
  */
 export async function runInit() {
-  const { confirm: confirmPrompt, input, select, password } = await import("@inquirer/prompts");
+  const { confirm: confirmPrompt, input, select } = await import("@inquirer/prompts");
 
   const bundledTemplatesDir = path.join(path.dirname(fileURLToPath(import.meta.url)), "templates");
-  const steps = [];
 
   try {
     // ── Step 1: Welcome ──
     console.log(`
-obsidian-pkm setup wizard
+obsidian-pkm vault scaffolding
 
-This will walk you through setting up your Obsidian vault for use with the
-PKM MCP server. You'll be asked about 6 things:
+This will set up your Obsidian vault structure for use with the obsidian-pkm
+plugin. You'll be asked about 3 things:
 
   1. Where your vault is (or where to create one)
   2. Whether to install note templates
   3. Whether to set up the recommended folder structure
-  4. An optional OpenAI API key for semantic search
-  5. Registering the server with Claude Code
-  6. Setting up PKM hooks for Claude Code
 
 Nothing is written until you confirm each step. Press Ctrl+C at any time to cancel.
+
+Note: To configure Claude Code (MCP server, hooks, API keys), install the
+plugin and run /obsidian-pkm:setup in Claude Code.
 `);
 
     // ── Step 2: Vault Path ──
@@ -375,10 +210,8 @@ Nothing is written until you confirm each step. Press Ctrl+C at any time to canc
     const templateResult = await copyTemplates(bundledTemplatesDir, templateDest, templateMode);
     if (templateMode !== "skip") {
       console.log(`  Templates: ${templateResult.created} installed, ${templateResult.skipped} already existed`);
-      steps.push(`Templates: ${templateResult.created} installed (${templateMode} set)`);
     } else {
       console.log("  Note: vault_write requires at least one template in 05-Templates/ to function. All other tools work without templates.");
-      steps.push("Templates: skipped");
     }
 
     // ── Step 4: Folders ──
@@ -400,198 +233,29 @@ Nothing is written until you confirm each step. Press Ctrl+C at any time to canc
     if (doFolders) {
       folderResult = await scaffoldFolders(vaultPath);
       console.log(`  Folders: ${folderResult.created} created, ${folderResult.skipped} already existed`);
-      steps.push(`Folders: ${folderResult.created} created`);
     } else {
       console.log("  Folders: skipped");
-      steps.push("Folders: skipped");
     }
 
-    // ── Step 5: OpenAI API Key ──
-    let openaiKey = null;
-    const wantSemantic = await confirmPrompt({ message: "Enable semantic search? (Requires an OpenAI API key)" });
-    if (wantSemantic) {
-      console.log(`
-  Get an API key at: https://platform.openai.com/api-keys
-
-  This key is stored only in your Claude Code configuration
-  (~/.claude.json) and is never sent to us or anyone else.
-  It's used solely for generating text embeddings via OpenAI's API.
-`);
-      openaiKey = await password({ message: "OpenAI API key (Enter to skip):", mask: "*" });
-      if (!openaiKey) { openaiKey = null; console.log("  Skipped.\n"); }
-    } else {
-      console.log("  You can add this later by setting OPENAI_API_KEY in your Claude Code settings.\n");
-    }
-    // ── Step 6: Registration ──
-    const hasClaude = await checkClaudeCli();
-    let hasMcpRegistration = false;
-    if (!hasClaude) {
-      const installType = detectInstallType();
-      const manualCmd = `claude mcp add -s user -e VAULT_PATH=${vaultPath} -- obsidian-pkm ${installType.command} ${installType.args.join(" ")}`;
-      console.log(`
-  Claude Code CLI not found on PATH. To register manually, run:
-
-    ${manualCmd}
-`);
-      steps.push("MCP server: skipped (Claude CLI not found)");
-    } else {
-      const installType = detectInstallType();
-      const hasExisting = await checkExistingRegistration();
-
-      let skipRegistration = false;
-      if (hasExisting) {
-        const overwrite = await confirmPrompt({ message: "Claude Code is already configured for obsidian-pkm. Overwrite?", default: false });
-        if (!overwrite) {
-          console.log("  Registration skipped.\n");
-          skipRegistration = true;
-          hasMcpRegistration = true;
-        } else {
-          // Remove existing before re-adding
-          try {
-            await execFileAsync("claude", ["mcp", "remove", "obsidian-pkm"]);
-          } catch (e) {
-            console.warn(`  Warning: could not remove existing registration: ${e.message}`);
-          }
-        }
-      }
-
-      if (!skipRegistration) {
-        const addArgs = buildMcpAddArgs({ vaultPath, openaiKey, installType });
-        const displayCmd = `claude ${addArgs.join(" ")}`;
-        console.log(`\nWill run:\n\n  ${displayCmd}\n`);
-
-        const doRegister = await confirmPrompt({
-          message: "Register MCP server with Claude Code?",
-          default: true,
-        });
-
-        if (doRegister) {
-          try {
-            await execFileAsync("claude", addArgs);
-            console.log("  MCP server registered with Claude Code");
-            steps.push("MCP server: registered");
-            hasMcpRegistration = true;
-          } catch (regErr) {
-            console.error(`\n  Registration failed: ${regErr.message}`);
-            if (regErr.stderr) console.error(`  ${regErr.stderr.trim()}`);
-            const skipReg = await confirmPrompt({ message: "Skip registration and finish setup?", default: true });
-            if (!skipReg) throw regErr;
-            console.log("  Registration skipped.\n");
-            steps.push("MCP server: skipped (registration failed)");
-          }
-        } else {
-          console.log("  Registration: skipped (you can run `obsidian-pkm init` again later)");
-          steps.push("MCP server: skipped");
-        }
-      } else {
-        steps.push("MCP server: skipped");
-      }
-    }
-
-    const skipHooks = !hasClaude || !hasMcpRegistration;
-
-    // ── Step 7: PKM Hooks ──
-    const hooksDir = path.join(os.homedir(), ".claude", "hooks", "pkm");
-    const bundledHooksDir = path.join(path.dirname(fileURLToPath(import.meta.url)), "hooks");
-    let hooksSummary;
-
-    if (skipHooks) {
-      const reason = !hasClaude ? "Claude CLI not found" : "no MCP registration";
-      hooksSummary = `skipped (${reason})`;
-      steps.push(`Hooks: skipped (${reason})`);
-    } else {
-      // Check for existing hook files
-      let hookFilesExist = false;
-      try {
-        const existing = await fs.readdir(hooksDir);
-        hookFilesExist = existing.length > 0;
-      } catch { /* doesn't exist */ }
-
-      let doCopyHooks = true;
-      if (hookFilesExist) {
-        doCopyHooks = await confirmPrompt({
-          message: "PKM hook scripts are already installed. Overwrite with current version?",
-          default: false,
-        });
-      }
-
-      if (doCopyHooks) {
-        try {
-          await copyHooks(bundledHooksDir, hooksDir);
-          console.log(`  Hook scripts installed to ${hooksDir}`);
-        } catch (copyErr) {
-          console.error(`\n  Hook file installation failed: ${copyErr.message}`);
-          const skipHookSetup = await confirmPrompt({ message: "Skip hooks and finish setup?", default: true });
-          if (skipHookSetup) {
-            hooksSummary = "skipped (file copy failed)";
-            steps.push("Hooks: skipped (file copy failed)");
-          } else {
-            throw copyErr;
-          }
-        }
-      }
-
-      // Only proceed to config if we haven't set hooksSummary (i.e., no error)
-      if (!hooksSummary) {
-        const enableSessionStart = await confirmPrompt({
-          message: "Enable project context loading? Automatically loads your project's index, recent devlog entries, and active tasks at the start of each Claude Code session.",
-          default: true,
-        });
-
-        const enabledHooks = {
-          sessionStart: enableSessionStart,
-        };
-
-        const hookEntries = buildHookEntries(vaultPath, hooksDir, enabledHooks);
-        const disabledEvents = ["Stop", "PostToolUse"];
-        if (!enableSessionStart) disabledEvents.push("SessionStart");
-
-        const settingsPath = path.join(os.homedir(), ".claude", "settings.json");
-        const mergeResult = await mergeHooksIntoSettings(settingsPath, hookEntries, disabledEvents);
-
-        if (mergeResult.error) {
-          console.error(`\n  ${mergeResult.error}`);
-          hooksSummary = "skipped (settings.json error)";
-        } else {
-          hooksSummary = enableSessionStart ? "context-loading" : "none";
-          console.log(`  Hooks configured: ${hooksSummary}`);
-        }
-        steps.push(`Hooks: ${hooksSummary}`);
-      }
-    }
-
-    // ── Step 8: Summary ──
-    // Build summary lines based on what was actually done
+    // ── Step 5: Summary ──
     const templateSummary = templateMode === "skip"
       ? "Skipped"
       : `${templateResult.created} installed in 05-Templates/`;
     const folderSummary = folderResult
       ? `${folderResult.created} created`
       : "Skipped";
-    const semanticSummary = openaiKey
-      ? "Enabled (API key configured)"
-      : "Disabled (no API key)";
-    // Determine registration summary from steps
-    const regStep = steps.find(s => s.startsWith("MCP server:"));
-    const registrationSummary = regStep && regStep.includes("registered")
-      ? "Registered with Claude Code"
-      : "Skipped";
 
     console.log(`
-Setup complete!
+Vault scaffolding complete!
 
-  Vault:       ${vaultPath}
-  Templates:   ${templateSummary}
-  Folders:     ${folderSummary}
-  Semantic:    ${semanticSummary}
-  Claude Code: ${registrationSummary}
-  Hooks:       ${hooksSummary}
+  Vault:     ${vaultPath}
+  Templates: ${templateSummary}
+  Folders:   ${folderSummary}
 
-To verify, restart Claude Code and try:
-  "List the folders in my vault"
-
-Claude should call vault_list and show your vault's directory structure.
-If that doesn't work, check: https://github.com/AdrianV101/obsidian-pkm-plugin#troubleshooting
+Next steps:
+  1. Install the plugin:  claude plugin marketplace add AdrianV101/obsidian-pkm-plugin
+                          claude plugin install obsidian-pkm
+  2. Configure Claude Code: /obsidian-pkm:setup
 `);
   } catch (e) {
     if (e.name === "ExitPromptError") {
@@ -626,7 +290,6 @@ If that doesn't work, check: https://github.com/AdrianV101/obsidian-pkm-plugin#t
         if (!create) { console.log("Setup cancelled."); process.exit(0); }
         await fs.mkdir(resolved, { recursive: true });
         console.log(`  Created ${resolved}`);
-        steps.push(`Vault: created ${resolved}`);
         return resolved;
       }
       throw e;
@@ -648,7 +311,6 @@ If that doesn't work, check: https://github.com/AdrianV101/obsidian-pkm-plugin#t
       const useEmpty = await confirmPrompt({ message: `Use ${resolved} as your vault?` });
       if (!useEmpty) { console.log("Setup cancelled."); process.exit(0); }
       console.log(`  Using empty directory ${resolved}`);
-      steps.push(`Vault: using ${resolved}`);
       return resolved;
     }
 
@@ -657,7 +319,6 @@ If that doesn't work, check: https://github.com/AdrianV101/obsidian-pkm-plugin#t
       // User said they have a vault — confirm then offer backup
       console.log(`  Using existing vault ${resolved}`);
       await offerBackup(resolved);
-      steps.push(`Vault: using existing ${resolved}`);
       return resolved;
     }
 
@@ -675,7 +336,6 @@ If that doesn't work, check: https://github.com/AdrianV101/obsidian-pkm-plugin#t
       // Offer backup
       await offerBackup(resolved);
       console.log(`  Using ${resolved}`);
-      steps.push(`Vault: using ${resolved}`);
       return resolved;
     }
 
@@ -688,7 +348,6 @@ If that doesn't work, check: https://github.com/AdrianV101/obsidian-pkm-plugin#t
       }
       await fs.mkdir(subPath, { recursive: true });
       console.log(`  Created ${subPath}`);
-      steps.push(`Vault: created ${subPath}`);
       return subPath;
     }
 
@@ -724,7 +383,6 @@ If that doesn't work, check: https://github.com/AdrianV101/obsidian-pkm-plugin#t
       await fs.rm(path.join(resolved, entry), { recursive: true, force: true });
     }
     console.log(`  Wiped and using ${resolved}`);
-    steps.push(`Vault: wiped and using ${resolved}`);
     return resolved;
   }
 
@@ -744,7 +402,6 @@ If that doesn't work, check: https://github.com/AdrianV101/obsidian-pkm-plugin#t
       try {
         const backupPath = await backupVault(dirPath);
         console.log(`  Backup created: ${backupPath}\n`);
-        steps.push(`Backup: ${backupPath}`);
       } catch (e) {
         console.error(`Backup failed: ${e.message}. Aborting to keep your data safe.`);
         process.exit(1);
