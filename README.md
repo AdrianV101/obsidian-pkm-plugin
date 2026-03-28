@@ -48,6 +48,8 @@ https://github.com/user-attachments/assets/58ad9c9b-d987-4728-89e7-33de20b73a38
 |------|-------------|
 | `vault_links` | Wikilink analysis (incoming and outgoing links for a note) |
 | `vault_neighborhood` | Graph exploration via BFS wikilink traversal — discover related notes by proximity |
+| `vault_add_links` | Add annotated wikilinks to a note's section with deduplication |
+| `vault_link_health` | Audit link quality — find orphans, broken links, weak connections, ambiguous links |
 
 ### Reading & Navigation
 
@@ -138,9 +140,11 @@ Existing templates are never overwritten.
 
 Each `_index.md` has `type: moc` frontmatter. Existing folders and index files are skipped.
 
-**Step 4 — OpenAI API key (optional).** Enables `vault_semantic_search` and `vault_suggest_links`. The key is stored only in your Claude Code configuration (`~/.claude.json`) and is used solely for generating text embeddings. You can add this later — see [Enable Semantic Search](#4-enable-semantic-search-optional).
+**Step 4 — OpenAI API key (optional).** Enables `vault_semantic_search` and `vault_suggest_links`. The key is stored only in your Claude Code MCP server configuration and is used solely for generating text embeddings. You can add this later — see [Enable Semantic Search](#4-enable-semantic-search-optional).
 
 **Step 5 — Claude Code registration.** Registers the MCP server via `claude mcp add -s user`. If `obsidian-pkm` is already registered, you'll be asked whether to overwrite. The exact command is shown for confirmation before running. If the `claude` CLI is not found on PATH, the wizard prints the manual registration command instead.
+
+**Step 6 — PKM hooks (optional).** Copies hook scripts to `~/.claude/hooks/pkm/` and merges the SessionStart hook configuration into `~/.claude/settings.json`. This enables automatic project context loading at the start of each Claude Code session. Skipped if the `claude` CLI is not available or MCP registration was skipped.
 
 </details>
 
@@ -189,13 +193,17 @@ If you didn't set this up during `init`, add your OpenAI API key by re-registeri
 claude mcp remove obsidian-pkm
 claude mcp add -s user \
   -e VAULT_PATH=/absolute/path/to/your/vault \
-  -e OPENAI_API_KEY=sk-... \
+  -e OBSIDIAN_PKM_OPENAI_KEY=sk-... \
   -- obsidian-pkm npx -y obsidian-pkm@^3
 ```
+
+Use `OBSIDIAN_PKM_OPENAI_KEY` (preferred) to avoid conflicts with project-level OpenAI keys. `OPENAI_API_KEY` is also accepted as a fallback.
 
 This enables `vault_semantic_search` and `vault_suggest_links`. Uses `text-embedding-3-large` with a SQLite + sqlite-vec index stored at `.obsidian/semantic-index.db`. The index rebuilds automatically — delete the DB file to force a full re-embed.
 
 ### 5. Enable PKM Hooks (optional)
+
+> If you ran `obsidian-pkm init`, hooks are already configured. The manual setup below is for source installs or custom configurations.
 
 The hook system adds automatic context loading at session start. Passive knowledge capture is handled by the canonical agents (knowledge-sweeper, devlog-updater) — see the Agents section above. Requires the [Claude CLI](https://docs.anthropic.com/en/docs/claude-cli) installed and authenticated.
 
@@ -284,9 +292,12 @@ graph LR
 ├── embeddings.js     # Semantic index (OpenAI embeddings, SQLite + sqlite-vec)
 ├── activity.js       # Activity log (session tracking, SQLite)
 ├── utils.js          # Shared utilities (frontmatter parsing, file listing)
+├── cli.js            # CLI entry point (routes `init` subcommand or starts server)
+├── init.js           # Interactive setup wizard
 ├── hooks/            # Claude Code hooks (session context loading)
 ├── agents/           # Specialized AI agents (vault-explorer, devlog-updater, knowledge-sweeper, link-auditor)
 ├── skills/           # PKM workflow skills (pkm-write, pkm-explore, pkm-session-end)
+├── commands/         # Slash commands (setup, init-project)
 ├── templates/        # Obsidian note templates
 └── sample-project/   # Sample CLAUDE.md for your repos
 ```
@@ -325,7 +336,7 @@ Set `OPENAI_API_KEY` in your MCP server registration. See [Enable Semantic Searc
 Run `claude mcp list` to check. If `obsidian-pkm` is missing, register it with `claude mcp add` (see [Manual Registration](#2-manual-registration-alternative)). Note: editing `~/.claude/settings.json` directly does **not** register MCP servers — use the CLI.
 
 **Semantic index not updating after file changes**
-Check your Node version with `node -v`. The file watcher uses `fs.watch({ recursive: true })` which requires Node.js >= 18.13 on Linux.
+Check your Node version with `node -v`. The file watcher uses `fs.watch({ recursive: true })` which requires Node.js >= 20.
 
 ## Contributing
 
