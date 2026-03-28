@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [3.0.4] - 2026-03-28
+
+### Fixed
+- Skills (pkm-write, pkm-explore, pkm-session-end) now use correct plugin directory structure (`skills/<name>/SKILL.md`) — previously flat `.md` files were not discovered by Claude Code's skill invocation system
+
 ## [3.0.3] - 2026-03-28
 
 ### Changed
