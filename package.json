@@ -23,8 +23,7 @@
     ".claude-plugin/",
     "agents/",
     "commands/",
-    "skills/",
-    ".mcp.json"
+    "skills/"
   ],
   "scripts": {
     "start": "node cli.js",

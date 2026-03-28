@@ -229,9 +229,9 @@ File layout:
 ├── utils.js          # Shared utilities (frontmatter parsing, file listing)
 ├── cli.js            # CLI entry point (routes `init` subcommand or starts server)
 ├── init.js           # Vault scaffolding wizard (templates, PARA folders)
-├── plugin.json       # Plugin manifest (identity, components, permissions)
-├── marketplace.json  # Self-hosted marketplace entry
-├── .mcp.json         # MCP server declaration for plugin system
+├── .claude-plugin/   # Plugin packaging
+│   ├── plugin.json   # Plugin manifest (identity, components, permissions)
+│   └── marketplace.json  # Self-hosted marketplace entry
 ├── hooks/            # Claude Code hooks (context loading, project resolution, session start)
 ├── agents/           # Specialized agents (vault-explorer, devlog-updater, knowledge-sweeper, link-auditor)
 ├── skills/           # PKM workflow skills (pkm-write, pkm-explore, pkm-session-end)

@@ -8,5 +8,13 @@
   "repository": "https://github.com/AdrianV101/obsidian-pkm-plugin",
   "license": "MIT",
   "keywords": ["obsidian", "pkm", "knowledge-management", "mcp", "claude-code"],
-  "mcpServers": "./.mcp.json"
+  "mcpServers": {
+    "obsidian-pkm": {
+      "command": "npx",
+      "args": ["-y", "obsidian-pkm@^3"],
+      "env": {
+        "VAULT_PATH": "${VAULT_PATH}"
+      }
+    }
+  }
 }
