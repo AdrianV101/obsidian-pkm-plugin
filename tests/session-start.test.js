@@ -60,7 +60,9 @@ describe("session-start.js", () => {
 
     const result = await runHook({ cwd: cwdDir });
     assert.ok(result.hookSpecificOutput.additionalContext.includes("MyApp"));
-    assert.equal(result.systemMessage, undefined);
+    assert.ok(result.systemMessage);
+    assert.ok(result.systemMessage.includes("MyApp"));
+    assert.ok(result.systemMessage.includes("chars"));
   });
 
   it("returns JSON error for invalid JSON input", async () => {
@@ -114,7 +116,7 @@ describe("session-start.js", () => {
     assert.ok(result.systemMessage.includes("init-project"));
   });
 
-  it("does not return systemMessage when CLAUDE.md has PKM Integration section", async () => {
+  it("returns context summary systemMessage when configured", async () => {
     const cwdDir = path.join(tmpDir, "MyApp");
     await fs.mkdir(cwdDir, { recursive: true });
     await fs.writeFile(
@@ -123,7 +125,9 @@ describe("session-start.js", () => {
     );
 
     const result = await runHook({ cwd: cwdDir });
-    assert.equal(result.systemMessage, undefined);
+    assert.ok(result.systemMessage);
+    assert.ok(result.systemMessage.includes("MyApp"));
+    assert.ok(result.systemMessage.includes("chars"));
     assert.ok(result.hookSpecificOutput.additionalContext.includes("MyApp"));
   });
 });

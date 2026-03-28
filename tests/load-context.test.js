@@ -43,17 +43,20 @@ describe("loadProjectContext", () => {
   });
 
   it("loads full project context", async () => {
-    const ctx = await loadProjectContext(vaultPath, projectPath);
+    const { context: ctx, meta } = await loadProjectContext(vaultPath, projectPath);
     assert.ok(ctx.includes("## PKM Project Context: MyApp"));
     assert.ok(ctx.includes("A test project."));
     assert.ok(ctx.includes("Latest entry."));
     assert.ok(ctx.includes("Add Authentication"));
     assert.ok(ctx.includes("high"));
     assert.ok(!ctx.includes("Setup CI"));
+    assert.equal(meta.index, true);
+    assert.equal(meta.devlog, true);
+    assert.equal(meta.tasks, 1);
   });
 
   it("returns last 3 devlog sections", async () => {
-    const ctx = await loadProjectContext(vaultPath, projectPath);
+    const { context: ctx } = await loadProjectContext(vaultPath, projectPath);
     assert.ok(!ctx.includes("Old entry."));
     assert.ok(ctx.includes("Middle entry."));
     assert.ok(ctx.includes("Recent entry."));
@@ -62,21 +65,24 @@ describe("loadProjectContext", () => {
 
   it("handles missing _index.md gracefully", async () => {
     await fs.rm(path.join(vaultPath, projectPath, "_index.md"));
-    const ctx = await loadProjectContext(vaultPath, projectPath);
+    const { context: ctx, meta } = await loadProjectContext(vaultPath, projectPath);
     assert.ok(ctx.includes("## PKM Project Context: MyApp"));
     assert.ok(ctx.includes("Latest entry."));
+    assert.equal(meta.index, false);
   });
 
   it("handles missing devlog gracefully", async () => {
     await fs.rm(path.join(vaultPath, projectPath, "development", "devlog.md"));
-    const ctx = await loadProjectContext(vaultPath, projectPath);
+    const { context: ctx, meta } = await loadProjectContext(vaultPath, projectPath);
     assert.ok(ctx.includes("A test project."));
+    assert.equal(meta.devlog, false);
   });
 
   it("shows 'No active tasks' when none exist", async () => {
     await fs.rm(path.join(vaultPath, projectPath, "tasks"), { recursive: true });
-    const ctx = await loadProjectContext(vaultPath, projectPath);
+    const { context: ctx, meta } = await loadProjectContext(vaultPath, projectPath);
     assert.ok(ctx.includes("No active tasks"));
+    assert.equal(meta.tasks, 0);
   });
 
   it("returns last 3 devlog sections for old h2-date format", async () => {
@@ -85,7 +91,7 @@ describe("loadProjectContext", () => {
       path.join(projectDir, "development", "devlog.md"),
       "---\ntype: devlog\ncreated: 2026-01-01\ntags: [devlog]\n---\n\n# Devlog\n\n## 2026-01-01\nOld entry.\n\n## 2026-02-01\nMiddle entry.\n\n## 2026-03-01\nRecent entry.\n\n## 2026-03-15\nLatest entry.\n"
     );
-    const ctx = await loadProjectContext(vaultPath, projectPath);
+    const { context: ctx } = await loadProjectContext(vaultPath, projectPath);
     assert.ok(!ctx.includes("Old entry."));
     assert.ok(ctx.includes("Middle entry."));
     assert.ok(ctx.includes("Recent entry."));
@@ -98,7 +104,7 @@ describe("loadProjectContext", () => {
       path.join(projectDir, "development", "devlog.md"),
       "---\ntype: devlog\ncreated: 2026-01-01\ntags: [devlog]\n---\n\n# Development Log\n\n## Sessions\n"
     );
-    const ctx = await loadProjectContext(vaultPath, projectPath);
+    const { context: ctx } = await loadProjectContext(vaultPath, projectPath);
     assert.ok(ctx.includes("Sessions"));
     assert.ok(ctx.includes("### Recent Development Activity"));
   });
@@ -109,7 +115,7 @@ describe("loadProjectContext", () => {
       path.join(projectDir, "development", "devlog.md"),
       "---\ntype: devlog\ncreated: 2026-01-01\ntags: [devlog]\n---\n\n# Development Log\n\n## 2026-01-01\nLegacy entry.\n\n## Sessions\n\n### 2026-03-01 14:00\nNew entry one.\n\n### 2026-03-15 11:00\nNew entry two.\n"
     );
-    const ctx = await loadProjectContext(vaultPath, projectPath);
+    const { context: ctx } = await loadProjectContext(vaultPath, projectPath);
     assert.ok(!ctx.includes("Legacy entry."));
     assert.ok(ctx.includes("New entry one."));
     assert.ok(ctx.includes("New entry two."));
@@ -121,7 +127,7 @@ describe("loadProjectContext", () => {
       path.join(projectDir, "tasks", "no-frontmatter.md"),
       "# Some Task\n\nNo frontmatter here."
     );
-    const ctx = await loadProjectContext(vaultPath, projectPath);
+    const { context: ctx } = await loadProjectContext(vaultPath, projectPath);
     // Should not crash, and should still include the auth task
     assert.ok(ctx.includes("Add Authentication"));
     // The no-frontmatter task should be skipped (extractFrontmatter returns null, so fm.status check fails)

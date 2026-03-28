@@ -79,7 +79,7 @@ async function main() {
   if (!hasPkmSection) {
     let context = "";
     try {
-      context = await loadProjectContext(VAULT_PATH, projectPath);
+      ({ context } = await loadProjectContext(VAULT_PATH, projectPath));
     } catch (e) {
       console.error(`PKM session-start: failed to load project context: ${e.message}`);
       // context stays "" — still show the nudge
@@ -99,9 +99,9 @@ async function main() {
     process.exit(0);
   }
 
-  let context;
+  let context, meta;
   try {
-    context = await loadProjectContext(VAULT_PATH, projectPath);
+    ({ context, meta } = await loadProjectContext(VAULT_PATH, projectPath));
   } catch (e) {
     const output = {
       hookSpecificOutput: {
@@ -113,11 +113,27 @@ async function main() {
     process.exit(0);
   }
 
+  const projectName = path.basename(projectPath);
+  const loaded = [];
+  if (meta.index) loaded.push("index");
+  if (meta.devlog) loaded.push("devlog");
+  if (meta.tasks > 0) loaded.push(`${meta.tasks} task${meta.tasks !== 1 ? "s" : ""}`);
+  const missing = [];
+  if (!meta.index) missing.push("index");
+  if (!meta.devlog) missing.push("devlog");
+  if (meta.tasks === 0) missing.push("tasks");
+
+  let msg = `Obsidian PKM: Loaded ${projectName}`;
+  if (loaded.length > 0) msg += ` (${loaded.join(", ")})`;
+  if (missing.length > 0) msg += ` [missing: ${missing.join(", ")}]`;
+  msg += ` \u2014 ${context.length.toLocaleString()} chars`;
+
   const output = {
     hookSpecificOutput: {
       hookEventName: "SessionStart",
       additionalContext: context
-    }
+    },
+    systemMessage: msg
   };
   console.log(JSON.stringify(output));
 }
