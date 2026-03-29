@@ -90,9 +90,12 @@ describe("session-start.js", () => {
     assert.ok(result.hookSpecificOutput.additionalContext.includes("cwd"));
   });
 
-  it("returns JSON error when project not found", async () => {
+  it("returns JSON error with systemMessage when project not found", async () => {
     const result = await runHook({ cwd: "/home/user/Projects/unknown" });
     assert.ok(result.hookSpecificOutput.additionalContext.includes("No vault project found"));
+    assert.ok(result.hookSpecificOutput.additionalContext.includes("init-project"));
+    assert.ok(result.systemMessage);
+    assert.ok(result.systemMessage.includes("init-project"));
   });
 
   it("returns systemMessage when CLAUDE.md has no PKM Integration section", async () => {

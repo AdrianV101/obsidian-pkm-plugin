@@ -69,8 +69,11 @@ async function main() {
     const output = {
       hookSpecificOutput: {
         hookEventName: "SessionStart",
-        additionalContext: `PKM: ${error}`
-      }
+        additionalContext: `PKM: ${error}\n\n` +
+          "The obsidian-pkm plugin is installed but no vault project could be resolved for this directory. " +
+          "If the user asks about PKM or documentation, suggest running /obsidian-pkm:init-project."
+      },
+      systemMessage: "Obsidian PKM: No vault project found. Run /obsidian-pkm:init-project to set up vault integration."
     };
     console.log(JSON.stringify(output));
     process.exit(0);
