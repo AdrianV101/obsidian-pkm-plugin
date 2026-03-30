@@ -260,7 +260,7 @@ File layout:
 
 **Knowledge capture** uses the `knowledge-sweeper` agent to identify and persist PKM-worthy content from a session (decisions, research findings, tasks, bug root causes). Delegate to it after significant work blocks. The `devlog-updater` agent handles devlog entries. Both run in the background without interrupting the coding flow.
 
-**Fuzzy path resolution** lets read-only tools accept short names instead of full vault paths. `vault_read({ path: "devlog" })` resolves to `01-Projects/MyApp/development/devlog.md` automatically (`.md` extension optional). Folder-scoped tools like `vault_search` and `vault_query` accept partial folder names — `folder: "MyApp"` resolves to `01-Projects/MyApp`. Ambiguous matches return an error listing candidates. Write/destructive tools always require exact paths.
+**Fuzzy path resolution** lets read-only tools accept short names instead of full vault paths. `vault_read({ path: "devlog" })` resolves to `01-Projects/MyApp/development/devlog.md` automatically (`.md` extension optional). Folder-scoped tools like `vault_list`, `vault_search`, and `vault_query` accept partial folder names — `folder: "MyApp"` resolves to `01-Projects/MyApp`. Ambiguous matches return an error listing candidates. Write/destructive tools always require exact paths.
 
 ## Troubleshooting
 

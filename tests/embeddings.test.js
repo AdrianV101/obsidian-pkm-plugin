@@ -153,11 +153,14 @@ describe("splitByParagraphs", () => {
     assert.equal(chunks[1], para2);
   });
 
-  it("single long paragraph with no breaks still returns (does not infinite loop)", () => {
+  it("single long paragraph with no breaks is hard-split at maxChars", () => {
     const text = "X".repeat(2000);
     const chunks = splitByParagraphs(text, 500);
-    assert.equal(chunks.length, 1);
-    assert.equal(chunks[0], text);
+    assert.equal(chunks.length, 4);
+    for (const chunk of chunks) {
+      assert.ok(chunk.length <= 500);
+    }
+    assert.equal(chunks.join(""), text);
   });
 
   it("multiple paragraphs are combined up to maxChars", () => {

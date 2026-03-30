@@ -226,7 +226,7 @@ Pass custom <%...%> variables via the 'variables' parameter.`,
           type: "object",
           properties: {
             path: { type: "string", description: "Path to the starting note (supports short names, e.g. 'devlog')" },
-            depth: { type: "number", description: "Traversal depth — how many hops to follow (default: 2)", default: 2 },
+            depth: { type: "number", description: "Traversal depth — how many hops to follow (default: 2, max: 5)", default: 2 },
             direction: {
               type: "string",
               enum: ["both", "outgoing", "incoming"],
@@ -449,7 +449,7 @@ Pass custom <%...%> variables via the 'variables' parameter.`,
       });
       tools.push({
         name: "vault_suggest_links",
-        description: "Suggest relevant notes to link to based on content similarity. Accepts text content or a file path, finds semantically related notes, and excludes notes already linked via [[wikilinks]].",
+        description: "Suggest relevant notes to link to based on content similarity. Accepts text content or a file path, finds semantically related notes, and excludes notes already linked via [[wikilinks]]. One of 'content' or 'path' is required.",
         inputSchema: {
           type: "object",
           properties: {

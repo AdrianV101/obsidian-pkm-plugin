@@ -94,7 +94,7 @@ export function compareFrontmatterValues(a, b, field) {
 export function resolvePath(relativePath, vaultPath) {
   const resolved = path.resolve(vaultPath, relativePath);
   if (resolved !== vaultPath && !resolved.startsWith(vaultPath + path.sep)) {
-    throw new Error("Path escapes vault directory");
+    throw new Error("Path escapes vault directory. Paths must be relative to the vault root (e.g., '01-Projects/MyApp/_index.md').");
   }
   return resolved;
 }

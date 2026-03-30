@@ -64,9 +64,10 @@ Check if the vault has templates:
 
 ## Step 5: Verify Setup
 
-Run these checks:
-1. `echo $VAULT_PATH` — confirm it's set
-2. Count `.md` files in the vault: `find "$VAULT_PATH" -name "*.md" | wc -l`
+Ask the user to verify by requesting a vault operation. For example, tell them to ask Claude: "List the folders in my vault." This calls `vault_list`, which exercises the full MCP server connection and vault path configuration.
+
+- If it returns the vault's directory structure, setup is complete.
+- If it fails, suggest restarting Claude Code (`/quit` and relaunch) and re-running `/obsidian-pkm:setup`.
 
 ## Step 6: Migration Check
 

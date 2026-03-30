@@ -646,6 +646,9 @@ export async function createHandlers({ vaultPath, templateRegistry, semanticInde
   }
 
   async function handleActivity(args) {
+    if (!activityLog) {
+      throw new Error("Activity log unavailable (database failed to initialize at startup)");
+    }
     const action = args.action || "query";
 
     if (action === "query") {
@@ -701,6 +704,8 @@ export async function createHandlers({ vaultPath, templateRegistry, semanticInde
       throw new Error("Semantic search not available (OBSIDIAN_PKM_OPENAI_KEY not set)");
     }
 
+    const resolvedFolder = args.folder ? path.relative(vaultPath, resolveFolder(args.folder)) : undefined;
+
     // --- Anchor blending (Tier 3) ---
     if (args.anchor) {
       let resolvedAnchor;
@@ -713,7 +718,7 @@ export async function createHandlers({ vaultPath, templateRegistry, semanticInde
       const rawResults = await semanticIndex.searchRaw({
         query: args.query,
         limit: targetLimit * 2,
-        folder: args.folder,
+        folder: resolvedFolder,
         threshold: args.threshold,
         excludeFiles: new Set([resolvedAnchor])
       });
@@ -764,7 +769,7 @@ export async function createHandlers({ vaultPath, templateRegistry, semanticInde
     const text = await semanticIndex.search({
       query: args.query,
       limit: args.limit || 5,
-      folder: args.folder,
+      folder: resolvedFolder,
       threshold: args.threshold
     });
     return { content: [{ type: "text", text }] };
@@ -774,6 +779,8 @@ export async function createHandlers({ vaultPath, templateRegistry, semanticInde
     if (!semanticIndex?.isAvailable) {
       throw new Error("Link suggestions not available (OBSIDIAN_PKM_OPENAI_KEY not set)");
     }
+
+    const resolvedFolder = args.folder ? path.relative(vaultPath, resolveFolder(args.folder)) : undefined;
 
     let inputText = args.content;
     const sourcePath = args.path;
@@ -803,7 +810,7 @@ export async function createHandlers({ vaultPath, templateRegistry, semanticInde
     const results = await semanticIndex.searchRaw({
       query: body.slice(0, 8000),
       limit: (args.limit || 5) * overfetch,
-      folder: args.folder,
+      folder: resolvedFolder,
       threshold: args.threshold,
       excludeFiles
     });

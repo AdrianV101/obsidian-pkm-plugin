@@ -629,6 +629,18 @@ function splitByParagraphs(text, maxChars) {
   let current = "";
 
   for (const para of paragraphs) {
+    // If a single paragraph exceeds maxChars, hard-split it
+    if (para.length > maxChars) {
+      if (current.length > 0) {
+        chunks.push(current);
+        current = "";
+      }
+      for (let i = 0; i < para.length; i += maxChars) {
+        chunks.push(para.slice(i, i + maxChars));
+      }
+      continue;
+    }
+
     if (current && (current.length + para.length + 2) > maxChars) {
       chunks.push(current);
       current = para;

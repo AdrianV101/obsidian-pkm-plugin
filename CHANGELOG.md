@@ -6,6 +6,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [3.3.1] - 2026-03-30
+
+### Fixed
+- `vault_semantic_search` and `vault_suggest_links` now fuzzy-resolve the `folder` parameter (was silently returning zero results for partial folder names)
+- `vault_activity` now throws a clear error when the activity log database failed to initialize (was silently returning empty results)
+- `splitByParagraphs` now hard-splits oversized paragraphs at `maxChars` boundaries (prevents OpenAI embedding API errors on very long paragraphs)
+- "Path escapes vault directory" error now includes guidance on using vault-relative paths
+- Setup verification step now tests the actual MCP server connection instead of shell environment variables
+- `vault_suggest_links` description now states that one of `content` or `path` is required
+- `vault_neighborhood` depth parameter now documents max cap of 5
+- README fuzzy resolution paragraph now mentions `vault_list`
+- Aligned `description` across `package.json`, `plugin.json`, and `marketplace.json`
+- Added `homepage` field to `plugin.json`
+
 ## [3.3.0] - 2026-03-30
 
 ### Fixed
@@ -397,7 +411,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Atomic file creation in `vault_write` (`wx` flag) prevents race conditions
 - Error messages sanitized to prevent leaking absolute vault paths
 
-[Unreleased]: https://github.com/AdrianV101/obsidian-pkm-plugin/compare/v3.3.0...HEAD
+[Unreleased]: https://github.com/AdrianV101/obsidian-pkm-plugin/compare/v3.3.1...HEAD
+[3.3.1]: https://github.com/AdrianV101/obsidian-pkm-plugin/compare/v3.3.0...v3.3.1
 [3.3.0]: https://github.com/AdrianV101/obsidian-pkm-plugin/compare/v3.2.2...v3.3.0
 [3.2.2]: https://github.com/AdrianV101/obsidian-pkm-plugin/compare/v3.2.1...v3.2.2
 [3.2.1]: https://github.com/AdrianV101/obsidian-pkm-plugin/compare/v3.2.0...v3.2.1

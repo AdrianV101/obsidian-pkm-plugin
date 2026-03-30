@@ -1426,28 +1426,15 @@ This has #inline-tag and #another-tag in the body.
 // ─── vault_activity ────────────────────────────────────────────────────
 
 describe("handleActivity", () => {
-  it("returns empty message when no activity log", async () => {
+  it("throws when activity log is unavailable", async () => {
     const handler = handlers.get("vault_activity");
     // activityLog is null in our test context
-    const result = await handler({});
-    assert.ok(result.content[0].text.includes("No activity"));
+    await assert.rejects(() => handler({}), /Activity log unavailable/);
   });
 
-  it("includes session ID in output", async () => {
+  it("throws on clear when activity log is unavailable", async () => {
     const handler = handlers.get("vault_activity");
-    const result = await handler({});
-    assert.ok(result.content[0].text.includes("test-ses"));
-  });
-
-  it("clears with zero count when no log", async () => {
-    const handler = handlers.get("vault_activity");
-    const result = await handler({ action: "clear" });
-    assert.ok(result.content[0].text.includes("Cleared 0"));
-  });
-
-  it("throws on unknown action", async () => {
-    const handler = handlers.get("vault_activity");
-    await assert.rejects(() => handler({ action: "invalid" }), /Unknown action/);
+    await assert.rejects(() => handler({ action: "clear" }), /Activity log unavailable/);
   });
 });
 
