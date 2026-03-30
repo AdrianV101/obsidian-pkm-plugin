@@ -6,6 +6,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [3.5.0] - 2026-03-30
+
+### Added
+- `pkm-capture` agent — consolidates devlog-updater and knowledge-sweeper into a single agent that handles devlog entries, knowledge capture (decisions, research, tasks, bugs), quality checks, link health, and index updates in one pass
+- Quality check step in `pkm-session-end` skill — reads back created notes and verifies no template placeholder text remains
+
+### Changed
+- PreToolUse commit hook now references `pkm-capture` (was `devlog-updater`)
+- `pkm-session-end` skill updated to 6 steps (was 5) with quality check and conservatism guidance
+
+### Removed
+- `devlog-updater` agent (merged into `pkm-capture`)
+- `knowledge-sweeper` agent (merged into `pkm-capture`)
+- Stop hook (`stop-knowledge-check.sh`) — fired on every response including Q&A, causing UX friction during brainstorming sessions
+
 ## [3.4.0] - 2026-03-30
 
 ### Added
@@ -417,7 +432,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Atomic file creation in `vault_write` (`wx` flag) prevents race conditions
 - Error messages sanitized to prevent leaking absolute vault paths
 
-[Unreleased]: https://github.com/AdrianV101/obsidian-pkm-plugin/compare/v3.4.0...HEAD
+[Unreleased]: https://github.com/AdrianV101/obsidian-pkm-plugin/compare/v3.5.0...HEAD
+[3.5.0]: https://github.com/AdrianV101/obsidian-pkm-plugin/compare/v3.4.0...v3.5.0
 [3.4.0]: https://github.com/AdrianV101/obsidian-pkm-plugin/compare/v3.3.1...v3.4.0
 [3.3.1]: https://github.com/AdrianV101/obsidian-pkm-plugin/compare/v3.3.0...v3.3.1
 [3.3.0]: https://github.com/AdrianV101/obsidian-pkm-plugin/compare/v3.2.2...v3.3.0

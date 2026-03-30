@@ -1,6 +1,6 @@
 ---
 name: pkm-session-end
-description: Use when wrapping up a work session — creates devlog entry, captures undocumented decisions/research/debugging, audits link health of session work, and updates project index. Primarily used via the devlog-updater agent.
+description: Use when wrapping up a work session — creates devlog entry, captures undocumented decisions/research/debugging, audits link health of session work, and updates project index. Primarily used via the pkm-capture agent.
 ---
 
 # PKM Session End — Knowledge Capture and Graph Maintenance
@@ -70,7 +70,18 @@ Follow the pkm-write creation workflow for each note to get proper duplicate che
 
 Skip if the session was purely mechanical (config changes, minor fixes) with nothing worth documenting beyond the devlog.
 
-## Step 4: Quick Link Check
+Most exchanges produce nothing worth capturing beyond the devlog entry in Step 1. When in doubt, don't create a note — a missed capture is better than vault noise.
+
+## Step 4: Quality Check
+
+Read back each note created in Step 3 using `vault_read`. Verify:
+- No template placeholder text remains (e.g., "Brief description of the technology, tool, or concept", "What was the situation or context?", "Describe the problem")
+- Frontmatter has real values (not template defaults)
+- Content is specific to the session, not generic
+
+Fix any issues with `vault_edit`. If a note is entirely placeholder text, delete it with `vault_trash` — an empty note is worse than no note.
+
+## Step 5: Quick Link Check
 
 Run a targeted link health check on files touched during this session:
 
@@ -80,7 +91,7 @@ vault_link_health({ folder: "<project-folder>", checks: ["orphans", "broken"] })
 
 For any **orphan** notes found (no connections), add links using `vault_add_links`. Broken links (pointing to non-existent files) may self-resolve if the missing notes were created earlier in this session — otherwise note them for manual review. For deeper audit (weak connections, ambiguous links, full vault scan), delegate to the link-auditor agent separately.
 
-## Step 5: Index Update
+## Step 6: Index Update
 
 Check and update if changed during the session:
 - **Project `_index.md`**: Add links to new ADRs, update project status, add key links

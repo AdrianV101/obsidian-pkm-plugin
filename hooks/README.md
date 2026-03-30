@@ -4,21 +4,18 @@ Claude Code hook that loads project context from the vault at the start of each 
 
 ## Overview
 
-The hook system consists of three hooks:
+The hook system consists of two hooks:
 
 | Hook | Event | Purpose |
 |------|-------|---------|
 | `session-start.js` | SessionStart | Loads project context from the vault at the start of each session |
-| `pre-commit-reminder.sh` | PreToolUse | Reminds Claude to dispatch devlog-updater after git commits |
-| `stop-knowledge-check.sh` | Stop | Prompts Claude to consider dispatching knowledge-sweeper before stopping |
+| `pre-commit-reminder.sh` | PreToolUse | Reminds Claude to dispatch pkm-capture after git commits |
 
 ### How it works
 
 - **SessionStart** (`session-start.js`): Runs synchronously at session start, clear, or compact. Resolves the current working directory to a vault project, reads the project index, recent devlog entries, and active tasks, then injects them as context into the session.
 
-- **PreToolUse** (`pre-commit-reminder.sh`): Fires before any `git commit` command. Injects a reminder into Claude's context to dispatch the devlog-updater agent after the commit completes. Zero-cost (static JSON output, no AI invocation).
-
-- **Stop** (`stop-knowledge-check.sh`): Fires when Claude finishes responding. On the first Stop in a turn, blocks and prompts Claude to evaluate whether the exchange produced PKM-worthy content (decisions, research, tasks). On the second Stop (`stop_hook_active=true`), allows the stop. Uses Claude Code's built-in `stop_hook_active` guard to prevent infinite loops.
+- **PreToolUse** (`pre-commit-reminder.sh`): Fires before any `git commit` command. Injects a reminder into Claude's context to dispatch the pkm-capture agent after the commit completes. Zero-cost (static JSON output, no AI invocation).
 
 ## Setup
 

@@ -3,8 +3,8 @@ name: link-auditor
 description: >-
   Use proactively in the background after creating or modifying multiple
   vault notes, or when asked about vault link health. Lowest priority of
-  the PKM agents — run after vault-explorer, devlog-updater, and
-  knowledge-sweeper have finished.
+  the PKM agents — run after vault-explorer and pkm-capture have
+  finished.
 
   Examples:
 

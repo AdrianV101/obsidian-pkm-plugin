@@ -19,13 +19,12 @@ Session-start context loading is handled automatically by the SessionStart hook.
 
 ### PKM Agents
 
-The plugin provides 4 specialized agents (visible in `/agents`). Delegate to them proactively:
+The plugin provides 3 specialized agents (visible in `/agents`). Delegate to them proactively:
 
 | Agent | When to Delegate | Mode |
 |---|---|---|
 | `vault-explorer` | Before creating notes on a topic, when researching existing knowledge | Foreground |
-| `devlog-updater` | After completing a significant development block, before session ends | Background |
-| `knowledge-sweeper` | After significant work that produced decisions, research, tasks, or gotchas | Background |
+| `pkm-capture` | After git commits (automatic via hook), after significant work blocks, before session ends | Background |
 | `link-auditor` | After creating/modifying multiple vault notes, periodic health checks | Background |
 
 ## Documentation Rules

@@ -19,14 +19,6 @@
           "command": "${CLAUDE_PLUGIN_ROOT}/hooks/pre-commit-reminder.sh"
         }]
       }
-    ],
-    "Stop": [
-      {
-        "hooks": [{
-          "type": "command",
-          "command": "${CLAUDE_PLUGIN_ROOT}/hooks/stop-knowledge-check.sh"
-        }]
-      }
     ]
   }
 }

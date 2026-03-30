@@ -77,7 +77,7 @@ https://github.com/user-attachments/assets/58ad9c9b-d987-4728-89e7-33de20b73a38
 
 ### Agents
 
-4 specialized agents are available via `/agents`: `vault-explorer` (research existing knowledge before creating notes), `devlog-updater` (update devlog after significant work blocks), `knowledge-sweeper` (capture decisions, research, and tasks after notable sessions), and `link-auditor` (audit vault link health after bulk note changes). Agents can be @-mentioned and run in foreground or background.
+3 specialized agents are available via `/agents`: `vault-explorer` (research existing knowledge before creating notes), `pkm-capture` (devlog entries + knowledge capture after commits and work blocks), and `link-auditor` (audit vault link health after bulk note changes). Agents can be @-mentioned and run in foreground or background.
 
 ## Prerequisites
 
@@ -237,7 +237,7 @@ File layout:
 │   ├── plugin.json   # Plugin manifest (identity, components, permissions)
 │   └── marketplace.json  # Self-hosted marketplace entry
 ├── hooks/            # Claude Code hooks (context loading, project resolution, session start)
-├── agents/           # Specialized agents (vault-explorer, devlog-updater, knowledge-sweeper, link-auditor)
+├── agents/           # Specialized agents (vault-explorer, pkm-capture, link-auditor)
 ├── skills/           # PKM workflow skills (pkm-write, pkm-explore, pkm-session-end)
 ├── commands/         # Slash commands (setup, init-project)
 ├── templates/        # Obsidian note templates
@@ -258,7 +258,7 @@ File layout:
 
 **Session memory** records every tool call with timestamps and session IDs, so Claude can recall what was read, written, or searched in previous conversations. This turns ephemeral chat sessions into a continuous thread of work.
 
-**Knowledge capture** uses the `knowledge-sweeper` agent to identify and persist PKM-worthy content from a session (decisions, research findings, tasks, bug root causes). Delegate to it after significant work blocks. The `devlog-updater` agent handles devlog entries. Both run in the background without interrupting the coding flow.
+**Knowledge capture** uses the `pkm-capture` agent to update the project devlog and persist PKM-worthy content from a session (decisions, research findings, tasks, bug root causes) in one pass. It is triggered automatically after git commits via a PreToolUse hook, or can be dispatched manually after significant work blocks. Runs in the background without interrupting the coding flow.
 
 **Fuzzy path resolution** lets read-only tools accept short names instead of full vault paths. `vault_read({ path: "devlog" })` resolves to `01-Projects/MyApp/development/devlog.md` automatically (`.md` extension optional). Folder-scoped tools like `vault_list`, `vault_search`, and `vault_query` accept partial folder names — `folder: "MyApp"` resolves to `01-Projects/MyApp`. Ambiguous matches return an error listing candidates. Write/destructive tools always require exact paths.
 

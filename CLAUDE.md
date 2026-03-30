@@ -237,18 +237,15 @@ Implementation: `helpers.js` (`buildBasenameMap`, `resolveFuzzyPath`, `resolveFu
 
 ### PKM Agents
 
-The plugin provides 4 specialized agents (visible in `/agents`). Delegate to them proactively:
+The plugin provides 3 specialized agents (visible in `/agents`). Delegate to them proactively:
 
 | Agent | When to Delegate | Mode |
 |---|---|---|
 | `vault-explorer` | Before creating notes on a topic, when researching existing knowledge | Foreground |
-| `devlog-updater` | After completing a significant development block, before session ends | Background |
-| `knowledge-sweeper` | After significant work that produced decisions, research, tasks, or gotchas | Background |
+| `pkm-capture` | After git commits (automatic via hook), after significant work blocks, before session ends | Background |
 | `link-auditor` | After creating/modifying multiple vault notes, periodic health checks | Background |
 
-**Devlog-updater context:** When delegating, include whether this is the first devlog update this session or a subsequent one (with previous entry timestamp). The agent discovers the transcript path itself.
-
-**Knowledge-sweeper is conservative:** Most work produces nothing worth capturing. Only delegate when something genuinely PKM-worthy occurred (decisions, research findings, bug root causes, new tasks).
+**pkm-capture context:** When delegating, include whether this is the first capture this session or a subsequent one (with previous entry timestamp). The agent discovers the transcript path itself. It handles both devlog entries and knowledge capture (decisions, research, tasks, bugs) in one pass. Conservative — most exchanges produce nothing worth capturing beyond the devlog entry.
 
 **Templates** (`templates/`): Obsidian note templates for project documentation:
 - `project-index.md` - Project overview with YAML frontmatter
@@ -329,7 +326,7 @@ Common types: `fleeting`, `research`, `adr`, `bug`, `planning`, `transcript`, `p
 - **Vault project**: `01-Projects/Obsidian-MCP/`
 - **MCP Server**: `obsidian-pkm` plugin
 
-Document decisions, research findings, and debugging sessions as you work. The `knowledge-sweeper` agent captures PKM-worthy content in the background, or use the `obsidian-pkm:pkm-write` skill for structured notes with linking.
+Document decisions, research findings, and debugging sessions as you work. The `pkm-capture` agent captures devlog entries and PKM-worthy content in the background (triggered automatically after git commits), or use the `obsidian-pkm:pkm-write` skill for structured notes with linking.
 
 Use `obsidian-pkm:pkm-explore` to research what the vault already knows about a topic before creating new content.
 
