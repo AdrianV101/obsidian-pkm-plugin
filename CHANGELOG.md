@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [3.5.1] - 2026-03-30
+
+### Fixed
+- PKM capture workflow now routes each item to update-or-create independently — enriches existing notes (`vault_append`/`vault_edit`) when a close match exists instead of always creating new ones
+- `pkm-write` Step 1 duplicate check now provides a concrete update workflow when similarity > 0.8 (was just "suggest editing")
+- Added task status update path (`vault_update_frontmatter`) to capture workflow
+
 ## [3.5.0] - 2026-03-30
 
 ### Added
@@ -432,7 +439,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Atomic file creation in `vault_write` (`wx` flag) prevents race conditions
 - Error messages sanitized to prevent leaking absolute vault paths
 
-[Unreleased]: https://github.com/AdrianV101/obsidian-pkm-plugin/compare/v3.5.0...HEAD
+[Unreleased]: https://github.com/AdrianV101/obsidian-pkm-plugin/compare/v3.5.1...HEAD
+[3.5.1]: https://github.com/AdrianV101/obsidian-pkm-plugin/compare/v3.5.0...v3.5.1
 [3.5.0]: https://github.com/AdrianV101/obsidian-pkm-plugin/compare/v3.4.0...v3.5.0
 [3.4.0]: https://github.com/AdrianV101/obsidian-pkm-plugin/compare/v3.3.1...v3.4.0
 [3.3.1]: https://github.com/AdrianV101/obsidian-pkm-plugin/compare/v3.3.0...v3.3.1
