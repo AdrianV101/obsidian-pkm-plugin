@@ -15,11 +15,12 @@ Before creating, search for existing notes on the same topic:
 vault_semantic_search({ query: "<topic/title of intended note>", limit: 5 })
 ```
 
-- If a result has similarity **> 0.8**: **flag as likely duplicate** — suggest editing the existing note instead of creating a new one
-- If results are **0.5–0.8**: mention them as potentially related but proceed with creation
-- If **no close matches** or no relevant results: proceed with creation
+If `vault_semantic_search` is unavailable (no `OBSIDIAN_PKM_OPENAI_KEY`), use `vault_search` with the note's title and key terms, and `vault_query` with matching tags to check for duplicates.
 
-If `vault_semantic_search` is unavailable (no `OPENAI_API_KEY`), use `vault_search` with the note's title and key terms, and `vault_query` with matching tags to check for duplicates.
+**Route based on results:**
+- **Close match (similarity > 0.8)**: **Update the existing note** instead of creating a new one. Read it with `vault_read`, then use `vault_append` to add new content or `vault_edit` to refine existing content. Use `vault_update_frontmatter` if metadata changed. Skip to Step 3 (Discover Connections) after updating.
+- **Partial matches (0.5–0.8)**: Mention as potentially related, proceed with creation at Step 2. Link to them in Step 5.
+- **No close matches**: Proceed with creation at Step 2.
 
 ## Step 2: Create the Note
 

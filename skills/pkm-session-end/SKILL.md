@@ -54,9 +54,42 @@ Note which files were created, modified, and searched.
 
 ## Step 3: Capture Undocumented Work
 
-Review the session's conversation for significant work that only exists in chat history:
+Review the session's conversation for significant work that only exists in chat history. Most exchanges produce nothing worth capturing beyond the devlog entry in Step 1. When in doubt, don't capture — a missed capture is better than vault noise.
 
-| Found in conversation | Template | Default Path |
+Skip entirely if the session was purely mechanical (config changes, minor fixes).
+
+**For each PKM-worthy item independently**, determine whether to update an existing note or create a new one:
+
+### 3a: Check for existing coverage
+
+For each item, search the vault:
+
+```
+vault_semantic_search({ query: "<topic/title>", limit: 5 })
+```
+
+If unavailable, use `vault_search` with key terms + `vault_query` with matching tags.
+
+**Route based on results:**
+- **Close match (similarity > 0.8)**: Go to **3b** (update existing note)
+- **No close match**: Go to **3c** (create new note)
+- **Task status change**: Go to **3d** (update task)
+
+### 3b: Update existing note
+
+When a note already covers this topic, enrich it rather than creating a duplicate:
+
+- `vault_read` the existing note to understand its current content
+- `vault_append` to add new findings, with a date-stamped section if the note uses chronological entries
+- `vault_edit` to update outdated information (e.g., refining a decision's rationale, adding a new root cause to a troubleshooting log)
+- `vault_update_frontmatter` to update status or other metadata if changed
+- After updating, run `vault_suggest_links` to discover new connections worth adding
+
+### 3c: Create new note
+
+Follow the pkm-write skill workflow for proper duplicate checking, template selection, and linking:
+
+| Content Type | Template | Default Path |
 |---|---|---|
 | Architecture/design decisions | `adr` | `<project>/development/decisions/ADR-NNN-{title}.md` |
 | Research findings or evaluations | `research-note` | `<project>/research/{title}.md` |
@@ -64,13 +97,15 @@ Review the session's conversation for significant work that only exists in chat 
 | Reusable insights or patterns | `permanent-note` | `03-Resources/Development/{title}.md` |
 | New tasks identified | `task` | `<project>/tasks/{title}.md` |
 
-Where `<project>` is the vault project path from session context. See `pkm-write` Step 2 for the full mapping and Resources guidance.
+Where `<project>` is the vault project path from session context.
 
-Follow the pkm-write creation workflow for each note to get proper duplicate checking and linking.
+### 3d: Update task status
 
-Skip if the session was purely mechanical (config changes, minor fixes) with nothing worth documenting beyond the devlog.
+When a task's status, priority, or details changed during the session:
 
-Most exchanges produce nothing worth capturing beyond the devlog entry in Step 1. When in doubt, don't create a note — a missed capture is better than vault noise.
+1. `vault_query({ type: "task", custom_fields: { project: "<Project>" } })` to find the task
+2. `vault_update_frontmatter` to update status/priority
+3. Optionally `vault_append` to add context about what changed
 
 ## Step 4: Quality Check
 
