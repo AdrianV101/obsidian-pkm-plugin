@@ -9,6 +9,24 @@
           "timeout": 15
         }]
       }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [{
+          "type": "command",
+          "if": "Bash(git commit*)",
+          "command": "${CLAUDE_PLUGIN_ROOT}/hooks/pre-commit-reminder.sh"
+        }]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [{
+          "type": "command",
+          "command": "${CLAUDE_PLUGIN_ROOT}/hooks/stop-knowledge-check.sh"
+        }]
+      }
     ]
   }
 }

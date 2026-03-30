@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [3.4.0] - 2026-03-30
+
+### Added
+- **PreToolUse hook** (`pre-commit-reminder.sh`): Automatically reminds Claude to dispatch the devlog-updater agent after every git commit. Fires on `Bash(git commit*)`, injects context — zero cost, no AI invocation.
+- **Stop hook** (`stop-knowledge-check.sh`): Prompts Claude to consider dispatching the knowledge-sweeper agent before stopping. Blocks the first Stop to trigger evaluation; allows the second Stop via `stop_hook_active` guard. Ensures decisions, research findings, and tasks are captured without relying on Claude's memory.
+
 ## [3.3.1] - 2026-03-30
 
 ### Fixed
@@ -411,7 +417,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Atomic file creation in `vault_write` (`wx` flag) prevents race conditions
 - Error messages sanitized to prevent leaking absolute vault paths
 
-[Unreleased]: https://github.com/AdrianV101/obsidian-pkm-plugin/compare/v3.3.1...HEAD
+[Unreleased]: https://github.com/AdrianV101/obsidian-pkm-plugin/compare/v3.4.0...HEAD
+[3.4.0]: https://github.com/AdrianV101/obsidian-pkm-plugin/compare/v3.3.1...v3.4.0
 [3.3.1]: https://github.com/AdrianV101/obsidian-pkm-plugin/compare/v3.3.0...v3.3.1
 [3.3.0]: https://github.com/AdrianV101/obsidian-pkm-plugin/compare/v3.2.2...v3.3.0
 [3.2.2]: https://github.com/AdrianV101/obsidian-pkm-plugin/compare/v3.2.1...v3.2.2
