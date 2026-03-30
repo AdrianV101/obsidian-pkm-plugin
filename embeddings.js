@@ -134,60 +134,7 @@ export class SemanticIndex {
    * @returns {Promise<string>} formatted results text
    */
   async search({ query, limit = 5, folder, threshold }) {
-    if (!this.isAvailable) {
-      throw new Error("Semantic index not available");
-    }
-
-    // Embed the query
-    const [queryEmbedding] = await getEmbeddings([query], this.openaiApiKey);
-
-    // KNN search via sqlite-vec
-    const vecResults = this.db.prepare(`
-      SELECT rowid, distance
-      FROM vec_chunks
-      WHERE embedding MATCH ?
-      ORDER BY distance
-      LIMIT ?
-    `).all(
-      new Float32Array(queryEmbedding),
-      Math.min(limit * 3, 50) // overfetch for folder filtering
-    );
-
-    // Join with chunk metadata
-    const results = [];
-    const getChunk = this.db.prepare(`
-      SELECT file_path, chunk_index, heading, content_preview
-      FROM chunks WHERE id = ?
-    `);
-
-    const seenFiles = new Set();
-    for (const { rowid, distance } of vecResults) {
-      if (results.length >= limit) break;
-
-      const chunk = getChunk.get(rowid);
-      if (!chunk) continue;
-
-      // Folder filter (ensure prefix matches at directory boundary)
-      if (folder) {
-        const prefix = folder.endsWith("/") ? folder : folder + "/";
-        if (!chunk.file_path.startsWith(prefix)) continue;
-      }
-
-      // Threshold filter (convert L2 to similarity: 1 - distance/2)
-      const score = Math.max(0, Math.min(1, 1 - distance / 2));
-      if (threshold && score < threshold) continue;
-
-      // Deduplicate by file (show best chunk per file)
-      if (seenFiles.has(chunk.file_path)) continue;
-      seenFiles.add(chunk.file_path);
-
-      results.push({
-        path: chunk.file_path,
-        heading: chunk.heading,
-        score: Math.round(score * 1000) / 1000,
-        preview: chunk.content_preview
-      });
-    }
+    const results = await this.searchRaw({ query, limit, folder, threshold });
 
     // Format output
     let syncNote = "";
@@ -215,7 +162,7 @@ export class SemanticIndex {
    * @param {string} [opts.folder] - restrict to folder prefix
    * @param {number} [opts.threshold] - minimum similarity score (0-1)
    * @param {Set<string>} [opts.excludeFiles] - file paths to exclude
-   * @returns {Promise<Array<{path: string, score: number, preview: string}>>}
+   * @returns {Promise<Array<{path: string, heading: string|null, score: number, preview: string}>>}
    */
   async searchRaw({ query, limit = 5, folder, threshold, excludeFiles }) {
     if (!this.isAvailable) {
@@ -263,6 +210,7 @@ export class SemanticIndex {
 
       results.push({
         path: chunk.file_path,
+        heading: chunk.heading,
         score: Math.round(score * 1000) / 1000,
         preview: chunk.content_preview
       });

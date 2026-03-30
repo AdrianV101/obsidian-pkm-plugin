@@ -594,6 +594,34 @@ A note about project management and agile methodology.
     await idx.shutdown();
   });
 
+  it("search() results are consistent with searchRaw()", async () => {
+    globalThis.fetch = mockFetch;
+
+    const dbPath = path.join(tmpDir, "test-search-consistency.db");
+    const idx = new SemanticIndex({
+      vaultPath: tmpDir,
+      openaiApiKey: "test-key",
+      dbPath,
+    });
+    await idx.initialize();
+    idx._abortController.abort();
+    await new Promise(r => setTimeout(r, 100));
+
+    await idx.reindexFile("notes/note-a.md");
+    await idx.reindexFile("notes/note-b.md");
+
+    const formatted = await idx.search({ query: "machine learning", limit: 2 });
+    const raw = await idx.searchRaw({ query: "machine learning", limit: 2 });
+
+    // Every raw result path should appear in the formatted string
+    for (const r of raw) {
+      assert.ok(formatted.includes(r.path), `Formatted output should contain ${r.path}`);
+      assert.ok(formatted.includes(String(r.score)), `Formatted output should contain score ${r.score}`);
+    }
+
+    await idx.shutdown();
+  });
+
   it("searchRaw() returns array of result objects", async () => {
     globalThis.fetch = mockFetch;
 
