@@ -56,7 +56,7 @@ async function main() {
     const output = {
       hookSpecificOutput: {
         hookEventName: "SessionStart",
-        additionalContext: "PKM hook warning: VAULT_PATH environment variable not set. Vault context unavailable."
+        additionalContext: "PKM hook warning: VAULT_PATH not set. Run /obsidian-pkm:setup to configure your vault path."
       }
     };
     console.log(JSON.stringify(output));

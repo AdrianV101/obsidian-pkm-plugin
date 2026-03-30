@@ -6,6 +6,56 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [3.3.0] - 2026-03-30
+
+### Fixed
+- `vault_recent` and `vault_search` now return vault-root-relative paths when using `folder` argument (was returning folder-relative paths, breaking tool chaining)
+- `handleRead`/`handlePeek` ENOENT errors no longer leak absolute vault paths
+- CLAUDE.md: invalid `"in-progress"` status in example replaced with `"active"`
+- CLAUDE.md: `vault_list` added to fuzzy folder resolution tools, `vault_update_frontmatter` added to exact-path tools
+- CONTRIBUTING.md: removed stale "passive capture" reference from hooks description
+- SECURITY.md: updated primary env var name to `OBSIDIAN_PKM_OPENAI_KEY`
+- CHANGELOG: added missing entries for v3.1.1, v3.2.0, v3.2.1, v3.2.2 and comparison links for all 3.x versions
+- Publish workflow: explicit `registry-url`, `NODE_AUTH_TOKEN`, and `contents: read` permission
+
+### Added
+- Numeric parameter validation (`positiveInt` helper) for `limit`, `depth`, `tail`, `chunk`, and related params across all handlers
+- `unhandledRejection` handler in MCP server for crash resilience
+- Fuzzy resolution hints in tool descriptions (9 tools updated) so Claude knows short names work
+- VAULT_PATH recovery guidance in SessionStart hook warning message
+- README: restart guidance after setup, improved opening paragraph
+
+### Changed
+- All user-facing error messages and tool descriptions now reference `OBSIDIAN_PKM_OPENAI_KEY` (was `OPENAI_API_KEY`)
+
+## [3.2.2] - 2026-03-30
+
+### Fixed
+- Show systemMessage hint when no vault project found in SessionStart hook
+
+## [3.2.1] - 2026-03-29
+
+### Fixed
+- Inline MCP config into plugin.json, remove separate .mcp.json file
+- `vault_list` now uses fuzzy folder resolution (consistent with other folder-scoped tools)
+- Bump plugin.json version to match package.json (was stuck at old version)
+
+### Changed
+- Added dual version bump convention to CLAUDE.md
+
+## [3.2.0] - 2026-03-29
+
+### Added
+- Show semantic embedding health (embedded/total notes) in SessionStart systemMessage
+
+## [3.1.1] - 2026-03-28
+
+### Changed
+- Updated README architecture diagram and file layout for plugin structure
+
+### Added
+- Show context injection summary in SessionStart hook output
+
 ## [3.1.0] - 2026-03-28
 
 ### Changed
@@ -347,7 +397,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Atomic file creation in `vault_write` (`wx` flag) prevents race conditions
 - Error messages sanitized to prevent leaking absolute vault paths
 
-[Unreleased]: https://github.com/AdrianV101/obsidian-pkm-plugin/compare/v2.1.6...HEAD
+[Unreleased]: https://github.com/AdrianV101/obsidian-pkm-plugin/compare/v3.3.0...HEAD
+[3.3.0]: https://github.com/AdrianV101/obsidian-pkm-plugin/compare/v3.2.2...v3.3.0
+[3.2.2]: https://github.com/AdrianV101/obsidian-pkm-plugin/compare/v3.2.1...v3.2.2
+[3.2.1]: https://github.com/AdrianV101/obsidian-pkm-plugin/compare/v3.2.0...v3.2.1
+[3.2.0]: https://github.com/AdrianV101/obsidian-pkm-plugin/compare/v3.1.1...v3.2.0
+[3.1.1]: https://github.com/AdrianV101/obsidian-pkm-plugin/compare/v3.1.0...v3.1.1
+[3.1.0]: https://github.com/AdrianV101/obsidian-pkm-plugin/compare/v3.0.6...v3.1.0
+[3.0.6]: https://github.com/AdrianV101/obsidian-pkm-plugin/compare/v3.0.5...v3.0.6
+[3.0.5]: https://github.com/AdrianV101/obsidian-pkm-plugin/compare/v3.0.4...v3.0.5
+[3.0.4]: https://github.com/AdrianV101/obsidian-pkm-plugin/compare/v3.0.3...v3.0.4
+[3.0.3]: https://github.com/AdrianV101/obsidian-pkm-plugin/compare/v3.0.2...v3.0.3
+[3.0.2]: https://github.com/AdrianV101/obsidian-pkm-plugin/compare/v3.0.1...v3.0.2
+[3.0.1]: https://github.com/AdrianV101/obsidian-pkm-plugin/compare/v3.0.0...v3.0.1
+[3.0.0]: https://github.com/AdrianV101/obsidian-pkm-plugin/compare/v2.1.6...v3.0.0
 [2.1.6]: https://github.com/AdrianV101/obsidian-pkm-plugin/compare/v2.1.5...v2.1.6
 [2.1.5]: https://github.com/AdrianV101/obsidian-pkm-plugin/compare/v2.1.4...v2.1.5
 [2.1.4]: https://github.com/AdrianV101/obsidian-pkm-plugin/compare/v2.1.3...v2.1.4

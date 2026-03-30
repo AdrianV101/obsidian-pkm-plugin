@@ -48,7 +48,7 @@ graph.js        - Wikilink resolution and BFS graph traversal
 embeddings.js   - Semantic search (OpenAI embeddings, SQLite + sqlite-vec)
 activity.js     - Activity logging (session tracking, SQLite)
 utils.js        - Shared utilities (frontmatter parsing, file listing)
-hooks/          - Claude Code hooks (session context, passive capture)
+hooks/          - Claude Code hooks (session context loading)
 templates/      - Obsidian note templates (copy to vault's 05-Templates/)
 sample-project/ - Sample CLAUDE.md for integrating PKM into your repos
 ```

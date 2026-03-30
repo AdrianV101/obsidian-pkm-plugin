@@ -5,7 +5,9 @@
 [![Node.js >= 20](https://img.shields.io/badge/Node.js-%3E%3D20-green.svg)](https://nodejs.org/)
 [![CI](https://github.com/AdrianV101/obsidian-pkm-plugin/actions/workflows/ci.yml/badge.svg)](https://github.com/AdrianV101/obsidian-pkm-plugin/actions/workflows/ci.yml)
 
-A Claude Code plugin that turns your Obsidian vault into persistent, structured memory for AI coding assistants. Provides 20 MCP tools for note creation, semantic search, graph traversal, metadata queries, and session memory — plus agents, hooks, and skills for seamless workflow integration. Published on npm as [`obsidian-pkm`](https://www.npmjs.com/package/obsidian-pkm).
+Give Claude persistent, structured memory across conversations using your Obsidian vault. Read, write, search, and navigate your knowledge base — all from within Claude Code.
+
+Under the hood, this Claude Code plugin provides 20 MCP tools for note creation, semantic search, graph traversal, metadata queries, and session memory — plus agents, hooks, and skills for seamless workflow integration. Published on npm as [`obsidian-pkm`](https://www.npmjs.com/package/obsidian-pkm).
 
 ## Why
 
@@ -104,6 +106,8 @@ Run the setup skill in Claude Code:
 ```
 
 The setup skill walks you through vault path, API keys, tool permissions, and verification. Hooks are registered automatically by the plugin system.
+
+**Important:** Restart your Claude Code session after setup completes so the MCP server picks up the new configuration.
 
 ### 3. Scaffold Your Vault (optional)
 

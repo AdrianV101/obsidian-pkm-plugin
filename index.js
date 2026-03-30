@@ -26,7 +26,7 @@ export async function startServer() {
   let templateRegistry = new Map();
   let templateDescriptions = "";
 
-  // Semantic index (populated at startup if OPENAI_API_KEY is set)
+  // Semantic index (populated at startup if OBSIDIAN_PKM_OPENAI_KEY is set)
   let semanticIndex = null;
 
   // Activity log (populated at startup)
@@ -51,7 +51,7 @@ export async function startServer() {
         inputSchema: {
           type: "object",
           properties: {
-            path: { type: "string", description: "Path relative to vault root (e.g., '01-Projects/MyApp/_index.md')" },
+            path: { type: "string", description: "Path relative to vault root (supports short names, e.g. 'devlog')" },
             heading: { type: "string", description: "Read only the section under this heading (exact match, case-sensitive). Returns heading line + content until next same-or-higher-level heading." },
             tail: { type: "number", description: "Return the last N lines of the file. Frontmatter is always prepended." },
             tail_sections: { type: "number", description: "Return the last N sections at the specified heading level. Frontmatter is always prepended." },
@@ -178,7 +178,7 @@ Pass custom <%...%> variables via the 'variables' parameter.`,
           type: "object",
           properties: {
             query: { type: "string", description: "Search query (case-insensitive)" },
-            folder: { type: "string", description: "Optional: limit search to this folder" },
+            folder: { type: "string", description: "Optional: limit search to this folder (supports partial names, e.g. 'MyApp')" },
             limit: { type: "number", description: "Max results to return", default: 10 }
           },
           required: ["query"]
@@ -190,7 +190,7 @@ Pass custom <%...%> variables via the 'variables' parameter.`,
         inputSchema: {
           type: "object",
           properties: {
-            path: { type: "string", description: "Path relative to vault root (default: root)", default: "" },
+            path: { type: "string", description: "Path relative to vault root (supports partial names, e.g. 'MyApp'; default: root)", default: "" },
             recursive: { type: "boolean", description: "List recursively", default: false },
             pattern: { type: "string", description: "Glob pattern to filter (e.g., '*.md')" }
           }
@@ -203,7 +203,7 @@ Pass custom <%...%> variables via the 'variables' parameter.`,
           type: "object",
           properties: {
             limit: { type: "number", description: "Number of files to return", default: 10 },
-            folder: { type: "string", description: "Optional: limit to this folder" }
+            folder: { type: "string", description: "Optional: limit to this folder (supports partial names, e.g. 'MyApp')" }
           }
         }
       },
@@ -213,7 +213,7 @@ Pass custom <%...%> variables via the 'variables' parameter.`,
         inputSchema: {
           type: "object",
           properties: {
-            path: { type: "string", description: "Path to the note" },
+            path: { type: "string", description: "Path to the note (supports short names, e.g. 'devlog')" },
             direction: { type: "string", enum: ["incoming", "outgoing", "both"], default: "both" }
           },
           required: ["path"]
@@ -225,7 +225,7 @@ Pass custom <%...%> variables via the 'variables' parameter.`,
         inputSchema: {
           type: "object",
           properties: {
-            path: { type: "string", description: "Path to the starting note (relative to vault root)" },
+            path: { type: "string", description: "Path to the starting note (supports short names, e.g. 'devlog')" },
             depth: { type: "number", description: "Traversal depth — how many hops to follow (default: 2)", default: 2 },
             direction: {
               type: "string",
@@ -235,7 +235,7 @@ Pass custom <%...%> variables via the 'variables' parameter.`,
             },
             include_semantic: {
               type: "boolean",
-              description: "Append semantically related but unlinked notes (requires OPENAI_API_KEY, default: false)"
+              description: "Append semantically related but unlinked notes (requires OBSIDIAN_PKM_OPENAI_KEY, default: false)"
             },
             semantic_limit: {
               type: "number",
@@ -257,7 +257,7 @@ Pass custom <%...%> variables via the 'variables' parameter.`,
             tags_any: { type: "array", items: { type: "string" }, description: "ANY tag must be present (case-insensitive)" },
             created_after: { type: "string", description: "Notes created on or after this date (YYYY-MM-DD)" },
             created_before: { type: "string", description: "Notes created on or before this date (YYYY-MM-DD)" },
-            folder: { type: "string", description: "Limit search to this folder" },
+            folder: { type: "string", description: "Limit search to this folder (supports partial names, e.g. 'MyApp')" },
             limit: { type: "number", description: "Max results to return", default: 50 },
             custom_fields: {
               type: "object",
@@ -283,7 +283,7 @@ Pass custom <%...%> variables via the 'variables' parameter.`,
         inputSchema: {
           type: "object",
           properties: {
-            folder: { type: "string", description: "Optional: limit to this folder (e.g., '01-Projects')" },
+            folder: { type: "string", description: "Optional: limit to this folder (supports partial names, e.g. 'MyApp')" },
             pattern: { type: "string", description: "Glob-like filter: 'pkm/*' (hierarchical), '*research*' (substring), 'dev*' (prefix)" },
             include_inline: { type: "boolean", description: "Also parse inline #tags from note bodies (default: false, frontmatter only)", default: false }
           }
@@ -427,7 +427,7 @@ Pass custom <%...%> variables via the 'variables' parameter.`,
     if (semanticIndex?.isAvailable) {
       tools.push({
         name: "vault_semantic_search",
-        description: "Search the vault using semantic similarity. Finds conceptually related notes even when they use different words. Requires OPENAI_API_KEY.",
+        description: "Search the vault using semantic similarity. Finds conceptually related notes even when they use different words. Requires OBSIDIAN_PKM_OPENAI_KEY.",
         inputSchema: {
           type: "object",
           properties: {
@@ -454,7 +454,7 @@ Pass custom <%...%> variables via the 'variables' parameter.`,
           type: "object",
           properties: {
             content: { type: "string", description: "Text content to find link suggestions for. Takes precedence over path." },
-            path: { type: "string", description: "Path to an existing note to suggest links for. Used if content is not provided." },
+            path: { type: "string", description: "Path to an existing note to suggest links for (supports short names, e.g. 'devlog'). Used if content is not provided." },
             limit: { type: "number", description: "Max suggestions to return (default: 5)", default: 5 },
             folder: { type: "string", description: "Optional: limit suggestions to this folder (e.g., '01-Projects')" },
             threshold: { type: "number", description: "Minimum similarity score 0-1 (default: no threshold)" },
@@ -529,7 +529,7 @@ Pass custom <%...%> variables via the 'variables' parameter.`,
         semanticIndex = null;
       }
     } else {
-      console.error("OPENAI_API_KEY not set — semantic search disabled");
+      console.error("OBSIDIAN_PKM_OPENAI_KEY not set — semantic search disabled");
     }
 
     try {
@@ -577,6 +577,9 @@ Pass custom <%...%> variables via the 'variables' parameter.`,
 
   process.on("SIGINT", () => shutdown());
   process.on("SIGTERM", () => shutdown());
+  process.on("unhandledRejection", (reason) => {
+    console.error("Unhandled rejection:", reason);
+  });
 
   initializeServer().catch(err => {
     console.error("Fatal:", err);

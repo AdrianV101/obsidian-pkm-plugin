@@ -19,7 +19,7 @@ This project handles local file system access to an Obsidian vault. The main sec
 
 - **Path traversal** -- The server validates all paths to prevent escaping the vault directory
 - **SQL injection** -- All SQLite queries use parameterized statements
-- **API keys** -- The `OPENAI_API_KEY` is passed via environment variable, never stored in code or logs
+- **API keys** -- The `OBSIDIAN_PKM_OPENAI_KEY` (or `OPENAI_API_KEY` fallback) is passed via environment variable, never stored in code or logs
 
 ## Supported Versions
 

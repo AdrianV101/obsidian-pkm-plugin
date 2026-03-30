@@ -27,6 +27,11 @@ import {
 import { exploreNeighborhood, formatNeighborhood, findFilesLinkingTo, rewriteWikilinks, extractWikilinks, resolveLink, buildIncomingIndex } from "./graph.js";
 import { getAllMarkdownFiles, extractFrontmatter } from "./utils.js";
 
+function positiveInt(value, fallback) {
+  const n = Math.floor(Number(value));
+  return Number.isFinite(n) && n >= 1 ? n : fallback;
+}
+
 /**
  * Create all tool handler functions with shared context.
  * @param {Object} ctx
@@ -86,7 +91,13 @@ export async function createHandlers({ vaultPath, templateRegistry, semanticInde
 
   async function handleRead(args) {
     const filePath = resolveFile(args.path);
-    const content = await fs.readFile(filePath, "utf-8");
+    let content;
+    try {
+      content = await fs.readFile(filePath, "utf-8");
+    } catch (e) {
+      if (e.code === "ENOENT") throw new Error(`File not found: ${args.path}`, { cause: e });
+      throw e;
+    }
 
     // Validate mutual exclusivity
     const modeCount = [
@@ -142,19 +153,21 @@ export async function createHandlers({ vaultPath, templateRegistry, semanticInde
         }
       }
       const lines = body.split("\n");
-      const tailLines = lines.slice(-args.tail);
+      const tailCount = positiveInt(args.tail, 20);
+      const tailLines = lines.slice(-tailCount);
       text = frontmatter + (frontmatter && !frontmatter.endsWith("\n") ? "\n" : "") + tailLines.join("\n");
     } else if (args.tail_sections) {
-      const level = args.section_level || 2;
-      text = extractTailSections(content, args.tail_sections, level);
+      const level = positiveInt(args.section_level, 2);
+      text = extractTailSections(content, positiveInt(args.tail_sections, 3), level);
     } else if (args.chunk !== undefined) {
+      const chunk = positiveInt(args.chunk, 0);
       const totalChunks = Math.ceil(content.length / CHUNK_SIZE);
-      if (args.chunk < 1 || args.chunk > totalChunks) {
-        throw new Error(`Invalid chunk: ${args.chunk}. File has ${totalChunks} chunk${totalChunks === 1 ? "" : "s"} (1-indexed).`);
+      if (chunk < 1 || chunk > totalChunks) {
+        throw new Error(`Invalid chunk: ${chunk}. File has ${totalChunks} chunk${totalChunks === 1 ? "" : "s"} (1-indexed).`);
       }
-      const start = (args.chunk - 1) * CHUNK_SIZE;
+      const start = (chunk - 1) * CHUNK_SIZE;
       const end = Math.min(start + CHUNK_SIZE, content.length);
-      text = `[Chunk ${args.chunk} of ${totalChunks}, chars ${start + 1}-${end} of ${content.length}]\n\n` + content.slice(start, end);
+      text = `[Chunk ${chunk} of ${totalChunks}, chars ${start + 1}-${end} of ${content.length}]\n\n` + content.slice(start, end);
     } else if (args.lines) {
       const allLines = content.split("\n");
       const { start, end } = args.lines;
@@ -170,7 +183,13 @@ export async function createHandlers({ vaultPath, templateRegistry, semanticInde
 
   async function handlePeek(args) {
     const filePath = resolveFile(args.path);
-    const content = await fs.readFile(filePath, "utf-8");
+    let content;
+    try {
+      content = await fs.readFile(filePath, "utf-8");
+    } catch (e) {
+      if (e.code === "ENOENT") throw new Error(`File not found: ${args.path}`, { cause: e });
+      throw e;
+    }
     const relativePath = path.relative(vaultPath, filePath);
     const peekData = computePeek(content, relativePath);
     return { content: [{ type: "text", text: formatPeek(peekData) }] };
@@ -311,10 +330,11 @@ export async function createHandlers({ vaultPath, templateRegistry, semanticInde
 
   async function handleSearch(args) {
     const searchDir = args.folder ? resolveFolder(args.folder) : vaultPath;
+    const folderPrefix = args.folder ? path.relative(vaultPath, searchDir) : "";
     const files = await getAllMarkdownFiles(searchDir);
     const results = [];
     const query = args.query.toLowerCase();
-    const limit = args.limit || 10;
+    const limit = positiveInt(args.limit, 10);
 
     for (const file of files) {
       if (results.length >= limit) break;
@@ -328,7 +348,7 @@ export async function createHandlers({ vaultPath, templateRegistry, semanticInde
           .slice(0, 3);
 
         results.push({
-          path: file,
+          path: folderPrefix ? path.join(folderPrefix, file) : file,
           matches: matchingLines.map(m => `L${m.num}: ${m.line.trim().slice(0, 100)}`)
         });
       }
@@ -391,13 +411,14 @@ export async function createHandlers({ vaultPath, templateRegistry, semanticInde
 
   async function handleRecent(args) {
     const searchDir = args.folder ? resolveFolder(args.folder) : vaultPath;
+    const folderPrefix = args.folder ? path.relative(vaultPath, searchDir) : "";
     const files = await getAllMarkdownFiles(searchDir);
-    const limit = args.limit || 10;
+    const limit = positiveInt(args.limit, 10);
 
     const withStats = await Promise.all(
       files.map(async (file) => {
         const stat = await fs.stat(path.join(searchDir, file));
-        return { path: file, mtime: stat.mtime };
+        return { path: folderPrefix ? path.join(folderPrefix, file) : file, mtime: stat.mtime };
       })
     );
 
@@ -443,7 +464,7 @@ export async function createHandlers({ vaultPath, templateRegistry, semanticInde
 
   async function handleNeighborhood(args) {
     const resolvedPath = resolveFuzzyPath(args.path, basenameMap, allFilesSet);
-    const depth = Math.min(args.depth || 2, 5);
+    const depth = Math.min(positiveInt(args.depth, 2), 5);
     const direction = args.direction || "both";
 
     const result = await exploreNeighborhood({
@@ -461,7 +482,7 @@ export async function createHandlers({ vaultPath, templateRegistry, semanticInde
 
     // --- Semantic expansion (Tier 3) ---
     if (args.include_semantic && !semanticIndex?.isAvailable) {
-      text += "\n(Semantic expansion skipped: OPENAI_API_KEY not set)\n";
+      text += "\n(Semantic expansion skipped: OBSIDIAN_PKM_OPENAI_KEY not set)\n";
     } else if (args.include_semantic && semanticIndex?.isAvailable) {
       const filePath = resolvePath(resolvedPath);
       const noteContent = await fs.readFile(filePath, "utf-8");
@@ -510,7 +531,7 @@ export async function createHandlers({ vaultPath, templateRegistry, semanticInde
   async function handleQuery(args) {
     const searchDir = args.folder ? resolveFolder(args.folder) : vaultPath;
     const files = await getAllMarkdownFiles(searchDir);
-    const limit = args.limit || 50;
+    const limit = positiveInt(args.limit, 50);
     const results = [];
 
     const filters = {
@@ -629,7 +650,7 @@ export async function createHandlers({ vaultPath, templateRegistry, semanticInde
 
     if (action === "query") {
       const entries = activityLog?.query({
-        limit: args.limit || 50,
+        limit: positiveInt(args.limit, 50),
         tool: args.tool,
         session: args.session,
         since: args.since,
@@ -677,7 +698,7 @@ export async function createHandlers({ vaultPath, templateRegistry, semanticInde
 
   async function handleSemanticSearch(args) {
     if (!semanticIndex?.isAvailable) {
-      throw new Error("Semantic search not available (OPENAI_API_KEY not set)");
+      throw new Error("Semantic search not available (OBSIDIAN_PKM_OPENAI_KEY not set)");
     }
 
     // --- Anchor blending (Tier 3) ---
@@ -751,7 +772,7 @@ export async function createHandlers({ vaultPath, templateRegistry, semanticInde
 
   async function handleSuggestLinks(args) {
     if (!semanticIndex?.isAvailable) {
-      throw new Error("Link suggestions not available (OPENAI_API_KEY not set)");
+      throw new Error("Link suggestions not available (OBSIDIAN_PKM_OPENAI_KEY not set)");
     }
 
     let inputText = args.content;
