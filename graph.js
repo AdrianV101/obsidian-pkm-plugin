@@ -205,7 +205,12 @@ export async function exploreNeighborhood({
   if (startFullPath !== vaultPath && !startFullPath.startsWith(vaultPath + path.sep)) {
     throw new Error("Path escapes vault directory");
   }
-  await fs.access(startFullPath); // throws if missing
+  try {
+    await fs.access(startFullPath);
+  } catch (e) {
+    if (e.code === "ENOENT") throw new Error(`File not found: ${startPath}`, { cause: e });
+    throw e;
+  }
 
   // Build indexes once
   const allFiles = await getAllMarkdownFiles(vaultPath);

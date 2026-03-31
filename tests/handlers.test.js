@@ -527,7 +527,7 @@ describe("handleRead lines param", () => {
     const handler = handlers.get("vault_read");
     await assert.rejects(
       () => handler({ path: "notes/alpha.md", lines: { start: 0, end: 5 } }),
-      /Invalid line range/
+      /positive integers/
     );
   });
 
@@ -552,6 +552,20 @@ describe("handleRead lines param", () => {
     await assert.rejects(
       () => handler({ path: "notes/alpha.md", lines: { start: 1, end: 5 }, chunk: 1 }),
       /Only one of/
+    );
+  });
+
+  it("vault_read rejects non-numeric lines.start and lines.end", async () => {
+    await assert.rejects(
+      () => handlers.get("vault_read")({ path: "notes/alpha.md", lines: { start: "abc", end: "xyz" } }),
+      /positive integers/
+    );
+  });
+
+  it("vault_read rejects negative lines values", async () => {
+    await assert.rejects(
+      () => handlers.get("vault_read")({ path: "notes/alpha.md", lines: { start: -1, end: 5 } }),
+      /positive integers/
     );
   });
 });
@@ -988,6 +1002,13 @@ More content.
     assert.ok(!content.includes("undefined"), "File should not contain 'undefined'");
     assert.ok(content.includes("## Section One"), "File content should be intact");
   });
+
+  it("vault_append rejects empty content", async () => {
+    await assert.rejects(
+      () => handlers.get("vault_append")({ path: "notes/alpha.md", content: "" }),
+      /content must be a non-empty string/
+    );
+  });
 });
 
 // ─── vault_edit ────────────────────────────────────────────────────────
@@ -1036,6 +1057,13 @@ describe("handleEdit", () => {
       }
     );
   });
+
+  it("vault_edit rejects empty old_string", async () => {
+    await assert.rejects(
+      () => handlers.get("vault_edit")({ path: "notes/alpha.md", old_string: "", new_string: "replacement" }),
+      /old_string must be a non-empty string/
+    );
+  });
 });
 
 // ─── vault_search ──────────────────────────────────────────────────────
@@ -1074,6 +1102,18 @@ describe("handleSearch", () => {
     const matches = result.content[0].text.split("**").filter(s => s.endsWith(".md"));
     assert.equal(matches.length, 1);
   });
+
+  it("skips files deleted after listing (ENOENT)", async () => {
+    const extraFile = path.join(tmpDir, "notes", "temp-search-test.md");
+    await fs.writeFile(extraFile, "---\ntype: note\ncreated: 2026-01-01\ntags: [test]\n---\nuniquekeyword123", "utf-8");
+    const templateRegistry = await buildTemplateRegistry(tmpDir);
+    const freshHandlers = await createHandlers({
+      vaultPath: tmpDir, templateRegistry, semanticIndex: null, activityLog: null,
+    });
+    await fs.unlink(extraFile);
+    const result = await freshHandlers.get("vault_search")({ query: "uniquekeyword123" });
+    assert.ok(!result.content[0].text.includes("temp-search-test"), "should not include deleted file");
+  });
 });
 
 // ─── vault_list ────────────────────────────────────────────────────────
@@ -1109,6 +1149,28 @@ describe("handleList", () => {
     const text = result.content[0].text;
     assert.ok(text.includes("alpha.md"));
     assert.ok(!text.includes("beta.md"));
+  });
+
+  it("vault_list returns clean error when folder deleted after resolve", async () => {
+    const testDir = path.join(tmpDir, "temp-list-test");
+    await fs.mkdir(testDir);
+    await fs.writeFile(path.join(testDir, "dummy.md"), "---\ntype: note\ncreated: 2026-01-01\ntags: [test]\n---\ntest", "utf-8");
+    const templateRegistry = await buildTemplateRegistry(tmpDir);
+    const freshHandlers = await createHandlers({
+      vaultPath: tmpDir,
+      templateRegistry,
+      semanticIndex: null,
+      activityLog: null,
+      sessionId: "test-session-list-enoent",
+    });
+    await fs.rm(testDir, { recursive: true });
+    try {
+      await freshHandlers.get("vault_list")({ path: "temp-list-test" });
+      assert.fail("should have thrown");
+    } catch (err) {
+      assert.ok(err.message.includes("not found") || err.message.includes("Folder not found"), `got: ${err.message}`);
+      assert.ok(!err.message.includes(tmpDir), "should not leak absolute vault path");
+    }
   });
 });
 
@@ -1150,6 +1212,18 @@ describe("handleRecent", () => {
     const handler = handlers.get("vault_recent");
     const result = await handler({ folder: "notes", limit: 1 });
     assert.ok(result.content[0].text.includes("alpha.md"));
+  });
+
+  it("skips files deleted after listing (ENOENT)", async () => {
+    const extraFile = path.join(tmpDir, "notes", "temp-recent-test.md");
+    await fs.writeFile(extraFile, "---\ntype: note\ncreated: 2026-01-01\ntags: [test]\n---\ntemp", "utf-8");
+    const templateRegistry = await buildTemplateRegistry(tmpDir);
+    const freshHandlers = await createHandlers({
+      vaultPath: tmpDir, templateRegistry, semanticIndex: null, activityLog: null,
+    });
+    await fs.unlink(extraFile);
+    const result = await freshHandlers.get("vault_recent")({ limit: 50 });
+    assert.ok(!result.content[0].text.includes("temp-recent-test"), "should not include deleted file");
   });
 });
 
@@ -1222,6 +1296,32 @@ References [[link-test/link-target]] using a folder-prefixed wikilink.
     const result = await handler({ path: "link-test/link-target.md", direction: "incoming" });
     const text = result.content[0].text;
     assert.ok(text.includes("link-test/link-source.md"), `Should detect folder-prefixed incoming link but got: ${text}`);
+  });
+
+  it("throws descriptive error for nonexistent file without leaking absolute path", async () => {
+    const handler = handlers.get("vault_links");
+    await assert.rejects(
+      () => handler({ path: "no-such-file.md" }),
+      (err) => {
+        assert.ok(err.message.includes("not found"), "should have descriptive error");
+        assert.ok(!err.message.includes(tmpDir), "should not leak absolute vault path");
+        return true;
+      }
+    );
+  });
+
+  it("vault_links returns clean error when file deleted after resolve", async () => {
+    const targetFile = path.join(tmpDir, "notes", "alpha.md");
+    await fs.unlink(targetFile);
+    try {
+      await handlers.get("vault_links")({ path: "alpha" });
+      assert.fail("should have thrown");
+    } catch (err) {
+      assert.ok(err.message.includes("not found") || err.message.includes("File not found"), `got: ${err.message}`);
+      assert.ok(!err.message.includes(tmpDir), "should not leak absolute vault path");
+    }
+    // Recreate with original content for other tests
+    await fs.writeFile(targetFile, `---\ntype: research\nstatus: active\ncreated: 2026-01-15\ntags:\n  - dev\n  - mcp\n---\n# Alpha Note\n\nSome content about [[beta]] and the MCP server.\nAlso references [[gamma|Gamma Note]].\n`, "utf-8");
   });
 });
 
@@ -1360,6 +1460,18 @@ describe("handleQuery", () => {
     assert.ok(!text.includes("task-b"), "low task must be excluded by limit");
     assert.ok(text.includes("2 note"), "should report exactly 2 results");
   });
+
+  it("skips files deleted after listing (ENOENT)", async () => {
+    const extraFile = path.join(tmpDir, "notes", "temp-query-test.md");
+    await fs.writeFile(extraFile, "---\ntype: research\ncreated: 2026-01-01\ntags: [test]\n---\nquery test", "utf-8");
+    const templateRegistry = await buildTemplateRegistry(tmpDir);
+    const freshHandlers = await createHandlers({
+      vaultPath: tmpDir, templateRegistry, semanticIndex: null, activityLog: null,
+    });
+    await fs.unlink(extraFile);
+    const result = await freshHandlers.get("vault_query")({ type: "research" });
+    assert.ok(!result.content[0].text.includes("temp-query-test"), "should not include deleted file");
+  });
 });
 
 // ─── vault_tags ────────────────────────────────────────────────────────
@@ -1420,6 +1532,18 @@ This has #inline-tag and #another-tag in the body.
     assert.ok(text.includes("another-tag"));
 
     await fs.unlink(inlineFile);
+  });
+
+  it("skips files deleted after listing (ENOENT)", async () => {
+    const extraFile = path.join(tmpDir, "notes", "temp-tags-test.md");
+    await fs.writeFile(extraFile, "---\ntype: note\ncreated: 2026-01-01\ntags: [uniquetag789]\n---\ntags test", "utf-8");
+    const templateRegistry = await buildTemplateRegistry(tmpDir);
+    const freshHandlers = await createHandlers({
+      vaultPath: tmpDir, templateRegistry, semanticIndex: null, activityLog: null,
+    });
+    await fs.unlink(extraFile);
+    const result = await freshHandlers.get("vault_tags")({});
+    assert.ok(!result.content[0].text.includes("uniquetag789"), "should not include tags from deleted file");
   });
 });
 
@@ -1871,6 +1995,20 @@ describe("handleNeighborhood depth cap", () => {
     const handler = handlers.get("vault_neighborhood");
     const result = await handler({ path: "notes/alpha.md", depth: 1 });
     assert.ok(result.content[0].text);
+  });
+
+  it("vault_neighborhood returns clean error when file deleted after resolve", async () => {
+    const targetFile = path.join(tmpDir, "notes", "alpha.md");
+    await fs.unlink(targetFile);
+    try {
+      await handlers.get("vault_neighborhood")({ path: "alpha" });
+      assert.fail("should have thrown");
+    } catch (err) {
+      assert.ok(err.message.includes("not found") || err.message.includes("File not found"), `got: ${err.message}`);
+      assert.ok(!err.message.includes(tmpDir), "should not leak absolute vault path");
+    }
+    // Recreate with original content for other tests
+    await fs.writeFile(targetFile, `---\ntype: research\nstatus: active\ncreated: 2026-01-15\ntags:\n  - dev\n  - mcp\n---\n# Alpha Note\n\nSome content about [[beta]] and the MCP server.\nAlso references [[gamma|Gamma Note]].\n`, "utf-8");
   });
 });
 

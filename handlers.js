@@ -170,8 +170,12 @@ export async function createHandlers({ vaultPath, templateRegistry, semanticInde
       text = `[Chunk ${chunk} of ${totalChunks}, chars ${start + 1}-${end} of ${content.length}]\n\n` + content.slice(start, end);
     } else if (args.lines) {
       const allLines = content.split("\n");
-      const { start, end } = args.lines;
-      if (start < 1 || end < start || start > allLines.length) {
+      const start = positiveInt(args.lines.start, null);
+      const end = positiveInt(args.lines.end, null);
+      if (start === null || end === null) {
+        throw new Error("lines.start and lines.end must be positive integers");
+      }
+      if (end < start || start > allLines.length) {
         throw new Error(`Invalid line range: ${start}-${end}. File has ${allLines.length} lines.`);
       }
       const clampedEnd = Math.min(end, allLines.length);
@@ -248,6 +252,9 @@ export async function createHandlers({ vaultPath, templateRegistry, semanticInde
   }
 
   async function handleAppend(args) {
+    if (!args.content) {
+      throw new Error("content must be a non-empty string");
+    }
     const filePath = resolvePath(args.path);
     let existing;
     try {
@@ -297,6 +304,9 @@ export async function createHandlers({ vaultPath, templateRegistry, semanticInde
   }
 
   async function handleEdit(args) {
+    if (!args.old_string) {
+      throw new Error("old_string must be a non-empty string");
+    }
     const filePath = resolvePath(args.path);
     let content;
     try {
@@ -339,7 +349,13 @@ export async function createHandlers({ vaultPath, templateRegistry, semanticInde
     for (const file of files) {
       if (results.length >= limit) break;
       const filePath = path.join(searchDir, file);
-      const content = await fs.readFile(filePath, "utf-8");
+      let content;
+      try {
+        content = await fs.readFile(filePath, "utf-8");
+      } catch (e) {
+        if (e.code === "ENOENT") continue;
+        throw e;
+      }
       if (content.toLowerCase().includes(query)) {
         const lines = content.split("\n");
         const matchingLines = lines
@@ -388,7 +404,13 @@ export async function createHandlers({ vaultPath, templateRegistry, semanticInde
     const inputPath = args.path || "";
     const listPath = inputPath ? resolveFolder(inputPath) : vaultPath;
     const relativePath = inputPath ? path.relative(vaultPath, listPath) : "";
-    const entries = await fs.readdir(listPath, { withFileTypes: true });
+    let entries;
+    try {
+      entries = await fs.readdir(listPath, { withFileTypes: true });
+    } catch (e) {
+      if (e.code === "ENOENT") throw new Error(`Folder not found: ${inputPath || "/"}`, { cause: e });
+      throw e;
+    }
 
     const items = [];
     for (const entry of entries) {
@@ -415,12 +437,17 @@ export async function createHandlers({ vaultPath, templateRegistry, semanticInde
     const files = await getAllMarkdownFiles(searchDir);
     const limit = positiveInt(args.limit, 10);
 
-    const withStats = await Promise.all(
+    const withStats = (await Promise.all(
       files.map(async (file) => {
-        const stat = await fs.stat(path.join(searchDir, file));
-        return { path: folderPrefix ? path.join(folderPrefix, file) : file, mtime: stat.mtime };
+        try {
+          const stat = await fs.stat(path.join(searchDir, file));
+          return { path: folderPrefix ? path.join(folderPrefix, file) : file, mtime: stat.mtime };
+        } catch (e) {
+          if (e.code === "ENOENT") return null;
+          throw e;
+        }
       })
-    );
+    )).filter(Boolean);
 
     const sorted = withStats
       .sort((a, b) => b.mtime - a.mtime)
@@ -437,7 +464,13 @@ export async function createHandlers({ vaultPath, templateRegistry, semanticInde
   async function handleLinks(args) {
     const resolvedVaultRelative = resolveFuzzyPath(args.path, basenameMap, allFilesSet);
     const filePath = resolvePath(resolvedVaultRelative);
-    const content = await fs.readFile(filePath, "utf-8");
+    let content;
+    try {
+      content = await fs.readFile(filePath, "utf-8");
+    } catch (e) {
+      if (e.code === "ENOENT") throw new Error(`File not found: ${resolvedVaultRelative}`, { cause: e });
+      throw e;
+    }
 
     const result = { outgoing: [], incoming: [] };
 
@@ -547,7 +580,13 @@ export async function createHandlers({ vaultPath, templateRegistry, semanticInde
     for (const file of files) {
       if (!args.sort_by && results.length >= limit) break;
       const filePath = path.join(searchDir, file);
-      const content = await fs.readFile(filePath, "utf-8");
+      let content;
+      try {
+        content = await fs.readFile(filePath, "utf-8");
+      } catch (e) {
+        if (e.code === "ENOENT") continue;
+        throw e;
+      }
       const metadata = extractFrontmatter(content);
 
       if (matchesFilters(metadata, filters)) {
@@ -599,7 +638,13 @@ export async function createHandlers({ vaultPath, templateRegistry, semanticInde
 
     for (const file of files) {
       const filePath = path.join(searchDir, file);
-      const content = await fs.readFile(filePath, "utf-8");
+      let content;
+      try {
+        content = await fs.readFile(filePath, "utf-8");
+      } catch (e) {
+        if (e.code === "ENOENT") continue;
+        throw e;
+      }
 
       const fileTags = new Set();
 
