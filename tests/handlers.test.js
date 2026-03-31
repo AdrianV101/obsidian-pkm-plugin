@@ -2897,6 +2897,32 @@ Links to [[lh-dup]] which is ambiguous.
     assert.ok(text.includes("2 files"), "reports number of matching files");
     await fs.rm(dir, { recursive: true });
   });
+
+  it("does not report non-md embeds as broken", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "lh-embed-"));
+    const tplDir = path.join(dir, "05-Templates");
+    await fs.mkdir(tplDir, { recursive: true });
+    await fs.writeFile(path.join(tplDir, "research-note.md"), TEMPLATE_CONTENT);
+
+    const notesDir = path.join(dir, "notes");
+    await fs.mkdir(notesDir, { recursive: true });
+    await fs.writeFile(path.join(notesDir, "embed-test.md"), `---
+type: note
+created: 2026-01-01
+tags:
+  - test
+---
+# Test
+![[photo.png]]
+[[real-broken-link]]
+`);
+    const h = await freshHandlersForLinkHealth(dir);
+    const result = await h.get("vault_link_health")({ checks: ["broken"] });
+    const text = result.content[0].text;
+    assert.ok(!text.includes("photo.png"), "should not report image embed as broken");
+    assert.ok(text.includes("real-broken-link"), "should still report genuinely broken md links");
+    await fs.rm(dir, { recursive: true });
+  });
 });
 
 describe("vault_neighborhood include_semantic", () => {

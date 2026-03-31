@@ -142,6 +142,7 @@ export class ActivityLog {
   /** Close the database connection. */
   shutdown() {
     if (this.db) {
+      this.db.pragma("wal_checkpoint(TRUNCATE)");
       this.db.close();
       this.db = null;
     }

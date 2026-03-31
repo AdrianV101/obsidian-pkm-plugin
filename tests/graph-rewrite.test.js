@@ -50,4 +50,10 @@ describe("rewriteWikilinks", () => {
     const result = rewriteWikilinks(content, "target", "renamed");
     assert.equal(result, content);
   });
+
+  it("matches case-insensitively", () => {
+    const content = "See [[My-Note]] for details and [[my-note#heading]] too.";
+    const result = rewriteWikilinks(content, "my-note", "renamed-note");
+    assert.strictEqual(result, "See [[renamed-note]] for details and [[renamed-note#heading]] too.");
+  });
 });

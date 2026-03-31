@@ -110,7 +110,7 @@ export function rewriteWikilinks(content, oldTarget, newTarget) {
     const oldNoExt = oldTarget.endsWith(".md") ? oldTarget.slice(0, -3) : oldTarget;
     const oldBasename = oldNoExt.includes("/") ? oldNoExt.split("/").pop() : oldNoExt;
 
-    if (pathNoExt === oldNoExt || pathNoExt === oldBasename) {
+    if (pathNoExt.toLowerCase() === oldNoExt.toLowerCase() || pathNoExt.toLowerCase() === oldBasename.toLowerCase()) {
       return `[[${newTarget}${fragPart}${aliasPart}]]`;
     }
 

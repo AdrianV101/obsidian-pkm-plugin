@@ -1196,6 +1196,13 @@ export async function createHandlers({ vaultPath, templateRegistry, semanticInde
         if (!data) continue;
         for (const r of data.resolved) {
           if (r.paths.length === 0) {
+            // Skip non-markdown targets (images, PDFs, etc.) — they aren't in allFilesSet by design
+            const raw = r.raw;
+            const dotIdx = raw.lastIndexOf(".");
+            if (dotIdx !== -1) {
+              const ext = raw.slice(dotIdx + 1).toLowerCase();
+              if (ext !== "md") continue;
+            }
             broken.push(`- ${file} → [[${r.raw}]] (no matching file)`);
             if (broken.length >= limit) break;
           }
