@@ -20,6 +20,7 @@ export async function getAllMarkdownFiles(dir, baseDir = dir) {
   const entries = await fs.readdir(dir, { withFileTypes: true });
   const files = [];
   for (const entry of entries) {
+    if (entry.isSymbolicLink()) continue;
     const fullPath = path.join(dir, entry.name);
     if (entry.isDirectory() && !entry.name.startsWith(".")) {
       files.push(...await getAllMarkdownFiles(fullPath, baseDir));

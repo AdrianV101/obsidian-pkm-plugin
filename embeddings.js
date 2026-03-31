@@ -653,7 +653,7 @@ async function callEmbeddingAPI(texts, apiKey, retries = 3) {
     }
 
     const errBody = await response.text();
-    throw new Error(`OpenAI API error (${response.status}): ${errBody}`);
+    throw new Error(`OpenAI API error (${response.status}): ${errBody.slice(0, 200)}`);
   }
 }
 
@@ -661,5 +661,5 @@ function contentHash(text) {
   return crypto.createHash("sha256").update(text).digest("hex");
 }
 
-export { chunkNote, splitByHeadings, splitByParagraphs, getPreview, contentHash };
+export { chunkNote, splitByHeadings, splitByParagraphs, getPreview, contentHash, callEmbeddingAPI };
 

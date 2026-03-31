@@ -154,6 +154,15 @@ describe("matchesFilters", () => {
     assert.ok(matchesFilters(meta, { custom_fields: { priority: "high", project: "Home" } }));
     assert.ok(!matchesFilters(meta, { custom_fields: { priority: "high", project: "Work" } }));
   });
+
+  it("ignores dangerous keys in custom_fields", () => {
+    const metadata = { type: "note", tags: ["test"], created: "2026-01-01" };
+    const filters = {
+      custom_fields: { __proto__: "foo", constructor: "bar", project: null }
+    };
+    const result = matchesFilters(metadata, filters);
+    assert.strictEqual(result, true, "should ignore dangerous keys and match on remaining fields");
+  });
 });
 
 describe("formatMetadata", () => {

@@ -1,6 +1,9 @@
-import { describe, it } from "node:test";
+import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
-import { extractFrontmatter } from "../utils.js";
+import fs from "fs/promises";
+import path from "path";
+import os from "os";
+import { extractFrontmatter, getAllMarkdownFiles } from "../utils.js";
 
 describe("extractFrontmatter", () => {
   it("extracts valid YAML frontmatter", () => {
@@ -88,5 +91,37 @@ describe("extractFrontmatter", () => {
     const content = "---\ntype: research\nvalue: text --- more\n";
     const fm = extractFrontmatter(content);
     assert.equal(fm, null);
+  });
+});
+
+describe("getAllMarkdownFiles", () => {
+  let tmpDir;
+
+  before(async () => {
+    tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "utils-test-"));
+    // Create a normal markdown file inside the vault
+    await fs.writeFile(path.join(tmpDir, "normal.md"), "---\ntype: note\ncreated: 2026-01-01\ntags: [test]\n---\nnormal content", "utf-8");
+  });
+
+  after(async () => {
+    await fs.rm(tmpDir, { recursive: true });
+  });
+
+  it("skips symlinks pointing outside vault", async () => {
+    // Create a directory outside the vault with a markdown file
+    const outsideDir = await fs.mkdtemp(path.join(os.tmpdir(), "symlink-test-"));
+    await fs.writeFile(path.join(outsideDir, "secret.md"), "---\ntype: note\ncreated: 2026-01-01\ntags: [secret]\n---\nsecret content", "utf-8");
+
+    // Create a symlink inside the vault pointing to the outside directory
+    const symlinkPath = path.join(tmpDir, "escape-link");
+    await fs.symlink(outsideDir, symlinkPath);
+
+    const files = await getAllMarkdownFiles(tmpDir);
+    const hasEscaped = files.some(f => f.includes("secret.md"));
+    assert.ok(!hasEscaped, "Should not follow symlinks outside vault");
+
+    // Cleanup
+    await fs.unlink(symlinkPath);
+    await fs.rm(outsideDir, { recursive: true });
   });
 });

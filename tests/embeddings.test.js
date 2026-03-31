@@ -10,6 +10,7 @@ import {
   splitByParagraphs,
   getPreview,
   contentHash,
+  callEmbeddingAPI,
 } from "../embeddings.js";
 
 // ---------------------------------------------------------------------------
@@ -235,6 +236,38 @@ describe("contentHash", () => {
   it("returns a 64-character SHA-256 hex digest", () => {
     const hash = contentHash("anything");
     assert.equal(hash.length, 64);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// callEmbeddingAPI — error truncation
+// ---------------------------------------------------------------------------
+describe("callEmbeddingAPI", () => {
+  let originalFetch;
+
+  before(() => {
+    originalFetch = globalThis.fetch;
+  });
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  it("truncates long error bodies to 200 chars", async () => {
+    const longError = "x".repeat(500);
+    globalThis.fetch = async () => ({
+      ok: false,
+      status: 500,
+      text: async () => longError,
+    });
+
+    try {
+      await callEmbeddingAPI(["test"], "test-key", 1);
+      assert.fail("should have thrown");
+    } catch (e) {
+      assert.ok(e.message.includes("OpenAI API error (500)"));
+      assert.ok(e.message.length <= 250, `Error message too long: ${e.message.length} chars`);
+    }
   });
 });
 

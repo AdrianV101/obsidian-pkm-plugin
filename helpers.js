@@ -152,6 +152,7 @@ export function matchesFilters(metadata, filters) {
 
   if (filters.custom_fields) {
     for (const [key, value] of Object.entries(filters.custom_fields)) {
+      if (DANGEROUS_KEYS.has(key)) continue;
       let metaValue = metadata[key];
       if (metaValue instanceof Date) {
         metaValue = metaValue.toISOString().split("T")[0];
