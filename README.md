@@ -4,6 +4,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Node.js >= 20](https://img.shields.io/badge/Node.js-%3E%3D20-green.svg)](https://nodejs.org/)
 [![CI](https://github.com/AdrianV101/obsidian-pkm-plugin/actions/workflows/ci.yml/badge.svg)](https://github.com/AdrianV101/obsidian-pkm-plugin/actions/workflows/ci.yml)
+[![Tests](https://img.shields.io/badge/tests-573%20passing-brightgreen)](https://github.com/AdrianV101/obsidian-pkm-plugin/actions/workflows/ci.yml)
 
 Give Claude persistent, structured memory across conversations using your Obsidian vault. Read, write, search, and navigate your knowledge base — all from within Claude Code.
 
@@ -21,7 +22,7 @@ Claude Code has built-in memory, but it's flat text files scoped to individual p
 
 Without this, knowledge stays fragmented across per-project memory files and chat logs. With it, your AI assistant maintains a unified knowledge base that compounds over time.
 
-https://github.com/user-attachments/assets/58ad9c9b-d987-4728-89e7-33de20b73a38
+[Watch the demo video](https://github.com/user-attachments/assets/58ad9c9b-d987-4728-89e7-33de20b73a38)
 
 ## Features
 
@@ -104,10 +105,8 @@ https://github.com/user-attachments/assets/58ad9c9b-d987-4728-89e7-33de20b73a38
 
 - **Node.js >= 20** (Node 18 is EOL; uses native `fetch` and ES modules)
 - **An MCP-compatible client** such as [Claude Code](https://claude.ai/code)
-- **C++ build tools** for `better-sqlite3` native addon:
-  - **macOS**: `xcode-select --install`
-  - **Linux**: `sudo apt install build-essential python3` (Debian/Ubuntu) or equivalent
-  - **Windows**: Install [Visual Studio Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/) with the "Desktop development with C++" workload
+
+Prebuilt native binaries are included for Node 20/22 on Linux x64, macOS (x64/arm64), and Windows x64. Most users need nothing else. If the prebuilt fails, you'll need C++ build tools — see [Troubleshooting](#better-sqlite3-build-fails-during-install).
 
 ## Quick Start
 
@@ -221,6 +220,8 @@ Vault/
 
 13 included templates: `adr`, `daily-note`, `devlog`, `fleeting-note`, `literature-note`, `meeting-notes`, `moc`, `note`, `permanent-note`, `project-index`, `research-note`, `task`, `troubleshooting-log`. Add your own templates to `05-Templates/` and they become available to `vault_write` automatically.
 
+Task notes enforce `status` (pending, active, done, cancelled) and `priority` (low, normal, high, urgent) enums. All other note types accept any string values for these fields.
+
 ### CLAUDE.md for Your Projects
 
 `sample-project/CLAUDE.md` is a template you can drop into any code repository to wire up Claude Code with your vault. It defines context loading, documentation rules, and ADR/devlog conventions.
@@ -304,6 +305,9 @@ Run `claude mcp list` to check. If `obsidian-pkm` is missing, reinstall the plug
 
 **Semantic index not updating after file changes**
 Check your Node version with `node -v`. The file watcher uses `fs.watch({ recursive: true })` which requires Node.js >= 20.
+
+**Not sure if everything is set up correctly?**
+Run `npx obsidian-pkm doctor` for a diagnostic checklist that validates your Node version, vault path, templates, API keys, and native dependencies.
 
 ## Contributing
 

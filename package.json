@@ -58,7 +58,9 @@
     "url": "https://github.com/AdrianV101/obsidian-pkm-plugin/issues"
   },
   "dependencies": {
-    "@inquirer/prompts": "^8.3.2",
+    "@inquirer/confirm": "^6.0.10",
+    "@inquirer/input": "^5.0.10",
+    "@inquirer/select": "^5.1.2",
     "@modelcontextprotocol/sdk": "^1.27.0",
     "better-sqlite3": "^12.6.2",
     "js-yaml": "^4.1.0",

@@ -82,6 +82,8 @@ If found:
 
 ## Step 7: Done
 
+> **IMPORTANT:** Restart Claude Code now (`/quit` then relaunch) before using any vault tools. The MCP server needs to restart to pick up the new environment variables.
+
 Confirm setup is complete. Tell the user:
 - "Your Obsidian PKM plugin is configured. Try asking me to list your vault folders to verify."
 - If OBSIDIAN_PKM_OPENAI_KEY was set: "Semantic search will build its index in the background on first use."

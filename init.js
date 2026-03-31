@@ -154,7 +154,9 @@ function formatBytes(bytes) {
  * MCP registration and hooks are handled by the plugin system — use `/obsidian-pkm:setup` in Claude Code.
  */
 export async function runInit() {
-  const { confirm: confirmPrompt, input, select } = await import("@inquirer/prompts");
+  const { default: confirm } = await import("@inquirer/confirm");
+  const { default: input } = await import("@inquirer/input");
+  const { default: select } = await import("@inquirer/select");
 
   const bundledTemplatesDir = path.join(path.dirname(fileURLToPath(import.meta.url)), "templates");
 
@@ -177,7 +179,7 @@ plugin and run /obsidian-pkm:setup in Claude Code.
 `);
 
     // ── Step 2: Vault Path ──
-    const hasVault = await confirmPrompt({
+    const hasVault = await confirm({
       message: "Do you have an existing Obsidian vault?",
       default: false,
     });
@@ -224,7 +226,7 @@ plugin and run /obsidian-pkm:setup in Claude Code.
       console.log(`  ${padded} — ${folder.desc}${suffix}`);
     }
 
-    const doFolders = await confirmPrompt({
+    const doFolders = await confirm({
       message: "Create PARA folder structure?",
       default: true,
     });
@@ -286,7 +288,7 @@ Next steps:
       stat = await fs.stat(resolved);
     } catch (e) {
       if (e.code === "ENOENT") {
-        const create = await confirmPrompt({ message: `This directory doesn't exist. Create ${resolved}?` });
+        const create = await confirm({ message: `This directory doesn't exist. Create ${resolved}?` });
         if (!create) { console.log("Setup cancelled."); process.exit(0); }
         await fs.mkdir(resolved, { recursive: true });
         console.log(`  Created ${resolved}`);
@@ -308,7 +310,7 @@ Next steps:
     // Directory exists — check if empty
     const entries = await fs.readdir(resolved);
     if (entries.length === 0) {
-      const useEmpty = await confirmPrompt({ message: `Use ${resolved} as your vault?` });
+      const useEmpty = await confirm({ message: `Use ${resolved} as your vault?` });
       if (!useEmpty) { console.log("Setup cancelled."); process.exit(0); }
       console.log(`  Using empty directory ${resolved}`);
       return resolved;
@@ -355,7 +357,7 @@ Next steps:
     const bname = path.basename(resolved);
     console.log(`\n  This will permanently delete ALL contents of ${resolved}`);
 
-    const wipeConfirm1 = await confirmPrompt({
+    const wipeConfirm1 = await confirm({
       message: "Are you sure you want to wipe this directory?",
       default: false,
     });
@@ -374,7 +376,7 @@ Next steps:
     }
 
     // Third confirmation before wipe
-    const c3 = await confirmPrompt({ message: `Last chance. Delete all contents of ${resolved}?` });
+    const c3 = await confirm({ message: `Last chance. Delete all contents of ${resolved}?` });
     if (!c3) { console.log("Wipe cancelled."); process.exit(0); }
 
     // Do the wipe
@@ -393,7 +395,7 @@ Next steps:
       ? ` (${sizeStr} — this may take a while)`
       : ` (${sizeStr})`;
 
-    const doBackup = await confirmPrompt({
+    const doBackup = await confirm({
       message: `Back up ${dirPath} first?${sizeWarning}`,
       default: true,
     });

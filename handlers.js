@@ -89,6 +89,8 @@ export async function createHandlers({ vaultPath, templateRegistry, semanticInde
     }
   }
 
+  // ── File I/O ────────────────────────────────────────────────────────
+
   async function handleRead(args) {
     const filePath = resolveFile(args.path);
     let content;
@@ -338,6 +340,8 @@ export async function createHandlers({ vaultPath, templateRegistry, semanticInde
     return { content: [{ type: "text", text: `Successfully edited ${args.path}` }] };
   }
 
+  // ── Search & Discovery ──────────────────────────────────────────────
+
   async function handleSearch(args) {
     const searchDir = args.folder ? resolveFolder(args.folder) : vaultPath;
     const folderPrefix = args.folder ? path.relative(vaultPath, searchDir) : "";
@@ -400,6 +404,8 @@ export async function createHandlers({ vaultPath, templateRegistry, semanticInde
     return pos <= endLimit;
   }
 
+  // ── Listing & Activity ──────────────────────────────────────────────
+
   async function handleList(args) {
     const inputPath = args.path || "";
     const listPath = inputPath ? resolveFolder(inputPath) : vaultPath;
@@ -460,6 +466,8 @@ export async function createHandlers({ vaultPath, templateRegistry, semanticInde
       }]
     };
   }
+
+  // ── Graph & Connections ─────────────────────────────────────────────
 
   async function handleLinks(args) {
     const resolvedVaultRelative = resolveFuzzyPath(args.path, basenameMap, allFilesSet);
@@ -896,6 +904,8 @@ export async function createHandlers({ vaultPath, templateRegistry, semanticInde
       content: [{ type: "text", text: `Found ${suggestions.length} link suggestion${suggestions.length === 1 ? "" : "s"}:\n\n${formatted}` }]
     };
   }
+
+  // ── Organization & Maintenance ──────────────────────────────────────
 
   async function handleTrash(args) {
     const resolvedRelative = args.path;

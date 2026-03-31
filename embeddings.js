@@ -201,6 +201,7 @@ export class SemanticIndex {
         if (!chunk.file_path.startsWith(prefix)) continue;
       }
 
+      // L2 distance for normalized embeddings ranges 0-2; convert to 0-1 similarity
       const score = Math.max(0, Math.min(1, 1 - distance / 2));
       if (threshold && score < threshold) continue;
 

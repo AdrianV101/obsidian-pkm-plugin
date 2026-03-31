@@ -198,4 +198,88 @@ describe("session-start.js", () => {
     assert.ok(result.systemMessage);
     assert.ok(!result.systemMessage.includes("semantic"));
   });
+
+  it("warns when settings.json VAULT_PATH differs from env VAULT_PATH", async () => {
+    const cwdDir = path.join(tmpDir, "MyApp");
+    await fs.mkdir(cwdDir, { recursive: true });
+    await fs.writeFile(
+      path.join(cwdDir, "CLAUDE.md"),
+      "# PKM: 01-Projects/MyApp\n\n## PKM Integration\n\nConfigured.\n"
+    );
+
+    // Create a fake HOME with .claude/settings.json pointing to a different vault
+    const fakeHome = path.join(tmpDir, "fakehome");
+    await fs.mkdir(path.join(fakeHome, ".claude"), { recursive: true });
+    await fs.writeFile(
+      path.join(fakeHome, ".claude", "settings.json"),
+      JSON.stringify({ env: { VAULT_PATH: "/some/other/vault" } })
+    );
+
+    const { stdout } = await runScript(
+      [SCRIPT],
+      { ...process.env, VAULT_PATH: vaultPath, HOME: fakeHome },
+      JSON.stringify({ cwd: cwdDir })
+    );
+    const result = JSON.parse(stdout);
+    assert.ok(
+      result.hookSpecificOutput.additionalContext.includes("VAULT_PATH may be stale"),
+      "should contain stale VAULT_PATH warning"
+    );
+    assert.ok(
+      result.hookSpecificOutput.additionalContext.includes("/some/other/vault"),
+      "should mention the settings.json vault path"
+    );
+  });
+
+  it("does not warn when settings.json VAULT_PATH matches env VAULT_PATH", async () => {
+    const cwdDir = path.join(tmpDir, "MyApp");
+    await fs.mkdir(cwdDir, { recursive: true });
+    await fs.writeFile(
+      path.join(cwdDir, "CLAUDE.md"),
+      "# PKM: 01-Projects/MyApp\n\n## PKM Integration\n\nConfigured.\n"
+    );
+
+    // Create a fake HOME with .claude/settings.json matching the actual vault path
+    const fakeHome = path.join(tmpDir, "fakehome");
+    await fs.mkdir(path.join(fakeHome, ".claude"), { recursive: true });
+    await fs.writeFile(
+      path.join(fakeHome, ".claude", "settings.json"),
+      JSON.stringify({ env: { VAULT_PATH: vaultPath } })
+    );
+
+    const { stdout } = await runScript(
+      [SCRIPT],
+      { ...process.env, VAULT_PATH: vaultPath, HOME: fakeHome },
+      JSON.stringify({ cwd: cwdDir })
+    );
+    const result = JSON.parse(stdout);
+    assert.ok(
+      !result.hookSpecificOutput.additionalContext.includes("VAULT_PATH may be stale"),
+      "should not contain stale VAULT_PATH warning when paths match"
+    );
+  });
+
+  it("does not warn when settings.json is missing", async () => {
+    const cwdDir = path.join(tmpDir, "MyApp");
+    await fs.mkdir(cwdDir, { recursive: true });
+    await fs.writeFile(
+      path.join(cwdDir, "CLAUDE.md"),
+      "# PKM: 01-Projects/MyApp\n\n## PKM Integration\n\nConfigured.\n"
+    );
+
+    // Create a fake HOME with no .claude/settings.json
+    const fakeHome = path.join(tmpDir, "fakehome-empty");
+    await fs.mkdir(fakeHome, { recursive: true });
+
+    const { stdout } = await runScript(
+      [SCRIPT],
+      { ...process.env, VAULT_PATH: vaultPath, HOME: fakeHome },
+      JSON.stringify({ cwd: cwdDir })
+    );
+    const result = JSON.parse(stdout);
+    assert.ok(
+      !result.hookSpecificOutput.additionalContext.includes("VAULT_PATH may be stale"),
+      "should not warn when settings.json does not exist"
+    );
+  });
 });

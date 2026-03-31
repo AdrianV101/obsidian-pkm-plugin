@@ -12,12 +12,15 @@ try {
     const require = createRequire(import.meta.url);
     const { version } = require("./package.json");
     console.log(`obsidian-pkm v${version}`);
+  } else if (subcommand === "doctor") {
+    const { runDoctor } = await import("./doctor.js");
+    await runDoctor();
   } else if (!subcommand) {
     const { startServer } = await import("./index.js");
     await startServer();
   } else {
     console.error(`Unknown command: ${subcommand}`);
-    console.error("Usage: obsidian-pkm [init]");
+    console.error("Usage: obsidian-pkm [init | doctor]");
     process.exit(1);
   }
 } catch (e) {
