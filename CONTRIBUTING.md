@@ -12,12 +12,14 @@ Be respectful, constructive, and inclusive. We follow the [Contributor Covenant]
 
 ## Development Setup
 
+**Prerequisites:** Node.js >= 20 and C++ build tools (needed by `better-sqlite3`). See the README [Prerequisites](README.md#prerequisites) section for platform-specific instructions.
+
 1. Clone the repo and install dependencies:
    ```bash
    npm install
    ```
 
-2. Set required environment variables:
+2. Set environment variables (only needed to run the server, not for tests):
    ```bash
    export VAULT_PATH="/path/to/test/vault"
    # Optional: export OBSIDIAN_PKM_OPENAI_KEY="sk-..." for semantic search
@@ -30,8 +32,11 @@ Be respectful, constructive, and inclusive. We follow the [Contributor Covenant]
 
 4. Run tests (uses Node.js built-in test runner with `node:test` and `assert/strict`):
    ```bash
-   npm test
+   npm test                                          # full suite
+   node --test tests/handlers.test.js                # single file
+   node --test --test-name-pattern "vault_read" tests/handlers.test.js  # by name
    ```
+   Tests use temp directories and don't require `VAULT_PATH` or a real vault.
 
 5. Run the linter:
    ```bash
@@ -48,7 +53,9 @@ graph.js        - Wikilink resolution and BFS graph traversal
 embeddings.js   - Semantic search (OpenAI embeddings, SQLite + sqlite-vec)
 activity.js     - Activity logging (session tracking, SQLite)
 utils.js        - Shared utilities (frontmatter parsing, file listing)
-hooks/          - Claude Code hooks (session context loading)
+cli.js          - CLI entry point (routes `init` subcommand or starts server)
+init.js         - Vault scaffolding wizard (templates, PARA folders)
+hooks/          - Claude Code hooks (session context loading, project resolution)
 templates/      - Obsidian note templates (copy to vault's 05-Templates/)
 sample-project/ - Sample CLAUDE.md for integrating PKM into your repos
 ```
@@ -98,6 +105,20 @@ chore: bump sqlite-vec to 0.2.0
 ```
 
 Keep the subject line under 72 characters. Add a body for non-trivial changes explaining the "why."
+
+## Adding a New Tool
+
+Each MCP tool requires changes in three files:
+
+1. **Define the tool schema** in `index.js` inside the `ListToolsRequestSchema` handler. Add a tool object with `name`, `description`, and `inputSchema` (JSON Schema for parameters).
+
+2. **Implement the handler** in `handlers.js` inside the `createHandlers()` closure. Write an `async function handleYourTool(args)` that returns `{ content: [{ type: "text", text: "..." }] }`. Use `resolvePath(args.path)` for path security, `positiveInt(args.limit, 10)` for numeric params, and the standard ENOENT catch pattern for file reads.
+
+3. **Register it** in the handler `Map` at the bottom of `createHandlers()` (~line 1250): `handlers.set("vault_your_tool", handleYourTool);`
+
+4. **Add tests** in `tests/handlers.test.js`. Tests use `createHandlers(tmpDir)` to build handlers against a temp vault with real files. Test both the happy path and error cases (missing files, invalid params).
+
+Look at a simple handler like `handleList` or `handleRecent` for the pattern.
 
 ## Adding Templates
 

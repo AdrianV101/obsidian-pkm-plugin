@@ -7,7 +7,7 @@
 
 Give Claude persistent, structured memory across conversations using your Obsidian vault. Read, write, search, and navigate your knowledge base — all from within Claude Code.
 
-Under the hood, this Claude Code plugin provides 20 MCP tools for note creation, semantic search, graph traversal, metadata queries, and session memory — plus agents, hooks, and skills for seamless workflow integration. Published on npm as [`obsidian-pkm`](https://www.npmjs.com/package/obsidian-pkm).
+Under the hood, this Claude Code plugin provides 20 [MCP](https://modelcontextprotocol.io/) (Model Context Protocol) tools for note creation, semantic search, graph traversal, metadata queries, and session memory — plus agents, hooks, and skills for seamless workflow integration. Published on npm as [`obsidian-pkm`](https://www.npmjs.com/package/obsidian-pkm).
 
 ## Why
 
@@ -75,9 +75,30 @@ https://github.com/user-attachments/assets/58ad9c9b-d987-4728-89e7-33de20b73a38
 |------|-------------|
 | `vault_activity` | Cross-conversation memory — logs every tool call with timestamps and session IDs |
 
-### Agents
+### Agents, Skills & Commands
 
-3 specialized agents are available via `/agents`: `vault-explorer` (research existing knowledge before creating notes), `pkm-capture` (devlog entries + knowledge capture after commits and work blocks), and `link-auditor` (audit vault link health after bulk note changes). Agents can be @-mentioned and run in foreground or background.
+**Agents** (3) run autonomously in foreground or background:
+
+| Agent | Purpose |
+|-------|---------|
+| `vault-explorer` | Research existing knowledge before creating notes |
+| `pkm-capture` | Devlog entries + knowledge capture after commits and work blocks |
+| `link-auditor` | Audit vault link health after bulk note changes |
+
+**Skills** (3) are guided workflows triggered by slash commands:
+
+| Skill | Purpose |
+|-------|---------|
+| `pkm-write` | Duplicate checking, link discovery, and annotations when creating notes |
+| `pkm-explore` | Graph + semantic exploration to map existing knowledge on a topic |
+| `pkm-session-end` | Session wrap-up: devlog, undocumented work capture, link health audit |
+
+**Commands** (2) for setup and configuration:
+
+| Command | Purpose |
+|---------|---------|
+| `/obsidian-pkm:setup` | Configure vault path, API keys, and permissions |
+| `/obsidian-pkm:init-project` | Connect a code repository to a vault project folder |
 
 ## Prerequisites
 
@@ -111,13 +132,15 @@ The setup skill walks you through vault path, API keys, tool permissions, and ve
 
 ### 3. Scaffold Your Vault (optional)
 
-If you need templates and the PARA folder structure:
+If you need templates and the PARA folder structure, run the vault scaffolding wizard:
 
 ```bash
 npx obsidian-pkm init
 ```
 
-This sets up your vault's directory structure (PARA folders, note templates). Nothing is written until you confirm each step.
+This is separate from the plugin install above — it only sets up your vault's directory structure (PARA folders, note templates). Nothing is written until you confirm each step.
+
+> **Note:** The first `npx` run downloads and compiles native dependencies, which may take 30-60 seconds. Subsequent runs are instant.
 
 <details>
 <summary>Scaffold details</summary>
