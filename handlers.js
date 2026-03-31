@@ -19,7 +19,7 @@ import {
   formatPeek,
   updateFrontmatter,
   compareFrontmatterValues,
-  computeProximityBonus,
+  blendWithGraph,
   AUTO_REDIRECT_THRESHOLD,
   FORCE_HARD_CAP,
   CHUNK_SIZE,
@@ -775,26 +775,11 @@ export async function createHandlers({ vaultPath, templateRegistry, semanticInde
         direction: "both",
       });
 
-      const depthMap = new Map();
-      for (const [d, nodes] of neighborhood.depthGroups) {
-        for (const node of nodes) {
-          if (!depthMap.has(node.path)) depthMap.set(node.path, d);
-        }
-      }
-
       const graphWeight = args.graph_weight ?? 0.3;
       if (typeof graphWeight !== "number" || Number.isNaN(graphWeight) || graphWeight < 0 || graphWeight > 1) {
         throw new Error(`graph_weight must be a number between 0 and 1, got: ${args.graph_weight}`);
       }
-      const blended = rawResults.map(r => {
-        const depth = depthMap.get(r.path) ?? null;
-        const proximity = computeProximityBonus(depth);
-        const combined = Math.round(((r.score * (1 - graphWeight)) + (proximity * graphWeight)) * 1000) / 1000;
-        return { ...r, combined, depth };
-      });
-
-      blended.sort((a, b) => b.combined - a.combined);
-      const trimmed = blended.slice(0, targetLimit);
+      const trimmed = blendWithGraph(rawResults, neighborhood, graphWeight, targetLimit);
 
       if (trimmed.length === 0) {
         return { content: [{ type: "text", text: "No semantically related notes found." }] };
@@ -882,25 +867,8 @@ export async function createHandlers({ vaultPath, templateRegistry, semanticInde
         direction: "both",
       });
 
-      // Build depth map: path -> minimum depth
-      const depthMap = new Map();
-      for (const [d, nodes] of neighborhood.depthGroups) {
-        for (const node of nodes) {
-          if (!depthMap.has(node.path)) depthMap.set(node.path, d);
-        }
-      }
-
-      const graphWeight = 0.3;
-      const blended = suggestions.map(r => {
-        const depth = depthMap.get(r.path) ?? null;
-        const proximity = computeProximityBonus(depth);
-        const combined = Math.round(((r.score * (1 - graphWeight)) + (proximity * graphWeight)) * 1000) / 1000;
-        const missingLink = depth === null;
-        return { ...r, combined, depth, missingLink };
-      });
-
-      blended.sort((a, b) => b.combined - a.combined);
-      const trimmedBlended = blended.slice(0, args.limit || 5);
+      const blended = blendWithGraph(suggestions, neighborhood, 0.3, args.limit || 5);
+      const trimmedBlended = blended.map(r => ({ ...r, missingLink: r.depth === null }));
 
       if (trimmedBlended.length === 0) {
         return { content: [{ type: "text", text: "No link suggestions found." }] };

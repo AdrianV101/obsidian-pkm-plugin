@@ -29,6 +29,7 @@ import {
   FORCE_HARD_CAP,
   CHUNK_SIZE,
   computeProximityBonus,
+  blendWithGraph,
 } from "../helpers.js";
 
 describe("resolvePath", () => {
@@ -1323,5 +1324,64 @@ describe("computeProximityBonus", () => {
   it("returns 0 for null/undefined (not in graph)", () => {
     assert.equal(computeProximityBonus(null), 0);
     assert.equal(computeProximityBonus(undefined), 0);
+  });
+});
+
+describe("blendWithGraph", () => {
+  it("blends semantic scores with graph proximity", () => {
+    const results = [
+      { path: "a.md", score: 0.9, preview: "a" },
+      { path: "b.md", score: 0.8, preview: "b" },
+      { path: "c.md", score: 0.7, preview: "c" },
+    ];
+    const neighborhood = {
+      depthGroups: new Map([
+        [1, [{ path: "c.md" }]],
+        [2, [{ path: "a.md" }]],
+      ]),
+    };
+    const blended = blendWithGraph(results, neighborhood, 0.3, 3);
+    assert.strictEqual(blended.length, 3);
+    // c.md should be boosted (depth 1 = proximity 1.0)
+    // a.md has depth 2 = proximity 0.5
+    // b.md has no depth = proximity 0
+    assert.strictEqual(blended[0].path, "c.md");
+    assert.ok(blended[0].combined > blended[0].score, "combined should include proximity bonus");
+    assert.strictEqual(blended[2].depth, null, "b.md should have null depth");
+  });
+
+  it("respects limit parameter", () => {
+    const results = [
+      { path: "a.md", score: 0.9, preview: "a" },
+      { path: "b.md", score: 0.8, preview: "b" },
+    ];
+    const neighborhood = { depthGroups: new Map() };
+    const blended = blendWithGraph(results, neighborhood, 0.3, 1);
+    assert.strictEqual(blended.length, 1);
+  });
+
+  it("preserves extra properties from input results", () => {
+    const results = [
+      { path: "a.md", score: 0.9, preview: "a", extra: "data" },
+    ];
+    const neighborhood = { depthGroups: new Map() };
+    const blended = blendWithGraph(results, neighborhood, 0.3, 10);
+    assert.strictEqual(blended[0].extra, "data");
+    assert.strictEqual(blended[0].depth, null);
+    assert.ok("combined" in blended[0]);
+  });
+
+  it("uses first depth when note appears at multiple depths", () => {
+    const results = [
+      { path: "a.md", score: 0.5, preview: "a" },
+    ];
+    const neighborhood = {
+      depthGroups: new Map([
+        [1, [{ path: "a.md" }]],
+        [3, [{ path: "a.md" }]],
+      ]),
+    };
+    const blended = blendWithGraph(results, neighborhood, 0.5, 10);
+    assert.strictEqual(blended[0].depth, 1);
   });
 });

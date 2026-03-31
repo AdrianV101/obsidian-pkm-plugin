@@ -912,3 +912,32 @@ export function computeProximityBonus(depth) {
   if (depth === 3) return 0.25;
   return 0;
 }
+
+/**
+ * Blend semantic search results with graph proximity scores.
+ * Builds a depth map from neighborhood results, computes proximity bonuses,
+ * combines with semantic scores, sorts by combined score, and slices to limit.
+ * @param {Array<{path: string, score: number}>} results - semantic results
+ * @param {{depthGroups: Map<number, Array<{path: string}>>}} neighborhood - graph neighborhood
+ * @param {number} graphWeight - weight for proximity (0-1)
+ * @param {number} limit - max results to return
+ * @returns {Array<Object>} blended results sorted by combined score, with depth field
+ */
+export function blendWithGraph(results, neighborhood, graphWeight, limit) {
+  const depthMap = new Map();
+  for (const [d, nodes] of neighborhood.depthGroups) {
+    for (const node of nodes) {
+      if (!depthMap.has(node.path)) depthMap.set(node.path, d);
+    }
+  }
+
+  const blended = results.map(r => {
+    const depth = depthMap.get(r.path) ?? null;
+    const proximity = computeProximityBonus(depth);
+    const combined = Math.round(((r.score * (1 - graphWeight)) + (proximity * graphWeight)) * 1000) / 1000;
+    return { ...r, combined, depth };
+  });
+
+  blended.sort((a, b) => b.combined - a.combined);
+  return blended.slice(0, limit);
+}
