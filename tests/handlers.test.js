@@ -4,6 +4,7 @@ import fs from "fs/promises";
 import path from "path";
 import os from "os";
 import { createHandlers } from "../handlers.js";
+import { ActivityLog } from "../activity.js";
 
 let tmpDir;
 let handlers;
@@ -62,6 +63,23 @@ tags:
 
 `;
 
+const CUSTOM_VAR_TEMPLATE = `---
+type: research
+created: <% tp.date.now("YYYY-MM-DD") %>
+tags:
+  - research
+---
+# <% tp.file.title %>
+
+## Summary
+
+<% summary %>
+
+## Details
+
+<% details %>
+`;
+
 /**
  * Helper to build a template registry from the given tmpDir.
  * Mimics what index.js does at startup.
@@ -101,6 +119,7 @@ before(async () => {
   await fs.writeFile(path.join(templateDir, "research-note.md"), TEMPLATE_CONTENT);
   await fs.writeFile(path.join(templateDir, "adr.md"), ADR_TEMPLATE);
   await fs.writeFile(path.join(templateDir, "task.md"), TASK_TEMPLATE);
+  await fs.writeFile(path.join(templateDir, "custom-var.md"), CUSTOM_VAR_TEMPLATE);
 
   // Create some test notes
   const notesDir = path.join(tmpDir, "notes");
@@ -2988,5 +3007,135 @@ describe("vault_neighborhood include_semantic", () => {
     const text = result.content[0].text;
     assert.ok(text.includes("Graph neighborhood"));
     assert.ok(!text.includes("Semantically related"));
+  });
+});
+
+// ─── vault_activity (with live activityLog) ─────────────────────────
+
+describe("vault_activity (with live activityLog)", () => {
+  let activityHandlers;
+  let activityLog;
+  const testSessionId = "abcdef12-3456-7890-abcd-ef1234567890";
+
+  before(async () => {
+    const dbPath = path.join(tmpDir, ".obsidian", "activity-log-test.db");
+    await fs.mkdir(path.dirname(dbPath), { recursive: true });
+    activityLog = new ActivityLog({ vaultPath: tmpDir, sessionId: testSessionId });
+    // Override the dbPath so it uses our test-specific DB
+    activityLog.dbPath = dbPath;
+    await activityLog.initialize();
+
+    const templateRegistry = await buildTemplateRegistry(tmpDir);
+    activityHandlers = await createHandlers({
+      vaultPath: tmpDir,
+      templateRegistry,
+      semanticIndex: null,
+      activityLog,
+      sessionId: testSessionId,
+    });
+  });
+
+  after(() => {
+    activityLog.shutdown();
+  });
+
+  it("query returns formatted entries with truncated session ID", async () => {
+    activityLog.log("vault_read", { path: "test.md" });
+    const result = await activityHandlers.get("vault_activity")({ action: "query" });
+    const text = result.content[0].text;
+    assert.ok(text.includes("vault_read"), "should include tool name");
+    assert.ok(text.includes(testSessionId.slice(0, 8)), "should include truncated session ID");
+    assert.ok(!text.includes(testSessionId), "should NOT include full session ID");
+    assert.ok(text.includes("1 entry"), "should report 1 entry");
+    assert.ok(text.includes("test.md"), "should include args JSON");
+  });
+
+  it("clear deletes entries and reports count", async () => {
+    activityLog.log("vault_write", { path: "a.md" });
+    activityLog.log("vault_edit", { path: "b.md" });
+    const clearResult = await activityHandlers.get("vault_activity")({ action: "clear" });
+    assert.ok(clearResult.content[0].text.includes("Cleared"), "should report cleared count");
+    // The exact count depends on entries from previous test + these 2, but should be >= 2
+    const queryResult = await activityHandlers.get("vault_activity")({ action: "query" });
+    assert.ok(queryResult.content[0].text.includes("No activity entries found"), "should be empty after clear");
+  });
+
+  it("unknown action throws", async () => {
+    await assert.rejects(
+      () => activityHandlers.get("vault_activity")({ action: "invalid" }),
+      /Unknown action/
+    );
+  });
+});
+
+// ─── T2 Quick Wins ──────────────────────────────────────────────────
+
+describe("positiveInt indirect tests via vault_read lines", () => {
+  it("vault_read with float lines.start floors to integer", async () => {
+    const result = await handlers.get("vault_read")({ path: "notes/alpha.md", lines: { start: 1.7, end: 3 } });
+    assert.ok(result.content[0].text.includes("[Lines 1-3"), "should floor 1.7 to 1");
+  });
+
+  it("vault_read rejects Infinity in lines", async () => {
+    await assert.rejects(
+      () => handlers.get("vault_read")({ path: "notes/alpha.md", lines: { start: Infinity, end: 5 } }),
+      /positive integers/
+    );
+  });
+});
+
+describe("vault_suggest_links graph_context + no path", () => {
+  it("throws when graph_context is true but path is missing", async () => {
+    const mockResults = [
+      { path: "notes/beta.md", score: 0.8, preview: "Beta content" },
+    ];
+    const handlersWithSemantic = await createHandlers({
+      vaultPath: tmpDir,
+      templateRegistry: await buildTemplateRegistry(tmpDir),
+      semanticIndex: createMockSemanticIndex(mockResults),
+      activityLog: null,
+      sessionId: "test-graph-ctx-no-path",
+    });
+    await assert.rejects(
+      () => handlersWithSemantic.get("vault_suggest_links")({ content: "some text", graph_context: true }),
+      /graph_context requires.*path/
+    );
+  });
+});
+
+describe("vault_semantic_search invalid graph_weight", () => {
+  it("rejects invalid graph_weight", async () => {
+    const mockResults = [
+      { path: "notes/beta.md", score: 0.8, preview: "Beta" },
+    ];
+    const handlersWithSemantic = await createHandlers({
+      vaultPath: tmpDir,
+      templateRegistry: await buildTemplateRegistry(tmpDir),
+      semanticIndex: createMockSemanticIndex(mockResults),
+      activityLog: null,
+      sessionId: "test-invalid-graph-weight",
+    });
+    await assert.rejects(
+      () => handlersWithSemantic.get("vault_semantic_search")({ query: "test", anchor: "notes/alpha.md", graph_weight: 2.0 }),
+      /graph_weight must be a number between 0 and 1/
+    );
+  });
+});
+
+describe("vault_write with variables param", () => {
+  it("substitutes custom variables in template", async () => {
+    const outPath = `output/custom-var-test-${Date.now()}.md`;
+    await handlers.get("vault_write")({
+      template: "custom-var",
+      path: outPath,
+      frontmatter: { tags: ["research"] },
+      variables: { summary: "This is the summary text", details: "These are the details" },
+    });
+
+    const content = await fs.readFile(path.join(tmpDir, outPath), "utf-8");
+    assert.ok(content.includes("This is the summary text"), "summary variable should be substituted");
+    assert.ok(content.includes("These are the details"), "details variable should be substituted");
+    assert.ok(!content.includes("<% summary %>"), "template placeholder should be gone");
+    assert.ok(!content.includes("<% details %>"), "template placeholder should be gone");
   });
 });

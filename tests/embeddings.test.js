@@ -269,6 +269,62 @@ describe("callEmbeddingAPI", () => {
       assert.ok(e.message.length <= 250, `Error message too long: ${e.message.length} chars`);
     }
   });
+
+  it("returns embeddings on success", async () => {
+    globalThis.fetch = async () => ({
+      ok: true,
+      json: async () => ({
+        data: [
+          { index: 1, embedding: [0.4, 0.5] },
+          { index: 0, embedding: [0.1, 0.2] },
+        ]
+      })
+    });
+    const result = await callEmbeddingAPI(["text1", "text2"], "test-key");
+    assert.deepStrictEqual(result, [[0.1, 0.2], [0.4, 0.5]], "should sort by index");
+  });
+
+  it("retries on 429 then succeeds", async () => {
+    let callCount = 0;
+    globalThis.fetch = async () => {
+      callCount++;
+      if (callCount === 1) {
+        return { ok: false, status: 429, text: async () => "rate limited" };
+      }
+      return {
+        ok: true,
+        json: async () => ({ data: [{ index: 0, embedding: [0.1] }] })
+      };
+    };
+    const result = await callEmbeddingAPI(["test"], "test-key", 2);
+    assert.strictEqual(callCount, 2, "should have called fetch twice");
+    assert.deepStrictEqual(result, [[0.1]]);
+  });
+
+  it("throws after max retries on 429", async () => {
+    globalThis.fetch = async () => ({
+      ok: false,
+      status: 429,
+      text: async () => "rate limited",
+    });
+    await assert.rejects(
+      () => callEmbeddingAPI(["test"], "test-key", 1),
+      /OpenAI API error \(429\)/
+    );
+  });
+
+  it("non-429 error throws immediately without retrying", async () => {
+    let callCount = 0;
+    globalThis.fetch = async () => {
+      callCount++;
+      return { ok: false, status: 500, text: async () => "server error" };
+    };
+    await assert.rejects(
+      () => callEmbeddingAPI(["test"], "test-key", 3),
+      /OpenAI API error \(500\)/
+    );
+    assert.strictEqual(callCount, 1, "should not retry on non-429 errors");
+  });
 });
 
 // ---------------------------------------------------------------------------
