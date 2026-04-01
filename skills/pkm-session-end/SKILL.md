@@ -34,6 +34,8 @@ vault_append({
 
 Use the **actual date** and fill in real content from the session. Keep entries concise but specific. Using `after_heading` inserts each new entry at the top, keeping the log in reverse-chronological order.
 
+**Wikilinks in devlog entries**: Include `[[wikilinks]]` to tasks, ADRs, research notes, and other vault notes that were completed, created, or significantly updated during the session. For example: `- Completed [[task-api-refactor]]` or `- Decided on caching strategy ([[ADR-003-caching]])`.
+
 **Existing devlogs**: Older devlogs may use `## YYYY-MM-DD` entries without a `## Sessions` heading. If `vault_append` fails with "Heading not found", add the heading first: `vault_append({ path: "...", content: "\n## Sessions\n" })`.
 
 ## Step 2: Review Session Work
@@ -106,6 +108,14 @@ When a task's status, priority, or details changed during the session:
 1. `vault_query({ type: "task", custom_fields: { project: "<Project>" } })` to find the task
 2. `vault_update_frontmatter` to update status/priority
 3. Optionally `vault_append` to add context about what changed
+4. Add a backlink from the task to the devlog entry using a heading link:
+   ```
+   vault_add_links({
+     path: "<task-path>",
+     links: [{ target: "<project>/development/devlog.md#YYYY-MM-DD HH:mm", annotation: "session where status changed to <new-status>" }]
+   })
+   ```
+   Use the same `### YYYY-MM-DD HH:mm` heading from Step 1 as the link target. This creates bidirectional traceability: the devlog links to the task, and the task links back to the session.
 
 ## Step 4: Quality Check
 

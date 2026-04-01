@@ -95,7 +95,7 @@ If no .jsonl files are found at the expected path, fall back to `vault_activity`
 - Accuracy over completeness: only document what actually happened
 - Use specific file names, function names, and commit hashes
 - Keep devlog entries concise but specific — scannable, not prose
-- Link to vault notes created during the session using [[wikilinks]]
+- Link to vault notes created or significantly updated during the session using [[wikilinks]]
 
 **Conservatism guidance (from Step 3 of the skill):**
 Most work produces NOTHING worth capturing beyond the devlog entry. Skip:
