@@ -1,14 +1,23 @@
-# Obsidian PKM Plugin
+<p align="center">
+  <img src="assets/banner.svg" alt="Obsidian PKM — Claude Code plugin for AI-native knowledge management" width="100%">
+</p>
 
-[![npm version](https://img.shields.io/npm/v/obsidian-pkm)](https://www.npmjs.com/package/obsidian-pkm)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Node.js >= 20](https://img.shields.io/badge/Node.js-%3E%3D20-green.svg)](https://nodejs.org/)
-[![CI](https://github.com/AdrianV101/obsidian-pkm-plugin/actions/workflows/ci.yml/badge.svg)](https://github.com/AdrianV101/obsidian-pkm-plugin/actions/workflows/ci.yml)
-[![Tests](https://img.shields.io/badge/tests-573%20passing-brightgreen)](https://github.com/AdrianV101/obsidian-pkm-plugin/actions/workflows/ci.yml)
+<p align="center">
+  <a href="https://www.npmjs.com/package/obsidian-pkm"><img src="https://img.shields.io/npm/v/obsidian-pkm" alt="npm version"></a>
+  <a href="https://www.npmjs.com/package/obsidian-pkm"><img src="https://img.shields.io/npm/dw/obsidian-pkm" alt="npm downloads"></a>
+  <a href="https://github.com/AdrianV101/obsidian-pkm-plugin/stargazers"><img src="https://img.shields.io/github/stars/AdrianV101/obsidian-pkm-plugin?style=flat" alt="GitHub stars"></a>
+  <a href="https://opensource.org/licenses/MIT"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT"></a>
+  <a href="https://github.com/AdrianV101/obsidian-pkm-plugin/actions/workflows/ci.yml"><img src="https://github.com/AdrianV101/obsidian-pkm-plugin/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://github.com/AdrianV101/obsidian-pkm-plugin/actions/workflows/ci.yml"><img src="https://img.shields.io/badge/tests-573%20passing-brightgreen" alt="Tests"></a>
+</p>
+
+# Obsidian PKM Plugin
 
 Give Claude persistent, structured memory across conversations using your Obsidian vault. Read, write, search, and navigate your knowledge base — all from within Claude Code.
 
 Under the hood, this Claude Code plugin provides 20 [MCP](https://modelcontextprotocol.io/) (Model Context Protocol) tools for note creation, semantic search, graph traversal, metadata queries, and session memory — plus agents, hooks, and skills for seamless workflow integration. Published on npm as [`obsidian-pkm`](https://www.npmjs.com/package/obsidian-pkm).
+
+> If you find this useful, please [star the repo](https://github.com/AdrianV101/obsidian-pkm-plugin) — it helps others discover the plugin.
 
 ## Why
 
@@ -21,6 +30,23 @@ Claude Code has built-in memory, but it's flat text files scoped to individual p
 - **Knowledge capture** — Decisions, tasks, and research findings are captured by specialized agents in the background without interrupting your coding flow.
 
 Without this, knowledge stays fragmented across per-project memory files and chat logs. With it, your AI assistant maintains a unified knowledge base that compounds over time.
+
+### How It Compares
+
+| | obsidian-pkm | [remember](https://github.com/Digital-Process-Tools/claude-remember) | Claude built-in memory |
+|---|---|---|---|
+| **Knowledge base** | Your Obsidian vault (markdown files you own) | Compressed conversation logs (`.remember/` dir) | CLAUDE.md + auto-memory files |
+| **Scope** | Cross-project (one vault for everything) | Per-project | Per-project (git-repo scoped) |
+| **Semantic search** | OpenAI embeddings | — | — |
+| **Graph traversal** | Wikilink BFS, link health audits | — | — |
+| **Structured notes** | 13 templates with validated frontmatter | Plain markdown | Plain markdown |
+| **Metadata queries** | Filter by type, status, tags, dates, custom fields | — | — |
+| **Session memory** | Activity log (every tool call with timestamps) | Tiered daily summaries (Haiku-compressed) | Manual (user writes CLAUDE.md) |
+| **Setup effort** | Medium (vault path + optional OpenAI key) | Low (auto hooks, no config) | None (built-in) |
+| **MCP tools** | 20 | 0 (hooks-based) | 0 |
+| **Agents** | 3 (explorer, capture, auditor) | 0 | 0 |
+
+**remember** is great for lightweight session continuity with minimal setup. **obsidian-pkm** is for developers who want a structured, searchable, interconnected knowledge base that grows with every project.
 
 [Watch the demo video](https://github.com/user-attachments/assets/58ad9c9b-d987-4728-89e7-33de20b73a38)
 
@@ -194,7 +220,8 @@ Use `OBSIDIAN_PKM_OPENAI_KEY` (preferred) to avoid conflicts with project-level 
 
 This enables `vault_semantic_search` and `vault_suggest_links`. Uses `text-embedding-3-large` with a SQLite + sqlite-vec index stored at `.obsidian/semantic-index.db`. The index rebuilds automatically — delete the DB file to force a full re-embed.
 
-## Vault Structure
+<details>
+<summary><strong>Vault Structure</strong></summary>
 
 The server works with any Obsidian vault. The included templates assume this layout:
 
@@ -226,7 +253,10 @@ Task notes enforce `status` (pending, active, done, cancelled) and `priority` (l
 
 `sample-project/CLAUDE.md` is a template you can drop into any code repository to wire up Claude Code with your vault. It defines context loading, documentation rules, and ADR/devlog conventions.
 
-## Architecture
+</details>
+
+<details>
+<summary><strong>Architecture</strong></summary>
 
 Module dependencies:
 
@@ -271,6 +301,8 @@ File layout:
 ```
 
 `index.js` initializes the semantic index and activity log, then injects them into `createHandlers()`. All paths passed to tools are relative to vault root. The server includes path security to prevent directory traversal.
+
+</details>
 
 ## How It Works
 
