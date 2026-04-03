@@ -48,7 +48,7 @@ Without this, knowledge stays fragmented across per-project memory files and cha
 
 **remember** is great for lightweight session continuity with minimal setup. **obsidian-pkm** is for developers who want a structured, searchable, interconnected knowledge base that grows with every project.
 
-[Watch the demo video](https://github.com/user-attachments/assets/58ad9c9b-d987-4728-89e7-33de20b73a38)
+[Watch the demo video](https://github.com/user-attachments/assets/6a28b2b5-d2e5-4e3f-8472-893ab4a5fc20)
 
 ## Features
 
