@@ -10,4 +10,5 @@ Thumbs.db
 coverage/
 .worktrees/
 docs/superpowers/
-assets/demo-video/
+assets/*
+!assets/banner.svg
