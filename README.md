@@ -19,6 +19,8 @@ Under the hood, this Claude Code plugin provides 20 [MCP](https://modelcontextpr
 
 > If you find this useful, please [star the repo](https://github.com/AdrianV101/obsidian-pkm-plugin) — it helps others discover the plugin.
 
+[Watch the demo video](https://github.com/user-attachments/assets/6a28b2b5-d2e5-4e3f-8472-893ab4a5fc20)
+
 ## Why
 
 Claude Code has built-in memory, but it's flat text files scoped to individual projects — no structure, no search beyond exact matches, no connections between notes, and no way to query across projects. As knowledge grows, it doesn't scale. This server replaces that with a proper PKM layer: structured notes with enforced metadata, semantic search, a navigable knowledge graph, and cross-project access through a single Obsidian vault.
@@ -47,8 +49,6 @@ Without this, knowledge stays fragmented across per-project memory files and cha
 | **Agents** | 3 (explorer, capture, auditor) | 0 | 0 |
 
 **remember** is great for lightweight session continuity with minimal setup. **obsidian-pkm** is for developers who want a structured, searchable, interconnected knowledge base that grows with every project.
-
-[Watch the demo video](https://github.com/user-attachments/assets/6a28b2b5-d2e5-4e3f-8472-893ab4a5fc20)
 
 ## Features
 
