@@ -65,12 +65,18 @@ export async function runDoctor() {
   }
 
   // 5. OpenAI key
-  const apiKey = process.env.OBSIDIAN_PKM_OPENAI_KEY || process.env.OPENAI_API_KEY;
+  const apiKey = process.env.VAULT_PKM_OPENAI_KEY
+    || process.env.OBSIDIAN_PKM_OPENAI_KEY
+    || process.env.OPENAI_API_KEY;
   if (apiKey && !apiKey.startsWith("${")) {
-    ok("OBSIDIAN_PKM_OPENAI_KEY set (semantic search enabled)");
+    ok("VAULT_PKM_OPENAI_KEY set (semantic search enabled)");
     passed++;
+    if (!process.env.VAULT_PKM_OPENAI_KEY && process.env.OBSIDIAN_PKM_OPENAI_KEY) {
+      warn("OBSIDIAN_PKM_OPENAI_KEY is deprecated — rename to VAULT_PKM_OPENAI_KEY");
+      warnings++;
+    }
   } else {
-    warn("OBSIDIAN_PKM_OPENAI_KEY not set (semantic search disabled)");
+    warn("VAULT_PKM_OPENAI_KEY not set (semantic search disabled)");
     warnings++;
   }
 

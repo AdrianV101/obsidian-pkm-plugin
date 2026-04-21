@@ -19,7 +19,7 @@ This project handles local file system access to an Obsidian vault. The main sec
 
 - **Path traversal** -- The server validates all paths to prevent escaping the vault directory
 - **SQL injection** -- All SQLite queries use parameterized statements
-- **API keys** -- The `OBSIDIAN_PKM_OPENAI_KEY` (or `OPENAI_API_KEY` fallback) is passed via environment variable, never stored in code or logs
+- **API keys** -- The `VAULT_PKM_OPENAI_KEY` (or `OPENAI_API_KEY` fallback, or the deprecated `OBSIDIAN_PKM_OPENAI_KEY`) is passed via environment variable, never stored in code or logs
 - **Activity log** -- `vault_activity` stores all tool call arguments (including file contents passed to `vault_append`/`vault_edit`) in `$VAULT_PATH/.obsidian/activity-log.db`. Use `vault_activity({ action: "clear" })` to purge entries, or delete the DB file directly. Be aware that sensitive content passed through tools is retained until explicitly cleared
 
 ## Supported Versions

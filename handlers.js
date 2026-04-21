@@ -523,7 +523,7 @@ export async function createHandlers({ vaultPath, templateRegistry, semanticInde
 
     // --- Semantic expansion (Tier 3) ---
     if (args.include_semantic && !semanticIndex?.isAvailable) {
-      text += "\n(Semantic expansion skipped: OBSIDIAN_PKM_OPENAI_KEY not set)\n";
+      text += "\n(Semantic expansion skipped: VAULT_PKM_OPENAI_KEY not set)\n";
     } else if (args.include_semantic && semanticIndex?.isAvailable) {
       const filePath = resolvePath(resolvedPath);
       const noteContent = await fs.readFile(filePath, "utf-8");
@@ -754,7 +754,7 @@ export async function createHandlers({ vaultPath, templateRegistry, semanticInde
 
   async function handleSemanticSearch(args) {
     if (!semanticIndex?.isAvailable) {
-      throw new Error("Semantic search not available (OBSIDIAN_PKM_OPENAI_KEY not set)");
+      throw new Error("Semantic search not available (VAULT_PKM_OPENAI_KEY not set)");
     }
 
     const resolvedFolder = args.folder ? path.relative(vaultPath, resolveFolder(args.folder)) : undefined;
@@ -815,7 +815,7 @@ export async function createHandlers({ vaultPath, templateRegistry, semanticInde
 
   async function handleSuggestLinks(args) {
     if (!semanticIndex?.isAvailable) {
-      throw new Error("Link suggestions not available (OBSIDIAN_PKM_OPENAI_KEY not set)");
+      throw new Error("Link suggestions not available (VAULT_PKM_OPENAI_KEY not set)");
     }
 
     const resolvedFolder = args.folder ? path.relative(vaultPath, resolveFolder(args.folder)) : undefined;

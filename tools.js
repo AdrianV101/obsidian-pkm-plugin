@@ -198,7 +198,7 @@ Pass custom <%...%> variables via the 'variables' parameter.`,
           },
           include_semantic: {
             type: "boolean",
-            description: "Append semantically related but unlinked notes (requires OBSIDIAN_PKM_OPENAI_KEY, default: false)"
+            description: "Append semantically related but unlinked notes (requires VAULT_PKM_OPENAI_KEY, default: false)"
           },
           semantic_limit: {
             type: "number",
@@ -390,7 +390,7 @@ Pass custom <%...%> variables via the 'variables' parameter.`,
   if (hasSemanticIndex) {
     tools.push({
       name: "vault_semantic_search",
-      description: "Search the vault using semantic similarity. Finds conceptually related notes even when they use different words. Requires OBSIDIAN_PKM_OPENAI_KEY.",
+      description: "Search the vault using semantic similarity. Finds conceptually related notes even when they use different words. Requires VAULT_PKM_OPENAI_KEY.",
       inputSchema: {
         type: "object",
         properties: {

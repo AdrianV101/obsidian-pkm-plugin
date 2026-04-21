@@ -1,6 +1,6 @@
 {
-  "name": "obsidian-pkm",
-  "version": "3.6.2",
+  "name": "vault-pkm",
+  "version": "3.7.0",
   "description": "Bidirectional knowledge flow between Claude Code and Obsidian — 20 MCP tools, skills, and hooks for PKM",
   "author": {
     "name": "Adrian Verhoosel"
@@ -8,9 +8,9 @@
   "repository": "https://github.com/AdrianV101/obsidian-pkm-plugin",
   "homepage": "https://github.com/AdrianV101/obsidian-pkm-plugin",
   "license": "MIT",
-  "keywords": ["obsidian", "pkm", "knowledge-management", "mcp", "claude-code"],
+  "keywords": ["vault", "obsidian", "pkm", "knowledge-management", "knowledge-base", "memory", "notes", "semantic-search", "mcp", "claude-code"],
   "mcpServers": {
-    "obsidian-pkm": {
+    "vault-pkm": {
       "command": "npx",
       "args": ["-y", "obsidian-pkm@^3"],
       "env": {

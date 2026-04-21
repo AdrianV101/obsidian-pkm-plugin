@@ -1,12 +1,12 @@
 ---
 name: setup
-description: Configure Obsidian PKM plugin — set vault path, API keys, and verify setup
+description: Configure Vault PKM plugin — set vault path, API keys, and verify setup
 allowed-tools: [Bash, Read, Write, Edit, Glob, Grep, AskUserQuestion]
 ---
 
-# Obsidian PKM Setup
+# Vault PKM Setup
 
-You are configuring the Obsidian PKM plugin. Walk the user through these steps:
+You are configuring the Vault PKM plugin. Walk the user through these steps:
 
 ## Step 1: Vault Path
 
@@ -32,16 +32,16 @@ Read the file first, merge with existing env vars (don't overwrite other setting
 Ask if they want semantic search features (vault_semantic_search, vault_suggest_links). If yes:
 
 - **NEVER ask the user to type their API key in the chat** — it would be stored in conversation history
-- Tell them to open `~/.claude/settings.json` in their text editor (outside of Claude Code) and add `OBSIDIAN_PKM_OPENAI_KEY` to the `env` block:
+- Tell them to open `~/.claude/settings.json` in their text editor (outside of Claude Code) and add `VAULT_PKM_OPENAI_KEY` to the `env` block:
   ```json
   {
     "env": {
       "VAULT_PATH": "/path/to/vault",
-      "OBSIDIAN_PKM_OPENAI_KEY": "sk-your-key-here"
+      "VAULT_PKM_OPENAI_KEY": "sk-your-key-here"
     }
   }
   ```
-- Explain the variable is named `OBSIDIAN_PKM_OPENAI_KEY` (not `OPENAI_API_KEY`) to avoid conflicts with project-scoped OpenAI keys
+- Explain the variable is named `VAULT_PKM_OPENAI_KEY` (not `OPENAI_API_KEY`) to avoid conflicts with project-scoped OpenAI keys. Users upgrading from earlier releases can keep `OBSIDIAN_PKM_OPENAI_KEY` — it still works as a deprecated fallback — but should rename it at their convenience.
 - Explain they can get a key from https://platform.openai.com/api-keys
 - Explain this enables 2 additional tools (semantic search + link suggestions) but is completely optional
 - Tell them to restart Claude Code after saving the file
@@ -51,7 +51,7 @@ Ask if they want semantic search features (vault_semantic_search, vault_suggest_
 Ask the user if they want to auto-approve all PKM vault tools (so they don't get prompted for each tool call). If yes, add this to the `permissions.allow` array in `~/.claude/settings.json`:
 
 ```
-mcp__plugin_obsidian-pkm_obsidian-pkm__*
+mcp__plugin_vault-pkm_vault-pkm__*
 ```
 
 Read the file first, merge with existing permissions (don't overwrite), and write back. This allows all vault_read, vault_write, vault_search, etc. tools to run without per-call confirmation.
@@ -67,7 +67,7 @@ Check if the vault has templates:
 Ask the user to verify by requesting a vault operation. For example, tell them to ask Claude: "List the folders in my vault." This calls `vault_list`, which exercises the full MCP server connection and vault path configuration.
 
 - If it returns the vault's directory structure, setup is complete.
-- If it fails, suggest restarting Claude Code (`/quit` and relaunch) and re-running `/obsidian-pkm:setup`.
+- If it fails, suggest restarting Claude Code (`/quit` and relaunch) and re-running `/vault-pkm:setup`.
 
 ## Step 6: Migration Check
 
@@ -85,6 +85,6 @@ If found:
 > **IMPORTANT:** Restart Claude Code now (`/quit` then relaunch) before using any vault tools. The MCP server needs to restart to pick up the new environment variables.
 
 Confirm setup is complete. Tell the user:
-- "Your Obsidian PKM plugin is configured. Try asking me to list your vault folders to verify."
-- If OBSIDIAN_PKM_OPENAI_KEY was set: "Semantic search will build its index in the background on first use."
+- "Your Vault PKM plugin is configured. Try asking me to list your vault folders to verify."
+- If VAULT_PKM_OPENAI_KEY was set: "Semantic search will build its index in the background on first use."
 - **Important**: "Restart your Claude Code session for the MCP server to pick up the new environment variables."

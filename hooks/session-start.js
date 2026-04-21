@@ -57,7 +57,7 @@ async function main() {
     const output = {
       hookSpecificOutput: {
         hookEventName: "SessionStart",
-        additionalContext: "PKM hook warning: VAULT_PATH not set. Run /obsidian-pkm:setup to configure your vault path."
+        additionalContext: "PKM hook warning: VAULT_PATH not set. Run /vault-pkm:setup to configure your vault path."
       }
     };
     console.log(JSON.stringify(output));
@@ -84,10 +84,10 @@ async function main() {
       hookSpecificOutput: {
         hookEventName: "SessionStart",
         additionalContext: staleEnvWarning + `PKM: ${error}\n\n` +
-          "The obsidian-pkm plugin is installed but no vault project could be resolved for this directory. " +
-          "If the user asks about PKM or documentation, suggest running /obsidian-pkm:init-project."
+          "The vault-pkm plugin is installed but no vault project could be resolved for this directory. " +
+          "If the user asks about PKM or documentation, suggest running /vault-pkm:init-project."
       },
-      systemMessage: "Obsidian PKM: No vault project found. Run /obsidian-pkm:init-project to set up vault integration."
+      systemMessage: "Vault PKM: No vault project found. Run /vault-pkm:init-project to set up vault integration."
     };
     console.log(JSON.stringify(output));
     process.exit(0);
@@ -119,10 +119,10 @@ async function main() {
         hookEventName: "SessionStart",
         additionalContext: staleEnvWarning + (context ? context + "\n\n" : "") +
           "PKM: This project's CLAUDE.md does not have a ## PKM Integration section. " +
-          "The obsidian-pkm plugin is installed but this project is not configured for proactive vault usage. " +
-          "If the user asks about PKM or documentation, suggest running /obsidian-pkm:init-project."
+          "The vault-pkm plugin is installed but this project is not configured for proactive vault usage. " +
+          "If the user asks about PKM or documentation, suggest running /vault-pkm:init-project."
       },
-      systemMessage: "Obsidian PKM: This project isn't configured yet. Run /obsidian-pkm:init-project to set up vault integration."
+      systemMessage: "Vault PKM: This project isn't configured yet. Run /vault-pkm:init-project to set up vault integration."
     };
     console.log(JSON.stringify(output));
     process.exit(0);

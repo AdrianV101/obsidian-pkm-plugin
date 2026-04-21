@@ -1,7 +1,7 @@
 ---
 name: init-project
 description: Configure this project for Obsidian PKM — connects the repo to a vault project folder and writes CLAUDE.md integration directives
-allowed-tools: [Bash, Read, Write, Edit, Glob, Grep, AskUserQuestion, mcp__plugin_obsidian-pkm_obsidian-pkm__vault_list, mcp__plugin_obsidian-pkm_obsidian-pkm__vault_write, mcp__plugin_obsidian-pkm_obsidian-pkm__vault_peek]
+allowed-tools: [Bash, Read, Write, Edit, Glob, Grep, AskUserQuestion, mcp__plugin_vault-pkm_vault-pkm__vault_list, mcp__plugin_vault-pkm_vault-pkm__vault_write, mcp__plugin_vault-pkm_vault-pkm__vault_peek]
 ---
 
 # Initialize Project for Obsidian PKM
@@ -74,13 +74,13 @@ The section content (substitute the actual project path):
 ## PKM Integration
 
 - **Vault project**: `01-Projects/<name>/`
-- **MCP Server**: `obsidian-pkm` plugin
+- **MCP Server**: `vault-pkm` plugin
 
-Document decisions, research findings, and debugging sessions as you work. The `pkm-capture` agent captures devlog entries and PKM-worthy content in the background (triggered automatically after git commits), or use the `obsidian-pkm:pkm-write` skill for structured notes with linking.
+Document decisions, research findings, and debugging sessions as you work. The `pkm-capture` agent captures devlog entries and PKM-worthy content in the background (triggered automatically after git commits), or use the `vault-pkm:pkm-write` skill for structured notes with linking.
 
-Use `obsidian-pkm:pkm-explore` to research what the vault already knows about a topic before creating new content.
+Use `vault-pkm:pkm-explore` to research what the vault already knows about a topic before creating new content.
 
-At the end of each session, run `obsidian-pkm:pkm-session-end` to update the devlog and capture undocumented work.
+At the end of each session, run `vault-pkm:pkm-session-end` to update the devlog and capture undocumented work.
 ```
 
 **If `## PKM Integration` already exists**: replace everything from `## PKM Integration` up to (but not including) the next `## ` heading or end of file. This makes re-runs idempotent.
@@ -93,7 +93,7 @@ Tell the user:
 
 > "Done! Your project is connected to the vault at `01-Projects/<name>/`."
 >
-> The obsidian-pkm plugin will now:
+> The vault-pkm plugin will now:
 > - Load project context automatically at session start
 > - Capture decisions, tasks, and research in the background
 > - Document session progress when you run `pkm-session-end`

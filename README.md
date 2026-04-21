@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/banner.svg" alt="Obsidian PKM — Claude Code plugin for AI-native knowledge management" width="100%">
+  <img src="assets/banner.svg" alt="Vault PKM — Claude Code plugin for AI-native knowledge management" width="100%">
 </p>
 
 <p align="center">
@@ -8,10 +8,10 @@
   <a href="https://github.com/AdrianV101/obsidian-pkm-plugin/stargazers"><img src="https://img.shields.io/github/stars/AdrianV101/obsidian-pkm-plugin?style=flat" alt="GitHub stars"></a>
   <a href="https://opensource.org/licenses/MIT"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT"></a>
   <a href="https://github.com/AdrianV101/obsidian-pkm-plugin/actions/workflows/ci.yml"><img src="https://github.com/AdrianV101/obsidian-pkm-plugin/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
-  <a href="https://github.com/AdrianV101/obsidian-pkm-plugin/actions/workflows/ci.yml"><img src="https://img.shields.io/badge/tests-573%20passing-brightgreen" alt="Tests"></a>
+  <a href="https://github.com/AdrianV101/obsidian-pkm-plugin/actions/workflows/ci.yml"><img src="https://img.shields.io/badge/tests-574%20passing-brightgreen" alt="Tests"></a>
 </p>
 
-# Obsidian PKM Plugin
+# Vault PKM
 
 Give Claude persistent, structured memory across conversations using your Obsidian vault. Read, write, search, and navigate your knowledge base — all from within Claude Code.
 
@@ -19,7 +19,7 @@ Under the hood, this Claude Code plugin provides 20 [MCP](https://modelcontextpr
 
 > If you find this useful, please [star the repo](https://github.com/AdrianV101/obsidian-pkm-plugin) — it helps others discover the plugin.
 
-[Watch the demo video](https://github.com/user-attachments/assets/6a28b2b5-d2e5-4e3f-8472-893ab4a5fc20)
+[Watch the demo video](https://github.com/user-attachments/assets/564e70d1-9006-4a29-8bed-1ed167bdfe56)
 
 ## Why
 
@@ -35,7 +35,7 @@ Without this, knowledge stays fragmented across per-project memory files and cha
 
 ### How It Compares
 
-| | obsidian-pkm | [remember](https://github.com/Digital-Process-Tools/claude-remember) | Claude built-in memory |
+| | Vault PKM | [remember](https://github.com/Digital-Process-Tools/claude-remember) | Claude built-in memory |
 |---|---|---|---|
 | **Knowledge base** | Your Obsidian vault (markdown files you own) | Compressed conversation logs (`.remember/` dir) | CLAUDE.md + auto-memory files |
 | **Scope** | Cross-project (one vault for everything) | Per-project | Per-project (git-repo scoped) |
@@ -48,7 +48,7 @@ Without this, knowledge stays fragmented across per-project memory files and cha
 | **MCP tools** | 20 | 0 (hooks-based) | 0 |
 | **Agents** | 3 (explorer, capture, auditor) | 0 | 0 |
 
-**remember** is great for lightweight session continuity with minimal setup. **obsidian-pkm** is for developers who want a structured, searchable, interconnected knowledge base that grows with every project.
+**remember** is great for lightweight session continuity with minimal setup. **Vault PKM** is for developers who want a structured, searchable, interconnected knowledge base that grows with every project.
 
 ## Features
 
@@ -124,8 +124,8 @@ Without this, knowledge stays fragmented across per-project memory files and cha
 
 | Command | Purpose |
 |---------|---------|
-| `/obsidian-pkm:setup` | Configure vault path, API keys, and permissions |
-| `/obsidian-pkm:init-project` | Connect a code repository to a vault project folder |
+| `/vault-pkm:setup` | Configure vault path, API keys, and permissions |
+| `/vault-pkm:init-project` | Connect a code repository to a vault project folder |
 
 ## Prerequisites
 
@@ -139,8 +139,8 @@ Prebuilt native binaries are included for Node 20/22 on Linux x64, macOS (x64/ar
 ### 1. Install the Plugin
 
 ```bash
-claude plugin marketplace add AdrianV101/obsidian-pkm-plugin
-claude plugin install obsidian-pkm
+claude plugin marketplace add anthropics/claude-plugins-community
+claude plugin install vault-pkm@claude-community
 ```
 
 ### 2. Configure
@@ -148,7 +148,7 @@ claude plugin install obsidian-pkm
 Run the setup skill in Claude Code:
 
 ```
-/obsidian-pkm:setup
+/vault-pkm:setup
 ```
 
 The setup skill walks you through vault path, API keys, tool permissions, and verification. Hooks are registered automatically by the plugin system.
@@ -211,12 +211,12 @@ Add your OpenAI API key to `~/.claude/settings.json` under the `env` block:
 {
   "env": {
     "VAULT_PATH": "/path/to/vault",
-    "OBSIDIAN_PKM_OPENAI_KEY": "sk-your-key-here"
+    "VAULT_PKM_OPENAI_KEY": "sk-your-key-here"
   }
 }
 ```
 
-Use `OBSIDIAN_PKM_OPENAI_KEY` (preferred) to avoid conflicts with project-level OpenAI keys. `OPENAI_API_KEY` is also accepted as a fallback. Restart Claude Code after saving.
+Use `VAULT_PKM_OPENAI_KEY` (preferred) to avoid conflicts with project-level OpenAI keys. `OPENAI_API_KEY` is also accepted as a fallback. The previously-documented `OBSIDIAN_PKM_OPENAI_KEY` still works as a deprecated fallback — plan to rename it in your config. Restart Claude Code after saving.
 
 This enables `vault_semantic_search` and `vault_suggest_links`. Uses `text-embedding-3-large` with a SQLite + sqlite-vec index stored at `.obsidian/semantic-index.db`. The index rebuilds automatically — delete the DB file to force a full re-embed.
 
@@ -288,8 +288,7 @@ File layout:
 ├── cli.js            # CLI entry point (routes `init` subcommand or starts server)
 ├── init.js           # Vault scaffolding wizard (templates, PARA folders)
 ├── .claude-plugin/   # Plugin packaging
-│   ├── plugin.json   # Plugin manifest (identity, components, permissions)
-│   └── marketplace.json  # Self-hosted marketplace entry
+│   └── plugin.json   # Plugin manifest (identity, components, permissions)
 ├── hooks/            # Claude Code hooks (context loading, project resolution, session start)
 ├── agents/           # Specialized agents (vault-explorer, pkm-capture, link-auditor)
 ├── skills/           # PKM workflow skills (pkm-write, pkm-explore, pkm-session-end)
@@ -324,16 +323,16 @@ File layout:
 You need C++ build tools. See [Prerequisites](#prerequisites) for your platform. On Linux, `sudo apt install build-essential python3` usually fixes it.
 
 **Server starts but all tool calls fail with ENOENT**
-Your `VAULT_PATH` is wrong or missing. The server validates this at startup and exits with a clear error. Run `/obsidian-pkm:setup` to reconfigure the vault path.
+Your `VAULT_PATH` is wrong or missing. The server validates this at startup and exits with a clear error. Run `/vault-pkm:setup` to reconfigure the vault path.
 
 **`vault_write` says "no templates available"**
 Run `npx obsidian-pkm init` to install templates, or copy the `templates/` files from this repo into your vault's `05-Templates/` directory. The server loads templates from there at startup.
 
 **Semantic search not appearing in tool list**
-Set `OBSIDIAN_PKM_OPENAI_KEY` in `~/.claude/settings.json`. See [Enable Semantic Search](#5-enable-semantic-search-optional). Without it, `vault_semantic_search` and `vault_suggest_links` are hidden entirely.
+Set `VAULT_PKM_OPENAI_KEY` in `~/.claude/settings.json`. See [Enable Semantic Search](#5-enable-semantic-search-optional). Without it, `vault_semantic_search` and `vault_suggest_links` are hidden entirely.
 
 **Server not showing up in Claude Code after install**
-Run `claude mcp list` to check. If `obsidian-pkm` is missing, reinstall the plugin: `claude plugin install obsidian-pkm`. Then run `/obsidian-pkm:setup` to configure it.
+Run `claude mcp list` to check. If `vault-pkm` is missing, reinstall the plugin: `claude plugin install vault-pkm@claude-community`. Then run `/vault-pkm:setup` to configure it.
 
 **Semantic index not updating after file changes**
 Check your Node version with `node -v`. The file watcher uses `fs.watch({ recursive: true })` which requires Node.js >= 20.

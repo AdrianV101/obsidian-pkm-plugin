@@ -27,7 +27,7 @@ export async function startServer() {
   let templateRegistry = new Map();
   let templateDescriptions = "";
 
-  // Semantic index (populated at startup if OBSIDIAN_PKM_OPENAI_KEY is set)
+  // Semantic index (populated at startup if VAULT_PKM_OPENAI_KEY is set)
   let semanticIndex = null;
 
   // Activity log (populated at startup)
@@ -39,7 +39,7 @@ export async function startServer() {
 
   // Create the server
   const server = new Server(
-    { name: "obsidian-pkm", version: PKG_VERSION },
+    { name: "vault-pkm", version: PKG_VERSION },
     { capabilities: { tools: {} } }
   );
 
@@ -99,18 +99,23 @@ export async function startServer() {
       templateDescriptions = "(No templates found - add .md files to 05-Templates/)";
     }
 
-    const openaiApiKey = process.env.OBSIDIAN_PKM_OPENAI_KEY || process.env.OPENAI_API_KEY;
+    const openaiApiKey = process.env.VAULT_PKM_OPENAI_KEY
+      || process.env.OBSIDIAN_PKM_OPENAI_KEY
+      || process.env.OPENAI_API_KEY;
     if (openaiApiKey && !openaiApiKey.startsWith("${")) {
       try {
         semanticIndex = new SemanticIndex({ vaultPath: VAULT_PATH, openaiApiKey });
         await semanticIndex.initialize();
         console.error("Semantic index initialized");
+        if (!process.env.VAULT_PKM_OPENAI_KEY && process.env.OBSIDIAN_PKM_OPENAI_KEY) {
+          console.error("Note: OBSIDIAN_PKM_OPENAI_KEY is deprecated — rename to VAULT_PKM_OPENAI_KEY");
+        }
       } catch (err) {
         console.error(`Semantic index init failed (non-fatal): ${err.message}`);
         semanticIndex = null;
       }
     } else {
-      console.error("OBSIDIAN_PKM_OPENAI_KEY not set — semantic search disabled");
+      console.error("VAULT_PKM_OPENAI_KEY not set — semantic search disabled");
     }
 
     try {

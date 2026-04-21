@@ -15,7 +15,7 @@ Before creating, search for existing notes on the same topic:
 vault_semantic_search({ query: "<topic/title of intended note>", limit: 5 })
 ```
 
-If `vault_semantic_search` is unavailable (no `OBSIDIAN_PKM_OPENAI_KEY`), use `vault_search` with the note's title and key terms, and `vault_query` with matching tags to check for duplicates.
+If `vault_semantic_search` is unavailable (no `VAULT_PKM_OPENAI_KEY`), use `vault_search` with the note's title and key terms, and `vault_query` with matching tags to check for duplicates.
 
 **Route based on results:**
 - **Close match (similarity > 0.8)**: **Update the existing note** instead of creating a new one. Read it with `vault_read`, then use `vault_append` to add new content or `vault_edit` to refine existing content. Use `vault_update_frontmatter` if metadata changed. Skip to Step 4 (Discover Connections) after updating.

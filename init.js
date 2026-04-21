@@ -150,8 +150,8 @@ function formatBytes(bytes) {
 
 /**
  * Interactive vault scaffolding wizard.
- * Sets up vault structure (templates, PARA folders) for use with the obsidian-pkm plugin.
- * MCP registration and hooks are handled by the plugin system — use `/obsidian-pkm:setup` in Claude Code.
+ * Sets up vault structure (templates, PARA folders) for use with the vault-pkm plugin.
+ * MCP registration and hooks are handled by the plugin system — use `/vault-pkm:setup` in Claude Code.
  */
 export async function runInit() {
   const { default: confirm } = await import("@inquirer/confirm");
@@ -165,7 +165,7 @@ export async function runInit() {
     console.log(`
 obsidian-pkm vault scaffolding
 
-This will set up your Obsidian vault structure for use with the obsidian-pkm
+This will set up your Obsidian vault structure for use with the vault-pkm
 plugin. You'll be asked about 3 things:
 
   1. Where your vault is (or where to create one)
@@ -175,7 +175,7 @@ plugin. You'll be asked about 3 things:
 Nothing is written until you confirm each step. Press Ctrl+C at any time to cancel.
 
 Note: To configure Claude Code (MCP server, hooks, API keys), install the
-plugin and run /obsidian-pkm:setup in Claude Code.
+plugin and run /vault-pkm:setup in Claude Code.
 `);
 
     // ── Step 2: Vault Path ──
@@ -255,9 +255,9 @@ Vault scaffolding complete!
   Folders:   ${folderSummary}
 
 Next steps:
-  1. Install the plugin:  claude plugin marketplace add AdrianV101/obsidian-pkm-plugin
-                          claude plugin install obsidian-pkm
-  2. Configure Claude Code: /obsidian-pkm:setup
+  1. Install the plugin:  claude plugin marketplace add anthropics/claude-plugins-community
+                          claude plugin install vault-pkm@claude-community
+  2. Configure Claude Code: /vault-pkm:setup
 `);
   } catch (e) {
     if (e.name === "ExitPromptError") {

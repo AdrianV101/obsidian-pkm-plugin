@@ -1,19 +1,19 @@
 # Project: [Your Project Name]
 
-> Place this file in your code repository root. It configures Claude Code to integrate with your Obsidian PKM system via the `obsidian-pkm` MCP server.
+> Place this file in your code repository root. It configures Claude Code to integrate with your Obsidian PKM system via the `vault-pkm` MCP server.
 
 ## PKM Integration
 
 - **Vault project path**: `01-Projects/[YourProjectName]/`
-- **MCP Server**: `obsidian-pkm` plugin
+- **MCP Server**: `vault-pkm` plugin
 
 ### PKM Skills
 
-The `obsidian-pkm` plugin provides skills that automate common PKM workflows:
+The `vault-pkm` plugin provides skills that automate common PKM workflows:
 
-- `obsidian-pkm:pkm-write` — Use when creating vault notes (duplicate check, linking, annotations)
-- `obsidian-pkm:pkm-explore` — Use when researching what the vault knows about a topic (graph + semantic exploration)
-- `obsidian-pkm:pkm-session-end` — Use when wrapping up a session (devlog, link audit, undocumented work capture)
+- `vault-pkm:pkm-write` — Use when creating vault notes (duplicate check, linking, annotations)
+- `vault-pkm:pkm-explore` — Use when researching what the vault knows about a topic (graph + semantic exploration)
+- `vault-pkm:pkm-session-end` — Use when wrapping up a session (devlog, link audit, undocumented work capture)
 
 Session-start context loading is handled automatically by the SessionStart hook.
 
@@ -69,11 +69,11 @@ When a significant technical decision is made:
 
 ### Development Progress
 
-Use the `obsidian-pkm:pkm-session-end` skill at the end of each session — it handles devlog entries, link auditing, and capturing undocumented work from the conversation.
+Use the `vault-pkm:pkm-session-end` skill at the end of each session — it handles devlog entries, link auditing, and capturing undocumented work from the conversation.
 
 ### Reusable Knowledge
 
-Use the `obsidian-pkm:pkm-write` skill when creating any vault note — it handles duplicate checking, template selection, link discovery, and bidirectional linking automatically.
+Use the `vault-pkm:pkm-write` skill when creating any vault note — it handles duplicate checking, template selection, link discovery, and bidirectional linking automatically.
 
 ### Troubleshooting
 
@@ -140,7 +140,7 @@ Use these with `vault_write({ template: "name", path: "...", frontmatter: { tags
 
 ## Session End
 
-Use the `obsidian-pkm:pkm-session-end` skill — it handles devlog updates, undocumented work capture, link audits, and index updates.
+Use the `vault-pkm:pkm-session-end` skill — it handles devlog updates, undocumented work capture, link audits, and index updates.
 
 ## Project-Specific Notes
 

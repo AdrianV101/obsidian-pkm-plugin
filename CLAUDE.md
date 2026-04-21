@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-This is a Claude Code plugin that provides an MCP server and supporting tools for bidirectional knowledge flow between Claude Code and an Obsidian vault. It packages 20 MCP tools, Claude Code hooks, and a setup skill under the `obsidian-pkm` plugin identity.
+This is a Claude Code plugin that provides an MCP server and supporting tools for bidirectional knowledge flow between Claude Code and an Obsidian vault. It packages 20 MCP tools, Claude Code hooks, and a setup skill under the `vault-pkm` plugin identity.
 
 ## Commands
 
@@ -42,8 +42,8 @@ The project consists of three parts:
 - `vault_edit` - Surgical string replacement (exact match, single occurrence)
 - `vault_update_frontmatter` - Update YAML frontmatter fields atomically (set, create, remove fields)
 - `vault_search` - Full-text search across markdown files
-- `vault_semantic_search` - Semantic similarity search using OpenAI embeddings (requires `OBSIDIAN_PKM_OPENAI_KEY` or `OPENAI_API_KEY`)
-- `vault_suggest_links` - Suggest relevant notes to link based on content similarity; `graph_context: true` for graph-semantic blending (requires `OBSIDIAN_PKM_OPENAI_KEY` or `OPENAI_API_KEY`)
+- `vault_semantic_search` - Semantic similarity search using OpenAI embeddings (requires `VAULT_PKM_OPENAI_KEY` or `OPENAI_API_KEY`)
+- `vault_suggest_links` - Suggest relevant notes to link based on content similarity; `graph_context: true` for graph-semantic blending (requires `VAULT_PKM_OPENAI_KEY` or `OPENAI_API_KEY`)
 - `vault_list` / `vault_recent` - Directory listing and recent files
 - `vault_links` - Wikilink analysis (`[[...]]` syntax)
 - `vault_neighborhood` - Graph context exploration via BFS wikilink traversal
@@ -71,7 +71,7 @@ Explores the graph neighborhood around a note by traversing wikilinks using BFS.
 
 Finds conceptually related notes even when they use different terminology. For example, searching "managing overwhelm" finds notes about "cognitive load" or "information overload".
 
-- Requires `OBSIDIAN_PKM_OPENAI_KEY` or `OPENAI_API_KEY` env var — tool is hidden from tool list when not set
+- Requires `VAULT_PKM_OPENAI_KEY` or `OPENAI_API_KEY` env var — tool is hidden from tool list when not set
 - Uses OpenAI `text-embedding-3-large` (3072 dimensions)
 - Index stored at `$VAULT_PATH/.obsidian/semantic-index.db` (SQLite + sqlite-vec)
 - Background `fs.watch` keeps index fresh; startup sync catches changes made while server was stopped
@@ -267,15 +267,15 @@ The plugin provides 3 specialized agents (visible in `/agents`). Delegate to the
 ## Claude Code Configuration
 
 ```bash
-claude plugin marketplace add AdrianV101/obsidian-pkm-plugin
-claude plugin install obsidian-pkm
+claude plugin marketplace add anthropics/claude-plugins-community
+claude plugin install vault-pkm@claude-community
 ```
 
-Then run `/obsidian-pkm:setup` in Claude Code to configure vault path, API keys, and permissions.
+Then run `/vault-pkm:setup` in Claude Code to configure vault path, API keys, and permissions.
 
 For vault scaffolding (templates, PARA folders): `npx obsidian-pkm init`
 
-`OBSIDIAN_PKM_OPENAI_KEY` (or `OPENAI_API_KEY`) is optional — without it, all tools except `vault_semantic_search` and `vault_suggest_links` work normally. The plugin-scoped name avoids conflicts with project-level OpenAI keys.
+`VAULT_PKM_OPENAI_KEY` (or `OPENAI_API_KEY`) is optional — without it, all tools except `vault_semantic_search` and `vault_suggest_links` work normally. The plugin-scoped name avoids conflicts with project-level OpenAI keys. `OBSIDIAN_PKM_OPENAI_KEY` is still read as a deprecated fallback for users who configured it before the rename.
 
 ## Vault Structure Convention
 
@@ -324,10 +324,10 @@ Common types: `fleeting`, `research`, `adr`, `bug`, `planning`, `transcript`, `p
 ## PKM Integration
 
 - **Vault project**: `01-Projects/Obsidian-MCP/`
-- **MCP Server**: `obsidian-pkm` plugin
+- **MCP Server**: `vault-pkm` plugin
 
-Document decisions, research findings, and debugging sessions as you work. The `pkm-capture` agent captures devlog entries and PKM-worthy content in the background (triggered automatically after git commits), or use the `obsidian-pkm:pkm-write` skill for structured notes with linking.
+Document decisions, research findings, and debugging sessions as you work. The `pkm-capture` agent captures devlog entries and PKM-worthy content in the background (triggered automatically after git commits), or use the `vault-pkm:pkm-write` skill for structured notes with linking.
 
-Use `obsidian-pkm:pkm-explore` to research what the vault already knows about a topic before creating new content.
+Use `vault-pkm:pkm-explore` to research what the vault already knows about a topic before creating new content.
 
-At the end of each session, run `obsidian-pkm:pkm-session-end` to update the devlog and capture undocumented work.
+At the end of each session, run `vault-pkm:pkm-session-end` to update the devlog and capture undocumented work.

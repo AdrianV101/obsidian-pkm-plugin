@@ -6,6 +6,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [3.7.0] - 2026-04-21
+
+### Changed
+- **Plugin identity renamed from `obsidian-pkm` to `vault-pkm`.** The Claude Code plugin manifest, the MCP server registration, and the skill/command namespace (`/vault-pkm:setup`, `/vault-pkm:pkm-write`, etc.) all use the new name. MCP tools now appear under `mcp__vault-pkm__vault_*`. Rationale: the old name read as Obsidian-specific, but the server is a generic PKM layer that happens to follow Obsidian conventions.
+- **Install from the official community marketplace.** The documented install command is now `claude plugin marketplace add anthropics/claude-plugins-community` + `claude plugin install vault-pkm@claude-community`. The previous personal-marketplace install path is no longer documented.
+- **Env var renamed to `VAULT_PKM_OPENAI_KEY`** (was `OBSIDIAN_PKM_OPENAI_KEY`). A fallback chain keeps reading the old name and `OPENAI_API_KEY`, so existing configs continue to work; the doctor command prints a deprecation notice when only the old name is set.
+
+### Unchanged (deliberately)
+- The npm package name stays `obsidian-pkm` — the published version history and `npx obsidian-pkm` bin are preserved.
+- The GitHub repo URL stays `AdrianV101/obsidian-pkm-plugin` — the community marketplace entry pins installs to this repo, so renaming would break the install path.
+
+### Migration
+Existing users installed from the personal marketplace:
+1. Uninstall the old plugin: `claude plugin uninstall obsidian-pkm@<your-current-marketplace>`.
+2. Install from the community marketplace: commands above.
+3. Rename your env var in `~/.claude/settings.json` from `OBSIDIAN_PKM_OPENAI_KEY` to `VAULT_PKM_OPENAI_KEY` (old name still works, but is deprecated).
+4. Permission entries (`mcp__plugin_vault-pkm_vault-pkm__*`) will need re-granting on first tool use after the rename.
+5. Vault data is untouched — the semantic index (`.obsidian/semantic-index.db`) and activity log (`.obsidian/activity-log.db`) live inside `$VAULT_PATH`, not inside the plugin install.
+
 ## [3.5.1] - 2026-03-30
 
 ### Fixed
@@ -439,7 +458,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Atomic file creation in `vault_write` (`wx` flag) prevents race conditions
 - Error messages sanitized to prevent leaking absolute vault paths
 
-[Unreleased]: https://github.com/AdrianV101/obsidian-pkm-plugin/compare/v3.5.1...HEAD
+[Unreleased]: https://github.com/AdrianV101/obsidian-pkm-plugin/compare/v3.7.0...HEAD
+[3.7.0]: https://github.com/AdrianV101/obsidian-pkm-plugin/compare/v3.5.1...v3.7.0
 [3.5.1]: https://github.com/AdrianV101/obsidian-pkm-plugin/compare/v3.5.0...v3.5.1
 [3.5.0]: https://github.com/AdrianV101/obsidian-pkm-plugin/compare/v3.4.0...v3.5.0
 [3.4.0]: https://github.com/AdrianV101/obsidian-pkm-plugin/compare/v3.3.1...v3.4.0

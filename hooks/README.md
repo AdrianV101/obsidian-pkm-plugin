@@ -22,8 +22,8 @@ The hook system consists of two hooks:
 Hooks are registered automatically when you install the plugin:
 
 ```bash
-claude plugin marketplace add AdrianV101/obsidian-pkm-plugin
-claude plugin install obsidian-pkm
+claude plugin marketplace add anthropics/claude-plugins-community
+claude plugin install vault-pkm@claude-community
 ```
 
 The plugin's `hooks/hooks.json` declares the SessionStart hook, and Claude Code manages the lifecycle. No manual configuration needed.

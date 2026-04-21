@@ -81,17 +81,35 @@ describe("doctor command", () => {
     );
   });
 
-  it("warns when OBSIDIAN_PKM_OPENAI_KEY is not set", async () => {
+  it("warns when VAULT_PKM_OPENAI_KEY is not set", async () => {
     const vaultPath = path.join(tmpDir, "vault");
     await fs.mkdir(vaultPath, { recursive: true });
 
     const env = { ...process.env, VAULT_PATH: vaultPath };
+    delete env.VAULT_PKM_OPENAI_KEY;
     delete env.OBSIDIAN_PKM_OPENAI_KEY;
     delete env.OPENAI_API_KEY;
     const { stdout } = await runDoctor(env);
     assert.ok(
-      stdout.includes("\u26A0 OBSIDIAN_PKM_OPENAI_KEY not set"),
+      stdout.includes("\u26A0 VAULT_PKM_OPENAI_KEY not set"),
       "should warn about missing API key"
+    );
+  });
+
+  it("accepts the deprecated OBSIDIAN_PKM_OPENAI_KEY as a fallback and prints a deprecation warning", async () => {
+    const vaultPath = path.join(tmpDir, "vault");
+    await fs.mkdir(vaultPath, { recursive: true });
+
+    const env = { ...process.env, VAULT_PATH: vaultPath, OBSIDIAN_PKM_OPENAI_KEY: "sk-test-key" };
+    delete env.VAULT_PKM_OPENAI_KEY;
+    const { stdout } = await runDoctor(env);
+    assert.ok(
+      stdout.includes("\u2713 VAULT_PKM_OPENAI_KEY set"),
+      "should treat the old env var as enabling semantic search"
+    );
+    assert.ok(
+      stdout.includes("OBSIDIAN_PKM_OPENAI_KEY is deprecated"),
+      "should print a deprecation warning when only the old name is set"
     );
   });
 
@@ -109,6 +127,7 @@ describe("doctor command", () => {
     await fs.mkdir(vaultPath, { recursive: true });
 
     const env = { ...process.env, VAULT_PATH: vaultPath };
+    delete env.VAULT_PKM_OPENAI_KEY;
     delete env.OBSIDIAN_PKM_OPENAI_KEY;
     delete env.OPENAI_API_KEY;
     const { stdout } = await runDoctor(env);

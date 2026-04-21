@@ -22,7 +22,7 @@ Be respectful, constructive, and inclusive. We follow the [Contributor Covenant]
 2. Set environment variables (only needed to run the server, not for tests):
    ```bash
    export VAULT_PATH="/path/to/test/vault"
-   # Optional: export OBSIDIAN_PKM_OPENAI_KEY="sk-..." for semantic search
+   # Optional: export VAULT_PKM_OPENAI_KEY="sk-..." for semantic search
    ```
 
 3. Run the server:
