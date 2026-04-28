@@ -14,6 +14,9 @@ The `vault-pkm` plugin provides skills that automate common PKM workflows:
 - `vault-pkm:pkm-write` — Use when creating vault notes (duplicate check, linking, annotations)
 - `vault-pkm:pkm-explore` — Use when researching what the vault knows about a topic (graph + semantic exploration)
 - `vault-pkm:pkm-session-end` — Use when wrapping up a session (devlog, link audit, undocumented work capture)
+- `vault-pkm:triage-tasks` — Surface and batch-update open tasks; presents numbered list with git/activity hints
+- `vault-pkm:add-task` — Fast task capture from a title, optional priority, and due date
+- `vault-pkm:tackle-task` — Tackle a task end-to-end: read, explore context, execute at the right level of rigor, close when done.
 
 Session-start context loading is handled automatically by the SessionStart hook.
 
