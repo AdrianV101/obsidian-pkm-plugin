@@ -39,7 +39,7 @@ vault_semantic_search({ query: "<title>", folder: "<project>", limit: 3, thresho
 If unavailable (no `VAULT_PKM_OPENAI_KEY`):
 ```
 vault_search({ query: "<title>", folder: "<project>" })
-vault_query({ type: "task", status: "pending", folder: "<project>" })
+vault_query({ type: "task", folder: "<project>" })
 ```
 
 If a similar task exists (similarity > 0.8 or exact/near-exact title in search results):
