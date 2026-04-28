@@ -112,13 +112,16 @@ Without this, knowledge stays fragmented across per-project memory files and cha
 | `pkm-capture` | Devlog entries + knowledge capture after commits and work blocks |
 | `link-auditor` | Audit vault link health after bulk note changes |
 
-**Skills** (3) are guided workflows triggered by slash commands:
+**Skills** (6) are guided workflows triggered by slash commands:
 
 | Skill | Purpose |
 |-------|---------|
 | `pkm-write` | Duplicate checking, link discovery, and annotations when creating notes |
 | `pkm-explore` | Graph + semantic exploration to map existing knowledge on a topic |
 | `pkm-session-end` | Session wrap-up: devlog, undocumented work capture, link health audit |
+| `add-task` | Fast task capture from a title with duplicate detection, priority shorthands, and due date |
+| `triage-tasks` | Surface open tasks as a numbered list with git completion hints; batch-update via shorthand (e.g. `1,3 done \| 2 active`) |
+| `tackle-task` | Work a task end-to-end: read, explore vault context, route to the right workflow tier, close when done |
 
 **Commands** (2) for setup and configuration:
 
@@ -291,7 +294,7 @@ File layout:
 │   └── plugin.json   # Plugin manifest (identity, components, permissions)
 ├── hooks/            # Claude Code hooks (context loading, project resolution, session start)
 ├── agents/           # Specialized agents (vault-explorer, pkm-capture, link-auditor)
-├── skills/           # PKM workflow skills (pkm-write, pkm-explore, pkm-session-end)
+├── skills/           # PKM workflow skills (pkm-write, pkm-explore, pkm-session-end, add-task, triage-tasks, tackle-task)
 ├── commands/         # Slash commands (setup, init-project)
 ├── templates/        # Obsidian note templates
 ├── tests/            # Test suite (Node.js built-in test runner)

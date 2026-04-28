@@ -331,3 +331,5 @@ Document decisions, research findings, and debugging sessions as you work. The `
 Use `vault-pkm:pkm-explore` to research what the vault already knows about a topic before creating new content.
 
 At the end of each session, run `vault-pkm:pkm-session-end` to update the devlog and capture undocumented work.
+
+Use `vault-pkm:triage-tasks` to surface and batch-update open task statuses (numbered list, shorthand input like "1,3 done | 2 active"). Use `vault-pkm:add-task` for fast task capture from the conversation. Use `vault-pkm:tackle-task` to work on a specific task end-to-end: reads the note, explores vault context, routes to the right workflow (trivial/standard/significant), and closes the task when done.
