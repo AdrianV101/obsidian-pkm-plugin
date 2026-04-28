@@ -46,8 +46,9 @@ vault_activity({ since: "<date 30 days ago as YYYY-MM-DD>", limit: 100 })
 
 **Git log** (look for commits related to task work):
 ```
-Bash: git log --oneline --since="30 days ago" 2>/dev/null | head -50
+Bash: git rev-parse --is-inside-work-tree 2>/dev/null && git log --oneline --since="30 days ago" | head -50
 ```
+If `git rev-parse` fails (not a git repo), skip git hints silently — don't surface an error to the user.
 
 For each task, derive a hint from these results:
 - Task path appears in the activity log with a write tool (`vault_update_frontmatter`, `vault_edit`, `vault_append`): mark "recently updated"
@@ -80,7 +81,7 @@ Options: done · active · pending · cancel
 Press Enter with no input to skip.
 ```
 
-Include the task's first non-empty line from the `## Description` section as the subtitle (read via the `path` from query results). If the description is a template placeholder, omit it.
+Include the task's first non-empty description line as a subtitle. Use `vault_peek(path)` per task (cheaper than `vault_read` — returns preview without full content). If the description section is empty or contains only a template placeholder, omit the subtitle entirely.
 
 ## Step 5: Parse User Decisions
 
@@ -110,7 +111,13 @@ vault_update_frontmatter({
 })
 ```
 
-For tasks marked `done`, append a completion timestamp unless one already exists:
+For tasks marked `done`, check for an existing completion timestamp before appending:
+
+```
+vault_read({ path: "<task-path>" })
+```
+
+If the note already contains `**Completed**`, skip. Otherwise:
 
 ```
 vault_append({
@@ -118,8 +125,6 @@ vault_append({
   content: "\n**Completed**: <YYYY-MM-DD>\n"
 })
 ```
-
-Skip the append if the note already contains `**Completed**`.
 
 ## Step 7: Summary
 

@@ -1,6 +1,6 @@
 ---
 name: tackle-task
-description: Use when you want to start working on a specific vault task, when a task title or path is mentioned, or when coming from triage output. Invoke before beginning any task-tracked work.
+description: Use when starting work on a specific vault task, when a task title or path is mentioned, or when coming from triage output.
 ---
 
 # Tackle Task
@@ -12,7 +12,12 @@ Open a task, understand what it requires, execute it at the right level of rigor
 From the user's message, extract either a task path or a task title/name.
 
 - **Path given**: `vault_read(path)` directly
-- **Title/name given**: `vault_query({ type: "task", status: ["pending", "active"] })` and match by title, or `vault_search(title)` as fallback
+- **Title/name given**: issue two queries and match by H1 title or basename:
+  ```
+  vault_query({ type: "task", status: "pending" })
+  vault_query({ type: "task", status: "active" })
+  ```
+  If multiple tasks match, show candidates and ask the user to pick. Fall back to `vault_search(title)` if queries return nothing.
 
 If the task can't be found, tell the user and stop.
 
@@ -63,6 +68,7 @@ Don't re-summarize what you read in Step 2. Move directly into the work.
 After the work is complete and verified:
 
 1. Update status: `vault_update_frontmatter({ path: task_path, fields: { status: "done" } })`
-2. Append completion date: `vault_append({ path: task_path, content: "\n**Completed**: YYYY-MM-DD\n" })`
+2. Check for existing completion timestamp: `vault_read(task_path)` — if the note already contains `**Completed**`, skip the append. Otherwise:
+   `vault_append({ path: task_path, content: "\n**Completed**: YYYY-MM-DD\n" })`
 3. If the work produced ADRs, research notes, or other vault notes, link them back to the task: `vault_add_links({ path: task_path, links: [{ target: "...", annotation: "..." }] })`
 4. Confirm to the user: one sentence — what was done and what tier it was.

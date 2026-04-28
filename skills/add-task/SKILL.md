@@ -28,6 +28,7 @@ Read CLAUDE.md for the `# PKM: <path>` line (regex: `/^#\s+PKM:\s*(.+)$/m`):
 
 Task path: `<project>/tasks/<kebab-title>.md`
 - `<kebab-title>` = title lowercased, spaces → `-`, strip characters other than `a-z0-9-`
+- `<project-folder-name>` for the `project:` frontmatter field is the **basename** of the vault path (e.g., `Obsidian-MCP` from `01-Projects/Obsidian-MCP`)
 
 ## Step 3: Duplicate Check
 
@@ -54,32 +55,28 @@ vault_write({
   path: "<task-path>",
   frontmatter: {
     tags: ["task"],
+    status: "pending",
     priority: "<priority>",
     project: "<project-folder-name>",
-    due: "<YYYY-MM-DD or null>"
+    ...(due ? { due: "<YYYY-MM-DD>" } : {})   // omit due entirely if not provided
   }
 })
 ```
 
 ## Step 5: Fill Description (if provided)
 
-If a description was given in Step 1, populate it:
+If a description was given in Step 1, append it into the Description section:
 
 ```
-vault_read({ path: "<task-path>" })
-```
-
-Then replace the empty description section using the exact text from the read output:
-
-```
-vault_edit({
+vault_append({
   path: "<task-path>",
-  old_string: "## Description\n\n",
-  new_string: "## Description\n\n<description>\n"
+  heading: "## Description",
+  position: "after_heading",
+  content: "<description>"
 })
 ```
 
-Skip if no description was provided — leave the placeholder for later.
+Skip if no description was provided — leave the section blank for later.
 
 ## Step 6: Confirm
 
