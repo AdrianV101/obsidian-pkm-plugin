@@ -9,7 +9,12 @@ import { getAllMarkdownFiles } from "./utils.js";
 const EMBEDDING_MODEL = "text-embedding-3-large";
 const EMBEDDING_DIMENSIONS = 3072;
 const MAX_CHARS_PER_CHUNK = 8000; // ~2000 tokens
-const BATCH_SIZE = 100; // max texts per OpenAI API call
+// OpenAI embeddings API: max 2048 inputs, max 300k tokens summed, 8192 tokens per input.
+// At MAX_CHARS_PER_CHUNK=8000 (~2000 tokens), 128 chunks ≈ 256k tokens — safely under the
+// 300k cap even when every chunk is at the max size. 256 would exceed the cap on full-size
+// chunks; smaller values waste round-trips. Note: BATCH_SIZE only fires when a single file
+// produces >this many chunks, which is rare with the current per-file embedding flow.
+const BATCH_SIZE = 128;
 const REINDEX_BATCH_SIZE = 10; // files per batch during startup sync
 const DEBOUNCE_MS = 2000;
 
