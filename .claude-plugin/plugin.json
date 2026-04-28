@@ -1,6 +1,6 @@
 {
   "name": "vault-pkm",
-  "version": "3.7.0",
+  "version": "3.8.0",
   "description": "Bidirectional knowledge flow between Claude Code and Obsidian — 20 MCP tools, skills, and hooks for PKM",
   "author": {
     "name": "Adrian Verhoosel"

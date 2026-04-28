@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [3.8.0] - 2026-04-28
+
 ### Added
 - **`add-task` skill** — Fast vault task capture from a title. Parses priority shorthands (`h`/`high`, `u`/`urgent`, `l`/`low`) and due dates, runs a semantic duplicate check before creating, and uses the `task` template for consistent frontmatter.
 - **`triage-tasks` skill** — Surfaces pending/active tasks as a numbered list with `[priority]` labels and ⚡ git completion hints derived from recent commit messages. Accepts shorthand batch updates in a single reply (e.g. `1,3 done | 2 active | 4 cancel`). Defaults to the current project detected from CLAUDE.md; pass "all" to triage across all projects.
