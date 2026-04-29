@@ -1,3 +1,5 @@
+[![MseeP.ai Security Assessment Badge](https://mseep.net/pr/adrianv101-obsidian-pkm-plugin-badge.png)](https://mseep.ai/app/adrianv101-obsidian-pkm-plugin)
+
 <p align="center">
   <img src="assets/banner.svg" alt="Vault PKM — Claude Code plugin for AI-native knowledge management" width="100%">
 </p>
