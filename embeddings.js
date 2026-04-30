@@ -137,10 +137,12 @@ export class SemanticIndex {
    * @param {number} [opts.limit=5] - max results
    * @param {string} [opts.folder] - restrict to folder prefix
    * @param {number} [opts.threshold] - minimum similarity score (0-1)
+   * @param {(path: string) => string} [opts.formatPath] - transform path for display (e.g. obsidian:// link)
    * @returns {Promise<string>} formatted results text
    */
-  async search({ query, limit = 5, folder, threshold }) {
+  async search({ query, limit = 5, folder, threshold, formatPath }) {
     const results = await this.searchRaw({ query, limit, folder, threshold });
+    const fmt = formatPath || (p => p);
 
     // Format output
     let syncNote = "";
@@ -154,7 +156,7 @@ export class SemanticIndex {
 
     const formatted = results.map(r => {
       const heading = r.heading ? ` > ${r.heading}` : "";
-      return `**${r.path}**${heading} (score: ${r.score})\n${r.preview}`;
+      return `**${fmt(r.path)}**${heading} (score: ${r.score})\n${r.preview}`;
     }).join("\n\n");
 
     return `Found ${results.length} semantically related note${results.length === 1 ? "" : "s"}:\n\n${formatted}${syncNote}`;

@@ -20,6 +20,7 @@ import {
   updateFrontmatter,
   compareFrontmatterValues,
   blendWithGraph,
+  obsidianLink,
   AUTO_REDIRECT_THRESHOLD,
   FORCE_HARD_CAP,
   CHUNK_SIZE,
@@ -40,10 +41,13 @@ function positiveInt(value, fallback) {
  * @param {Object|null} ctx.semanticIndex - SemanticIndex instance (null if no API key)
  * @param {Object|null} ctx.activityLog - ActivityLog instance
  * @param {string} ctx.sessionId - current session UUID
+ * @param {string} [ctx.vaultName] - vault name for obsidian:// links (defaults to basename of vaultPath)
  * @returns {Map<string, function>} tool name to handler function
  */
-export async function createHandlers({ vaultPath, templateRegistry, semanticIndex, activityLog, sessionId }) {
+export async function createHandlers({ vaultPath, templateRegistry, semanticIndex, activityLog, sessionId, vaultName }) {
   const resolvePath = (relativePath) => resolvePathBase(relativePath, vaultPath);
+  const resolvedVaultName = vaultName || path.basename(vaultPath);
+  const linkFor = (relativePath) => obsidianLink(relativePath, resolvedVaultName);
 
   // Build basename map for fuzzy path resolution (read-only tools)
   const allFiles = await getAllMarkdownFiles(vaultPath);
@@ -119,14 +123,14 @@ export async function createHandlers({ vaultPath, templateRegistry, semanticInde
     if (!hasExplicitMode && !args.force && content.length > AUTO_REDIRECT_THRESHOLD) {
       const relativePath = path.relative(vaultPath, filePath);
       const peekData = computePeek(content, relativePath);
-      return { content: [{ type: "text", text: formatPeek(peekData, { redirected: true }) }] };
+      return { content: [{ type: "text", text: formatPeek(peekData, { redirected: true, formatPath: linkFor }) }] };
     }
 
     // Force hard cap
     if (args.force && content.length > FORCE_HARD_CAP) {
       const relativePath = path.relative(vaultPath, filePath);
       const peekData = computePeek(content, relativePath);
-      const text = formatPeek(peekData, { redirected: true }) +
+      const text = formatPeek(peekData, { redirected: true, formatPath: linkFor }) +
         `\n\n**Hard cap reached.** File is ${content.length.toLocaleString()} chars, exceeding the ~400k char limit even with force=true. Use heading, chunk, or lines params to read portions.`;
       return { content: [{ type: "text", text }] };
     }
@@ -198,7 +202,7 @@ export async function createHandlers({ vaultPath, templateRegistry, semanticInde
     }
     const relativePath = path.relative(vaultPath, filePath);
     const peekData = computePeek(content, relativePath);
-    return { content: [{ type: "text", text: formatPeek(peekData) }] };
+    return { content: [{ type: "text", text: formatPeek(peekData, { formatPath: linkFor }) }] };
   }
 
   async function handleWrite(args) {
@@ -248,7 +252,7 @@ export async function createHandlers({ vaultPath, templateRegistry, semanticInde
     return {
       content: [{
         type: "text",
-        text: `Created ${outputPath} from template "${templateName}"\n\nFrontmatter:\n- type: ${fm.type}\n- created: ${createdStr}\n- tags: ${(fm.tags || []).filter(Boolean).join(", ")}`
+        text: `Created ${linkFor(outputPath)} from template "${templateName}"\n\nFrontmatter:\n- type: ${fm.type}\n- created: ${createdStr}\n- tags: ${(fm.tags || []).filter(Boolean).join(", ")}`
       }]
     };
   }
@@ -302,7 +306,7 @@ export async function createHandlers({ vaultPath, templateRegistry, semanticInde
     }
 
     await fs.writeFile(filePath, newContent, "utf-8");
-    return { content: [{ type: "text", text: `Appended to ${args.path}${args.position ? ` (${args.position})` : ""}` }] };
+    return { content: [{ type: "text", text: `Appended to ${linkFor(args.path)}${args.position ? ` (${args.position})` : ""}` }] };
   }
 
   async function handleEdit(args) {
@@ -337,7 +341,7 @@ export async function createHandlers({ vaultPath, templateRegistry, semanticInde
 
     const newContent = content.replace(args.old_string, () => args.new_string);
     await fs.writeFile(filePath, newContent, "utf-8");
-    return { content: [{ type: "text", text: `Successfully edited ${args.path}` }] };
+    return { content: [{ type: "text", text: `Successfully edited ${linkFor(args.path)}` }] };
   }
 
   // ── Search & Discovery ──────────────────────────────────────────────
@@ -378,7 +382,7 @@ export async function createHandlers({ vaultPath, templateRegistry, semanticInde
       content: [{
         type: "text",
         text: results.length > 0
-          ? results.map(r => `**${r.path}**\n${r.matches.join("\n")}`).join("\n\n")
+          ? results.map(r => `**${linkFor(r.path)}**\n${r.matches.join("\n")}`).join("\n\n")
           : "No matches found"
       }]
     };
@@ -427,10 +431,10 @@ export async function createHandlers({ vaultPath, templateRegistry, semanticInde
         items.push(`[dir] ${itemPath}/`);
         if (args.recursive) {
           const subItems = await getAllMarkdownFiles(path.join(listPath, entry.name));
-          items.push(...subItems.map(f => `  ${path.join(itemPath, f)}`));
+          items.push(...subItems.map(f => `  ${linkFor(path.join(itemPath, f))}`));
         }
       } else if (!args.pattern || globMatch(args.pattern, entry.name)) {
-        items.push(itemPath);
+        items.push(linkFor(itemPath));
       }
     }
 
@@ -462,7 +466,7 @@ export async function createHandlers({ vaultPath, templateRegistry, semanticInde
     return {
       content: [{
         type: "text",
-        text: sorted.map(f => `${f.path} (${f.mtime.toISOString().split("T")[0]})`).join("\n")
+        text: sorted.map(f => `${linkFor(f.path)} (${f.mtime.toISOString().split("T")[0]})`).join("\n")
       }]
     };
   }
@@ -497,7 +501,7 @@ export async function createHandlers({ vaultPath, templateRegistry, semanticInde
       output += `**Outgoing links:**\n${result.outgoing.map(l => `- [[${l}]]`).join("\n")}\n\n`;
     }
     if (result.incoming.length > 0) {
-      output += `**Incoming links:**\n${result.incoming.map(l => `- ${l}`).join("\n")}`;
+      output += `**Incoming links:**\n${result.incoming.map(l => `- ${linkFor(l)}`).join("\n")}`;
     }
 
     return { content: [{ type: "text", text: output || "No links found" }] };
@@ -519,6 +523,7 @@ export async function createHandlers({ vaultPath, templateRegistry, semanticInde
       startPath: resolvedPath,
       depth,
       direction,
+      formatPath: linkFor,
     });
 
     // --- Semantic expansion (Tier 3) ---
@@ -551,7 +556,7 @@ export async function createHandlers({ vaultPath, templateRegistry, semanticInde
         if (unlinked.length > 0) {
           text += `\n**Semantically related (unlinked)** (${unlinked.length} node${unlinked.length === 1 ? "" : "s"})\n`;
           for (const r of unlinked) {
-            let line = `- ${r.path} (similarity: ${r.score})`;
+            let line = `- ${linkFor(r.path)} (similarity: ${r.score})`;
             try {
               const fc = await fs.readFile(path.join(vaultPath, r.path), "utf-8");
               const fm = extractFrontmatter(fc);
@@ -630,7 +635,7 @@ export async function createHandlers({ vaultPath, templateRegistry, semanticInde
 
     const output = `Found ${limited.length} note${limited.length === 1 ? "" : "s"} matching query:\n\n` +
       limited.map(r => {
-        let entry = `**${r.path}**\n${r.summary}`;
+        let entry = `**${linkFor(r.path)}**\n${r.summary}`;
         if (r.tagLine) entry += `\n${r.tagLine}`;
         return entry;
       }).join("\n\n");
@@ -795,11 +800,11 @@ export async function createHandlers({ vaultPath, templateRegistry, semanticInde
 
       const formatted = trimmed.map(r => {
         const graphInfo = r.depth !== null ? `graph: depth ${r.depth}` : "not in graph";
-        return `**${r.path}** (combined: ${r.combined}, semantic: ${r.score}, ${graphInfo})\n${r.preview}`;
+        return `**${linkFor(r.path)}** (combined: ${r.combined}, semantic: ${r.score}, ${graphInfo})\n${r.preview}`;
       }).join("\n\n");
 
       return {
-        content: [{ type: "text", text: `Found ${trimmed.length} result${trimmed.length === 1 ? "" : "s"} (anchored to ${args.anchor}):\n\n${formatted}` }]
+        content: [{ type: "text", text: `Found ${trimmed.length} result${trimmed.length === 1 ? "" : "s"} (anchored to ${linkFor(args.anchor)}):\n\n${formatted}` }]
       };
     }
 
@@ -808,7 +813,8 @@ export async function createHandlers({ vaultPath, templateRegistry, semanticInde
       query: args.query,
       limit: args.limit || 5,
       folder: resolvedFolder,
-      threshold: args.threshold
+      threshold: args.threshold,
+      formatPath: linkFor,
     });
     return { content: [{ type: "text", text }] };
   }
@@ -884,11 +890,11 @@ export async function createHandlers({ vaultPath, templateRegistry, semanticInde
 
       const formatted = trimmedBlended.map(r => {
         const graphInfo = r.depth !== null ? `graph: depth ${r.depth}` : "missing link";
-        return `**${r.path}** (combined: ${r.combined}, semantic: ${r.score}, ${graphInfo})\n${r.preview}`;
+        return `**${linkFor(r.path)}** (combined: ${r.combined}, semantic: ${r.score}, ${graphInfo})\n${r.preview}`;
       }).join("\n\n");
 
       return {
-        content: [{ type: "text", text: `Found ${trimmedBlended.length} link suggestion${trimmedBlended.length === 1 ? "" : "s"} for ${sourcePath}:\n\n${formatted}` }]
+        content: [{ type: "text", text: `Found ${trimmedBlended.length} link suggestion${trimmedBlended.length === 1 ? "" : "s"} for ${linkFor(sourcePath)}:\n\n${formatted}` }]
       };
     }
 
@@ -897,7 +903,7 @@ export async function createHandlers({ vaultPath, templateRegistry, semanticInde
     }
 
     const formatted = suggestions.map(r =>
-      `**${r.path}** (score: ${r.score})\n${r.preview}`
+      `**${linkFor(r.path)}** (score: ${r.score})\n${r.preview}`
     ).join("\n\n");
 
     return {
@@ -949,7 +955,7 @@ export async function createHandlers({ vaultPath, templateRegistry, semanticInde
     removeFromBasenameMap(resolvedRelative);
 
     // Build output
-    let text = `Trashed ${resolvedRelative} → ${trashRelative}`;
+    let text = `Trashed ${resolvedRelative} → ${linkFor(trashRelative)}`;
     if (linkingFiles.length > 0) {
       text += `\n\n**Warning:** ${linkingFiles.length} file${linkingFiles.length === 1 ? "" : "s"} had links to this note (now broken):`;
       for (const { file } of linkingFiles) {
@@ -1021,7 +1027,7 @@ export async function createHandlers({ vaultPath, templateRegistry, semanticInde
     }
 
     // Build output
-    let text = `Moved ${oldRelative} → ${newRelative}`;
+    let text = `Moved ${oldRelative} → ${linkFor(newRelative)}`;
     if (updatedCount > 0) {
       text += `\nUpdated wikilinks in ${updatedCount} file${updatedCount === 1 ? "" : "s"}`;
     }
@@ -1051,7 +1057,7 @@ export async function createHandlers({ vaultPath, templateRegistry, semanticInde
       return `${k}: ${display}`;
     });
     return {
-      content: [{ type: "text", text: `Updated frontmatter in ${args.path}:\n${lines.join("\n")}` }]
+      content: [{ type: "text", text: `Updated frontmatter in ${linkFor(args.path)}:\n${lines.join("\n")}` }]
     };
   }
 
@@ -1133,7 +1139,7 @@ export async function createHandlers({ vaultPath, templateRegistry, semanticInde
     content = content.slice(0, range.sectionEnd) + insertText + content.slice(range.sectionEnd);
     await fs.writeFile(absPath, content, "utf-8");
 
-    let summary = `Added ${added.length} link${added.length === 1 ? "" : "s"} to ${filePath} (${section}):\n${added.join("\n")}`;
+    let summary = `Added ${added.length} link${added.length === 1 ? "" : "s"} to ${linkFor(filePath)} (${section}):\n${added.join("\n")}`;
     if (skipped.length > 0) {
       const skipSummary = skipped.map(s => `${path.basename(s.target, ".md")} (${s.reason})`).join(", ");
       summary += `\nSkipped ${skipped.length}: ${skipSummary}`;
@@ -1192,7 +1198,7 @@ export async function createHandlers({ vaultPath, templateRegistry, semanticInde
         const incomingCount = incomingIndex.get(file)?.size || 0;
         if (!hasOutgoing && incomingCount === 0) {
           const fm = data.frontmatter;
-          orphans.push(`- ${file} (type: ${fm?.type || "unknown"}, created: ${fm?.created || "unknown"})`);
+          orphans.push(`- ${linkFor(file)} (type: ${fm?.type || "unknown"}, created: ${fm?.created || "unknown"})`);
         }
         if (orphans.length >= limit) break;
       }
@@ -1213,7 +1219,7 @@ export async function createHandlers({ vaultPath, templateRegistry, semanticInde
               const ext = raw.slice(dotIdx + 1).toLowerCase();
               if (ext !== "md") continue;
             }
-            broken.push(`- ${file} → [[${r.raw}]] (no matching file)`);
+            broken.push(`- ${linkFor(file)} → [[${r.raw}]] (no matching file)`);
             if (broken.length >= limit) break;
           }
         }
@@ -1231,7 +1237,7 @@ export async function createHandlers({ vaultPath, templateRegistry, semanticInde
         const incomingCount = incomingIndex.get(file)?.size || 0;
         const total = validOutgoing + incomingCount;
         if (total === 1) {
-          weak.push(`- ${file} (${validOutgoing} outgoing, ${incomingCount} incoming)`);
+          weak.push(`- ${linkFor(file)} (${validOutgoing} outgoing, ${incomingCount} incoming)`);
         }
         if (weak.length >= limit) break;
       }
@@ -1247,7 +1253,7 @@ export async function createHandlers({ vaultPath, templateRegistry, semanticInde
         for (const r of data.resolved) {
           if (r.ambiguous && !seen.has(r.raw)) {
             seen.add(r.raw);
-            ambiguous.push(`- ${file} → [[${r.raw}]] resolves to ${r.paths.length} files`);
+            ambiguous.push(`- ${linkFor(file)} → [[${r.raw}]] resolves to ${r.paths.length} files`);
             if (ambiguous.length >= limit) break;
           }
         }

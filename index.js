@@ -7,6 +7,7 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import crypto from "crypto";
 import os from "os";
+import path from "path";
 import { createRequire } from "module";
 import fs from "fs/promises";
 import { SemanticIndex } from "./embeddings.js";
@@ -22,6 +23,9 @@ const { version: PKG_VERSION } = require("./package.json");
 export async function startServer() {
   // Get vault path from environment
   const VAULT_PATH = process.env.VAULT_PATH || (os.homedir() + "/Documents/PKM");
+  // Vault name for obsidian:// URI links — defaults to basename of VAULT_PATH.
+  // Override when the on-disk folder name differs from the registered Obsidian vault name.
+  const VAULT_NAME = process.env.VAULT_PKM_VAULT_NAME || path.basename(VAULT_PATH);
 
   // Template registry (populated at startup)
   let templateRegistry = new Map();
@@ -129,6 +133,7 @@ export async function startServer() {
 
     handlers = await createHandlers({
       vaultPath: VAULT_PATH,
+      vaultName: VAULT_NAME,
       templateRegistry,
       semanticIndex,
       activityLog,

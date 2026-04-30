@@ -782,11 +782,12 @@ export function computePeek(content, relativePath) {
  * @param {{ redirected?: boolean }} options
  * @returns {string}
  */
-export function formatPeek(peekData, { redirected = false } = {}) {
+export function formatPeek(peekData, { redirected = false, formatPath } = {}) {
   const { path: filePath, sizeChars, sizeLines, frontmatter, headings, preview, totalChunks } = peekData;
   const parts = [];
+  const displayPath = formatPath ? formatPath(filePath) : filePath;
 
-  parts.push(`## File: ${filePath}`);
+  parts.push(`## File: ${displayPath}`);
   parts.push(`**Size:** ${sizeChars.toLocaleString()} chars, ${sizeLines.toLocaleString()} lines, ${totalChunks} ${totalChunks === 1 ? "chunk" : "chunks"}`);
 
   if (frontmatter) {
@@ -940,4 +941,23 @@ export function blendWithGraph(results, neighborhood, graphWeight, limit) {
 
   blended.sort((a, b) => b.combined - a.combined);
   return blended.slice(0, limit);
+}
+
+/**
+ * Build an `obsidian://` markdown link for a vault-relative path. Used in
+ * user-facing tool output so the path renders as a clickable link in clients
+ * that preserve markdown link formatting (e.g. Claude Code's terminal). The
+ * visible link text is the unmodified vault-relative path so a model that
+ * extracts the link text gets the same canonical path it would get from a
+ * plain-path response.
+ *
+ * @param {string} filePath - vault-relative path (with or without .md)
+ * @param {string} vaultName - vault name as registered in Obsidian
+ * @returns {string} `[filePath](obsidian://open?vault=...&file=...)`
+ */
+export function obsidianLink(filePath, vaultName) {
+  const fileWithoutMd = filePath.endsWith(".md") ? filePath.slice(0, -3) : filePath;
+  const encodedFile = encodeURIComponent(fileWithoutMd);
+  const encodedVault = encodeURIComponent(vaultName);
+  return `[${filePath}](obsidian://open?vault=${encodedVault}&file=${encodedFile})`;
 }

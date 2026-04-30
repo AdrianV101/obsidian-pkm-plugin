@@ -1,4 +1,10 @@
 
+// Appended to tools whose output renders vault paths as obsidian:// markdown links.
+// Tells the model how to extract a canonical path from those links when feeding them
+// back to other vault tools — preventing it from passing a `[path](url)` string
+// into a `path` argument.
+const LINK_FORMAT_NOTE = " Paths in this tool's output are formatted as markdown links `[vault-relative-path.md](obsidian://...)` so users can click to open in Obsidian. When passing a path back to another vault tool's `path` argument, use only the link text inside the brackets (e.g. `01-Projects/Foo/note.md`), never the full markdown link.";
+
 /**
  * Build the MCP tool definitions list.
  * @param {string} templateDescriptions - formatted template list for vault_write description
@@ -136,7 +142,7 @@ Pass custom <%...%> variables via the 'variables' parameter.`,
     },
     {
       name: "vault_search",
-      description: "Search for text across all markdown files in the vault",
+      description: "Search for text across all markdown files in the vault." + LINK_FORMAT_NOTE,
       inputSchema: {
         type: "object",
         properties: {
@@ -149,7 +155,7 @@ Pass custom <%...%> variables via the 'variables' parameter.`,
     },
     {
       name: "vault_list",
-      description: "List files and folders in the vault",
+      description: "List files and folders in the vault." + LINK_FORMAT_NOTE,
       inputSchema: {
         type: "object",
         properties: {
@@ -161,7 +167,7 @@ Pass custom <%...%> variables via the 'variables' parameter.`,
     },
     {
       name: "vault_recent",
-      description: "Get recently modified files",
+      description: "Get recently modified files." + LINK_FORMAT_NOTE,
       inputSchema: {
         type: "object",
         properties: {
@@ -172,7 +178,7 @@ Pass custom <%...%> variables via the 'variables' parameter.`,
     },
     {
       name: "vault_links",
-      description: "Get incoming and outgoing links for a note",
+      description: "Get incoming and outgoing links for a note." + LINK_FORMAT_NOTE,
       inputSchema: {
         type: "object",
         properties: {
@@ -184,7 +190,7 @@ Pass custom <%...%> variables via the 'variables' parameter.`,
     },
     {
       name: "vault_neighborhood",
-      description: "Explore the graph neighborhood around a note by traversing wikilinks. Returns notes grouped by hop distance from the starting note, with frontmatter metadata for each node. Useful for understanding clusters, finding related context, and discovering connections.",
+      description: "Explore the graph neighborhood around a note by traversing wikilinks. Returns notes grouped by hop distance from the starting note, with frontmatter metadata for each node. Useful for understanding clusters, finding related context, and discovering connections." + LINK_FORMAT_NOTE,
       inputSchema: {
         type: "object",
         properties: {
@@ -210,7 +216,7 @@ Pass custom <%...%> variables via the 'variables' parameter.`,
     },
     {
       name: "vault_query",
-      description: "Query notes by YAML frontmatter metadata (type, status, tags, dates, custom fields, sorting)",
+      description: "Query notes by YAML frontmatter metadata (type, status, tags, dates, custom fields, sorting)." + LINK_FORMAT_NOTE,
       inputSchema: {
         type: "object",
         properties: {
@@ -362,7 +368,7 @@ Pass custom <%...%> variables via the 'variables' parameter.`,
       name: "vault_link_health",
       description: "Graph health report — finds orphan notes, broken wikilinks, weakly connected notes, " +
         "and ambiguous links. Scans all markdown files (or a specific folder). " +
-        "Use to audit link quality and find notes that need better connections.",
+        "Use to audit link quality and find notes that need better connections." + LINK_FORMAT_NOTE,
       inputSchema: {
         type: "object",
         properties: {
@@ -390,7 +396,7 @@ Pass custom <%...%> variables via the 'variables' parameter.`,
   if (hasSemanticIndex) {
     tools.push({
       name: "vault_semantic_search",
-      description: "Search the vault using semantic similarity. Finds conceptually related notes even when they use different words. Requires VAULT_PKM_OPENAI_KEY.",
+      description: "Search the vault using semantic similarity. Finds conceptually related notes even when they use different words. Requires VAULT_PKM_OPENAI_KEY." + LINK_FORMAT_NOTE,
       inputSchema: {
         type: "object",
         properties: {
@@ -412,7 +418,7 @@ Pass custom <%...%> variables via the 'variables' parameter.`,
     });
     tools.push({
       name: "vault_suggest_links",
-      description: "Suggest relevant notes to link to based on content similarity. Accepts text content or a file path, finds semantically related notes, and excludes notes already linked via [[wikilinks]]. One of 'content' or 'path' is required.",
+      description: "Suggest relevant notes to link to based on content similarity. Accepts text content or a file path, finds semantically related notes, and excludes notes already linked via [[wikilinks]]. One of 'content' or 'path' is required." + LINK_FORMAT_NOTE,
       inputSchema: {
         type: "object",
         properties: {

@@ -30,6 +30,7 @@ import {
   CHUNK_SIZE,
   computeProximityBonus,
   blendWithGraph,
+  obsidianLink,
 } from "../helpers.js";
 
 describe("resolvePath", () => {
@@ -1383,5 +1384,40 @@ describe("blendWithGraph", () => {
     };
     const blended = blendWithGraph(results, neighborhood, 0.5, 10);
     assert.strictEqual(blended[0].depth, 1);
+  });
+});
+
+describe("obsidianLink", () => {
+  it("strips .md from URL but keeps it in link text", () => {
+    const link = obsidianLink("notes/hello.md", "PKM");
+    assert.equal(link, "[notes/hello.md](obsidian://open?vault=PKM&file=notes%2Fhello)");
+  });
+
+  it("handles paths without .md extension", () => {
+    const link = obsidianLink("notes/hello", "PKM");
+    assert.equal(link, "[notes/hello](obsidian://open?vault=PKM&file=notes%2Fhello)");
+  });
+
+  it("encodes spaces in path and vault name", () => {
+    const link = obsidianLink("My Folder/My Note.md", "My Vault");
+    assert.equal(
+      link,
+      "[My Folder/My Note.md](obsidian://open?vault=My%20Vault&file=My%20Folder%2FMy%20Note)"
+    );
+  });
+
+  it("encodes special characters in path", () => {
+    const link = obsidianLink("notes/q&a.md", "PKM");
+    assert.equal(link, "[notes/q&a.md](obsidian://open?vault=PKM&file=notes%2Fq%26a)");
+  });
+
+  it("only strips trailing .md, not .md inside the path", () => {
+    const link = obsidianLink("foo.md.bar/note.md", "PKM");
+    assert.equal(link, "[foo.md.bar/note.md](obsidian://open?vault=PKM&file=foo.md.bar%2Fnote)");
+  });
+
+  it("handles non-md extensions by leaving the path intact", () => {
+    const link = obsidianLink("attachments/file.png", "PKM");
+    assert.equal(link, "[attachments/file.png](obsidian://open?vault=PKM&file=attachments%2Ffile.png)");
   });
 });

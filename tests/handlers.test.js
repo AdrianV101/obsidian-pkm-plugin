@@ -1117,8 +1117,9 @@ describe("handleSearch", () => {
   it("respects limit", async () => {
     const handler = handlers.get("vault_search");
     const result = await handler({ query: "Note", limit: 1 });
-    // Should only return 1 result even though multiple notes match
-    const matches = result.content[0].text.split("**").filter(s => s.endsWith(".md"));
+    // Should only return 1 result even though multiple notes match.
+    // Result paths render as **[path.md](obsidian://...)** — count those.
+    const matches = result.content[0].text.match(/\*\*\[[^\]]+\.md\]\(obsidian:\/\/[^)]+\)\*\*/g) || [];
     assert.equal(matches.length, 1);
   });
 

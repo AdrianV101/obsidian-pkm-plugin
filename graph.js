@@ -313,10 +313,11 @@ export async function exploreNeighborhood({
  * @param {string} options.direction
  * @returns {string}
  */
-export function formatNeighborhood(result, { startPath, depth, direction }) {
+export function formatNeighborhood(result, { startPath, depth, direction, formatPath }) {
   const { depthGroups, totalNodes } = result;
+  const fmt = formatPath || (p => p);
 
-  let output = `**Graph neighborhood for ${startPath}** (depth: ${depth}, direction: ${direction})\n`;
+  let output = `**Graph neighborhood for ${fmt(startPath)}** (depth: ${depth}, direction: ${direction})\n`;
   output += `Total: ${totalNodes} node${totalNodes === 1 ? "" : "s"}\n`;
 
   // Sort depth keys
@@ -328,7 +329,7 @@ export function formatNeighborhood(result, { startPath, depth, direction }) {
     output += `\n**${label}** (${nodes.length} node${nodes.length === 1 ? "" : "s"})\n`;
 
     for (const node of nodes) {
-      let line = `- ${node.path}`;
+      let line = `- ${fmt(node.path)}`;
       if (node.ambiguous) line += " [ambiguous]";
 
       const meta = [];
