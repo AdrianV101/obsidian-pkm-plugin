@@ -81,6 +81,16 @@ Document decisions, research findings, and debugging sessions as you work. The `
 Use `vault-pkm:pkm-explore` to research what the vault already knows about a topic before creating new content.
 
 At the end of each session, run `vault-pkm:pkm-session-end` to update the devlog and capture undocumented work.
+
+### Referring to vault files
+
+Whenever you mention a vault note, PKM file, or file inside `01-Projects/<name>/` in your response to the user — whether quoting tool output, summarizing what you read, or referring to a file by name — format it as a markdown link to its `obsidian://` URI so the user can click to open it in Obsidian:
+
+`[01-Projects/<name>/some/note.md](obsidian://open?vault=<vault-name>&file=01-Projects%2F<name>%2Fsome%2Fnote)`
+
+Encoding rules: percent-encode `/` as `%2F` and spaces as `%20`. Strip the trailing `.md` from the URL `file=` parameter, but keep `.md` in the visible link text. The vault name is shown in any vault-pkm tool output (the part after `vault=`); reuse it.
+
+The vault-pkm MCP tools already emit paths in this format. Preserve the link form when relaying; don't revert to bare paths like `01-Projects/<name>/some/note.md` for inline mentions. Apply the same format proactively when mentioning a vault file you haven't just queried (e.g., when answering "what's in the devlog?" or "see ADR-002").
 ```
 
 **If `## PKM Integration` already exists**: replace everything from `## PKM Integration` up to (but not including) the next `## ` heading or end of file. This makes re-runs idempotent.

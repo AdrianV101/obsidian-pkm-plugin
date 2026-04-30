@@ -20,6 +20,16 @@ The `vault-pkm` plugin provides skills that automate common PKM workflows:
 
 Session-start context loading is handled automatically by the SessionStart hook.
 
+### Referring to vault files
+
+Whenever you mention a vault note, PKM file, or file inside `01-Projects/[YourProjectName]/` in your response to the user — whether quoting tool output, summarizing what you read, or referring to a file by name — format it as a markdown link to its `obsidian://` URI so the user can click to open it in Obsidian:
+
+`[01-Projects/[YourProjectName]/some/note.md](obsidian://open?vault=<vault-name>&file=01-Projects%2F[YourProjectName]%2Fsome%2Fnote)`
+
+Encoding rules: percent-encode `/` as `%2F` and spaces as `%20`. Strip the trailing `.md` from the URL `file=` parameter, but keep `.md` in the visible link text. The vault name is shown in any vault-pkm tool output (the part after `vault=`); reuse it.
+
+The vault-pkm MCP tools already emit paths in this format. Preserve the link form when relaying; don't revert to bare paths for inline mentions. Apply the same format proactively when mentioning a vault file you haven't just queried (e.g., when answering "what's in the devlog?" or "see ADR-002").
+
 ### PKM Agents
 
 The plugin provides 3 specialized agents (visible in `/agents`). Delegate to them proactively:

@@ -333,3 +333,13 @@ Use `vault-pkm:pkm-explore` to research what the vault already knows about a top
 At the end of each session, run `vault-pkm:pkm-session-end` to update the devlog and capture undocumented work.
 
 Use `vault-pkm:triage-tasks` to surface and batch-update open task statuses (numbered list, shorthand input like "1,3 done | 2 active"). Use `vault-pkm:add-task` for fast task capture from the conversation. Use `vault-pkm:tackle-task` to work on a specific task end-to-end: reads the note, explores vault context, routes to the right workflow (trivial/standard/significant), and closes the task when done.
+
+### Referring to vault files
+
+Whenever you mention a vault note, PKM file, or file inside `01-Projects/Obsidian-MCP/` in your response to the user — whether quoting tool output, summarizing what you read, or referring to a file by name — format it as a markdown link to its `obsidian://` URI so the user can click to open it in Obsidian:
+
+`[01-Projects/Obsidian-MCP/some/note.md](obsidian://open?vault=PKM&file=01-Projects%2FObsidian-MCP%2Fsome%2Fnote)`
+
+Encoding rules: percent-encode `/` as `%2F` and spaces as `%20`. Strip the trailing `.md` from the URL `file=` parameter, but keep `.md` in the visible link text. The vault name (`PKM`) is also visible in any vault-pkm tool output.
+
+The vault-pkm MCP tools already emit paths in this format. Preserve the link form when relaying; don't revert to bare paths like `01-Projects/Obsidian-MCP/...` for inline mentions. Apply the same format proactively when mentioning a vault file you haven't just queried (e.g., when answering "what's in the devlog?" or "see ADR-002").

@@ -3,7 +3,7 @@
 // Tells the model how to extract a canonical path from those links when feeding them
 // back to other vault tools — preventing it from passing a `[path](url)` string
 // into a `path` argument.
-const LINK_FORMAT_NOTE = " Paths in this tool's output are formatted as markdown links `[vault-relative-path.md](obsidian://...)` so users can click to open in Obsidian. When passing a path back to another vault tool's `path` argument, use only the link text inside the brackets (e.g. `01-Projects/Foo/note.md`), never the full markdown link.";
+const LINK_FORMAT_NOTE = " Paths in this tool's output are formatted as markdown links `[vault-relative-path.md](obsidian://...)` so users can click to open in Obsidian. PRESERVE this link format when referring to these files in your response to the user — don't strip back to bare paths. When passing a path back to another vault tool's `path` argument, use only the link text inside the brackets (e.g. `01-Projects/Foo/note.md`), never the full markdown link.";
 
 /**
  * Build the MCP tool definitions list.
