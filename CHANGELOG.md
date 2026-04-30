@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+- **Clickable obsidian:// links in tool output.** Vault paths in `vault_search`, `vault_list`, `vault_recent`, `vault_query`, `vault_links` (incoming), `vault_neighborhood`, `vault_semantic_search`, `vault_suggest_links`, `vault_link_health`, `vault_peek`, the `vault_read` auto-redirect, and write-success messages now render as `[path.md](obsidian://open?vault=<name>&file=<encoded-path>)` markdown links. Cmd+click (macOS) / Ctrl+click in supported terminals opens the note directly in Obsidian. The `obsidianLink(filePath, vaultName)` helper does the encoding (percent-encoded `/` → `%2F`, spaces → `%20`, trailing `.md` stripped from the URL but kept in link text).
+- **`VAULT_PKM_VAULT_NAME` env var.** Overrides the default vault name used in `obsidian://` links. Defaults to `path.basename(VAULT_PATH)`. Set this when your on-disk vault folder name differs from the vault name registered in Obsidian.
+- **`init-project` writes a "Referring to vault files" directive** into the project's CLAUDE.md so Claude uses the markdown-link format inline when narrating about vault files (not just when relaying tool output verbatim). The same directive ships in `sample-project/CLAUDE.md`.
+
+### Changed
+- **All vault tool descriptions** now include a `LINK_FORMAT_NOTE` instructing the model to (a) preserve the link form in user-facing replies and (b) extract only the bracket text (not the full markdown link) when feeding paths back as `path` arguments. Applied to: `vault_read`, `vault_peek`, `vault_write`, `vault_append`, `vault_edit`, `vault_update_frontmatter`, `vault_search`, `vault_list`, `vault_recent`, `vault_links`, `vault_neighborhood`, `vault_query`, `vault_trash`, `vault_move`, `vault_add_links`, `vault_link_health`, `vault_semantic_search`, `vault_suggest_links`.
+- **`formatPeek`, `formatNeighborhood`, and `embeddings.search()`** accept an optional `formatPath` callback so handlers can inject the link formatter without those modules knowing about vault names.
+
 ## [3.8.0] - 2026-04-28
 
 ### Added

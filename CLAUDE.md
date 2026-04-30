@@ -55,7 +55,7 @@ The project consists of three parts:
 - `vault_add_links` - Add annotated wikilinks to a note's section with deduplication (default: ## Related)
 - `vault_link_health` - Graph health report: orphans, broken links, weakly connected notes, ambiguous links
 
-The server uses `VAULT_PATH` environment variable (defaults to `~/Documents/PKM`) and includes path security to prevent directory escaping.
+The server uses `VAULT_PATH` environment variable (defaults to `~/Documents/PKM`) and includes path security to prevent directory escaping. Optional `VAULT_PKM_VAULT_NAME` overrides the vault name embedded in `obsidian://` links in tool output (defaults to `basename(VAULT_PATH)`); set this only when the on-disk folder name differs from the vault name registered in Obsidian.
 
 ### vault_neighborhood (Graph Context Exploration)
 

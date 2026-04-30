@@ -3,7 +3,7 @@
 // Tells the model how to extract a canonical path from those links when feeding them
 // back to other vault tools — preventing it from passing a `[path](url)` string
 // into a `path` argument.
-const LINK_FORMAT_NOTE = " Paths in this tool's output are formatted as markdown links `[vault-relative-path.md](obsidian://...)` so users can click to open in Obsidian. PRESERVE this link format when referring to these files in your response to the user — don't strip back to bare paths. When passing a path back to another vault tool's `path` argument, use only the link text inside the brackets (e.g. `01-Projects/Foo/note.md`), never the full markdown link.";
+const LINK_FORMAT_NOTE = " Paths in this tool's output are formatted as markdown links `[vault-relative-path.md](obsidian://...)` so users can Cmd/Ctrl-click to open in Obsidian. Preserve the link form when relaying paths to the user; pass only the bracket text (e.g. `01-Projects/Foo/note.md`) to other vault tools' `path` arguments, never the full markdown link.";
 
 /**
  * Build the MCP tool definitions list.
@@ -16,7 +16,7 @@ export function createToolsList(templateDescriptions, templateNames, hasSemantic
   const tools = [
     {
       name: "vault_read",
-      description: "Read the contents of a markdown file from the vault. Supports pagination: read a single section by heading, last N lines, last N heading-level sections, chunk number, or line range. Files exceeding ~80k characters auto-redirect to peek data (file structure/outline) unless a pagination param or force=true is specified.",
+      description: "Read the contents of a markdown file from the vault. Supports pagination: read a single section by heading, last N lines, last N heading-level sections, chunk number, or line range. Files exceeding ~80k characters auto-redirect to peek data (file structure/outline) unless a pagination param or force=true is specified." + LINK_FORMAT_NOTE,
       inputSchema: {
         type: "object",
         properties: {
@@ -42,7 +42,7 @@ export function createToolsList(templateDescriptions, templateNames, hasSemantic
     },
     {
       name: "vault_peek",
-      description: "Inspect a file's metadata and structure without reading full content. Returns file size, frontmatter, heading outline with approximate section sizes, and a brief preview. Use this to plan which sections to read from large files.",
+      description: "Inspect a file's metadata and structure without reading full content. Returns file size, frontmatter, heading outline with approximate section sizes, and a brief preview. Use this to plan which sections to read from large files." + LINK_FORMAT_NOTE,
       inputSchema: {
         type: "object",
         properties: {
@@ -64,7 +64,7 @@ Built-in variables (auto-substituted):
 
 Required: frontmatter.tags - provide at least one tag for the note.
 Optional: frontmatter.status, frontmatter.priority, frontmatter.project, frontmatter.deciders, frontmatter.due, frontmatter.source (depending on template type).
-Pass custom <%...%> variables via the 'variables' parameter.`,
+Pass custom <%...%> variables via the 'variables' parameter.` + LINK_FORMAT_NOTE,
       inputSchema: {
         type: "object",
         properties: {
@@ -99,7 +99,7 @@ Pass custom <%...%> variables via the 'variables' parameter.`,
     },
     {
       name: "vault_append",
-      description: "Append content to an existing file, optionally under a specific heading. When 'position' is specified, heading is required and must exist in the file.",
+      description: "Append content to an existing file, optionally under a specific heading. When 'position' is specified, heading is required and must exist in the file." + LINK_FORMAT_NOTE,
       inputSchema: {
         type: "object",
         properties: {
@@ -113,7 +113,7 @@ Pass custom <%...%> variables via the 'variables' parameter.`,
     },
     {
       name: "vault_edit",
-      description: "Edit a file by replacing an exact string match. The old_string must appear exactly once in the file for safety.",
+      description: "Edit a file by replacing an exact string match. The old_string must appear exactly once in the file for safety." + LINK_FORMAT_NOTE,
       inputSchema: {
         type: "object",
         properties: {
@@ -126,7 +126,7 @@ Pass custom <%...%> variables via the 'variables' parameter.`,
     },
     {
       name: "vault_update_frontmatter",
-      description: "Update YAML frontmatter fields in an existing note. Parses existing frontmatter, updates specified fields, preserves everything else. Set a field to null to remove it. Protected fields (type, created, tags) cannot be removed. Field values are validated against the note's type (e.g. task status must be: pending, active, done, cancelled; task priority must be: low, normal, high, urgent).",
+      description: "Update YAML frontmatter fields in an existing note. Parses existing frontmatter, updates specified fields, preserves everything else. Set a field to null to remove it. Protected fields (type, created, tags) cannot be removed. Field values are validated against the note's type (e.g. task status must be: pending, active, done, cancelled; task priority must be: low, normal, high, urgent)." + LINK_FORMAT_NOTE,
       inputSchema: {
         type: "object",
         properties: {
@@ -300,7 +300,7 @@ Pass custom <%...%> variables via the 'variables' parameter.`,
     },
     {
       name: "vault_trash",
-      description: "Soft-delete a file by moving it to .trash/ (Obsidian convention). Reports files with broken incoming links as warnings. Use vault_move to relocate files instead.",
+      description: "Soft-delete a file by moving it to .trash/ (Obsidian convention). Reports files with broken incoming links as warnings. Use vault_move to relocate files instead." + LINK_FORMAT_NOTE,
       inputSchema: {
         type: "object",
         properties: {
@@ -311,7 +311,7 @@ Pass custom <%...%> variables via the 'variables' parameter.`,
     },
     {
       name: "vault_move",
-      description: "Move or rename a markdown file within the vault. Automatically updates wikilinks in all files that reference the moved file. Both paths must be exact.",
+      description: "Move or rename a markdown file within the vault. Automatically updates wikilinks in all files that reference the moved file. Both paths must be exact." + LINK_FORMAT_NOTE,
       inputSchema: {
         type: "object",
         properties: {
@@ -326,7 +326,7 @@ Pass custom <%...%> variables via the 'variables' parameter.`,
       name: "vault_add_links",
       description: "Add annotated wikilinks to a note's section (default: ## Related). " +
         "Deduplicates by basename (skips links already present). " +
-        "Creates the section if missing. Requires exact path.",
+        "Creates the section if missing. Requires exact path." + LINK_FORMAT_NOTE,
       inputSchema: {
         type: "object",
         properties: {

@@ -959,7 +959,7 @@ export async function createHandlers({ vaultPath, templateRegistry, semanticInde
     if (linkingFiles.length > 0) {
       text += `\n\n**Warning:** ${linkingFiles.length} file${linkingFiles.length === 1 ? "" : "s"} had links to this note (now broken):`;
       for (const { file } of linkingFiles) {
-        text += `\n- ${file}`;
+        text += `\n- ${linkFor(file)}`;
       }
     }
 

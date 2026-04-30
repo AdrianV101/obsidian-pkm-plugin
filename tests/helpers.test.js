@@ -1420,4 +1420,10 @@ describe("obsidianLink", () => {
     const link = obsidianLink("attachments/file.png", "PKM");
     assert.equal(link, "[attachments/file.png](obsidian://open?vault=PKM&file=attachments%2Ffile.png)");
   });
+
+  it("returns empty string for null/undefined/empty path", () => {
+    assert.equal(obsidianLink(null, "PKM"), "");
+    assert.equal(obsidianLink(undefined, "PKM"), "");
+    assert.equal(obsidianLink("", "PKM"), "");
+  });
 });

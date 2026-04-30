@@ -221,6 +221,8 @@ Add your OpenAI API key to `~/.claude/settings.json` under the `env` block:
 
 Use `VAULT_PKM_OPENAI_KEY` (preferred) to avoid conflicts with project-level OpenAI keys. `OPENAI_API_KEY` is also accepted as a fallback. The previously-documented `OBSIDIAN_PKM_OPENAI_KEY` still works as a deprecated fallback — plan to rename it in your config. Restart Claude Code after saving.
 
+**Optional: `VAULT_PKM_VAULT_NAME`** — overrides the vault name used in `obsidian://` links emitted in tool output. Defaults to `basename(VAULT_PATH)`, which is correct for most setups. Set this only if your on-disk folder name differs from the vault name you registered in Obsidian (e.g. `VAULT_PATH=/Users/me/Notes` but Obsidian shows the vault as `My PKM`).
+
 This enables `vault_semantic_search` and `vault_suggest_links`. Uses `text-embedding-3-large` with a SQLite + sqlite-vec index stored at `.obsidian/semantic-index.db`. The index rebuilds automatically — delete the DB file to force a full re-embed.
 
 <details>

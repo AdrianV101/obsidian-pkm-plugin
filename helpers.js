@@ -956,6 +956,7 @@ export function blendWithGraph(results, neighborhood, graphWeight, limit) {
  * @returns {string} `[filePath](obsidian://open?vault=...&file=...)`
  */
 export function obsidianLink(filePath, vaultName) {
+  if (!filePath) return "";
   const fileWithoutMd = filePath.endsWith(".md") ? filePath.slice(0, -3) : filePath;
   const encodedFile = encodeURIComponent(fileWithoutMd);
   const encodedVault = encodeURIComponent(vaultName);
