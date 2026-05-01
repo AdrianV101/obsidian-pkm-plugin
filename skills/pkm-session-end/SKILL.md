@@ -72,10 +72,11 @@ vault_semantic_search({ query: "<topic/title>", limit: 5 })
 
 If unavailable, use `vault_search` with key terms + `vault_query` with matching tags.
 
-**Route based on results:**
-- **Close match (similarity > 0.8)**: Go to **3b** (update existing note)
-- **No close match**: Go to **3c** (create new note)
-- **Task status change**: Go to **3d** (update task)
+**Route based on results.** Note on score interpretation: `vault_semantic_search` uses `text-embedding-3-large` (3072-dim) cosine similarity, which compresses hard. Even a verbatim title/heading of an existing note typically scores around 0.55–0.65; scores above 0.7 are essentially never observed.
+
+- **Likely duplicate (top hit ≥ 0.5)**: Read the top hit with `vault_read` and confirm it's actually about the same topic before routing — a 0.5 score can be a real duplicate or a same-domain neighbor. If same topic: go to **3b** (update). If neighbor: go to **3c** (create with links).
+- **No close match (top hit < 0.5)**: Go to **3c** (create new note).
+- **Task status change**: Go to **3d** (update task).
 
 ### 3b: Update existing note
 

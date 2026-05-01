@@ -17,10 +17,11 @@ vault_semantic_search({ query: "<topic/title of intended note>", limit: 5 })
 
 If `vault_semantic_search` is unavailable (no `VAULT_PKM_OPENAI_KEY`), use `vault_search` with the note's title and key terms, and `vault_query` with matching tags to check for duplicates.
 
-**Route based on results:**
-- **Close match (similarity > 0.8)**: **Update the existing note** instead of creating a new one. Read it with `vault_read`, then use `vault_append` to add new content or `vault_edit` to refine existing content. Use `vault_update_frontmatter` if metadata changed. Skip to Step 4 (Discover Connections) after updating.
-- **Partial matches (0.5–0.8)**: Mention as potentially related, proceed with creation at Step 2. Link to them in Step 6.
-- **No close matches**: Proceed with creation at Step 2.
+**Route based on results.** Note on score interpretation: `vault_semantic_search` uses `text-embedding-3-large` (3072-dim) cosine similarity, which compresses hard. Even a verbatim title/heading of an existing note typically scores around 0.55–0.65 against that note; scores above 0.7 are essentially never observed. Read the scores with that scale in mind.
+
+- **Likely duplicate (top hit ≥ 0.5)**: Read the top hit with `vault_read` and confirm it's actually about the same topic before routing — a 0.5 score can be a real duplicate or a same-domain neighbor. If it IS the same topic: **update the existing note** instead of creating a new one — `vault_append` to add new content or `vault_edit` to refine existing content; `vault_update_frontmatter` if metadata changed. Skip to Step 4 (Discover Connections) after updating. **If the existing note is already well-linked** (the `## Related` section already has 3+ on-target annotated links and the natural backlinks), Steps 4–7 are likely no-ops — run `vault_suggest_links` once to confirm there are no obvious gaps, then skip Steps 5–7 if the existing graph already covers the connections; forcing additional links degrades quality. If it's a same-domain neighbor (related but distinct topic), treat as a partial match.
+- **Partial matches (top hit < 0.5, or top hit ≥ 0.5 but verified as a neighbor)**: Mention as potentially related, proceed with creation at Step 2. Link to them in Step 6.
+- **No matches at all**: Proceed with creation at Step 2.
 
 ## Step 2: Create the Note
 
@@ -65,6 +66,8 @@ Ensure:
 Work section by section. Each `vault_edit` call must match text **exactly as it appears in the file** — do NOT guess what the template produced.
 
 For templates with many sections, you can batch multiple sections into fewer edits by using a larger `old_string` that spans consecutive sections.
+
+**Don't forget the link sections.** Templates include link sections like `## Related`, `## Links`, and `## References` with their own placeholder block (an HTML comment plus an empty bullet, e.g., `<!-- Links to related notes -->\n- `). `vault_add_links` in Step 6 *appends* new links below whatever already exists in the section — it does not replace the placeholder. If you skip cleaning these stubs in Step 3, the final note ends up with a stray comment and empty bullet sitting above the real links. Use `vault_edit` to remove the placeholder block from each link section, leaving the heading on its own line so Step 6's links land cleanly.
 
 ## Step 4: Discover Connections
 
