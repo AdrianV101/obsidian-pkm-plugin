@@ -349,7 +349,7 @@ Run `npx obsidian-pkm doctor` for a diagnostic checklist that validates your Nod
 
 Contributions are welcome! Please read [CONTRIBUTING.md](CONTRIBUTING.md) for development setup, code style guidelines, and the pull request process before submitting changes.
 
-See [CHANGELOG.md](CHANGELOG.md) for release history and [SECURITY.md](SECURITY.md) to report vulnerabilities.
+See [CHANGELOG.md](CHANGELOG.md) for release history, [SECURITY.md](SECURITY.md) to report vulnerabilities, and [PRIVACY.md](PRIVACY.md) for how the plugin handles your data.
 
 ## License
 
