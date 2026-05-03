@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [3.10.1] - 2026-05-03
+
+### Added
+- **`PRIVACY.md`** documenting the plugin's data-handling policy: local-first storage, no telemetry, opt-in OpenAI usage (only when `VAULT_PKM_OPENAI_KEY` is set, used by `vault_semantic_search` and graph-context `vault_suggest_links`), local SQLite stores under `.obsidian/`, and user controls for clearing them. Linked from the README. Provides the privacy policy URL needed for the plugin marketplace listing.
+
 ## [3.10.0] - 2026-05-01
 
 ### Changed

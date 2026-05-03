@@ -1,6 +1,6 @@
 {
   "name": "obsidian-pkm",
-  "version": "3.10.0",
+  "version": "3.10.1",
   "description": "Bidirectional knowledge flow between Claude Code and Obsidian — 20 MCP tools, skills, and hooks for PKM",
   "main": "cli.js",
   "exports": {
