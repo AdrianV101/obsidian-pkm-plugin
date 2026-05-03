@@ -113,14 +113,14 @@ When a task's status, priority, or details changed during the session:
 1. `vault_query({ type: "task", custom_fields: { project: "<Project>" } })` to find the task
 2. `vault_update_frontmatter` to update status/priority
 3. Optionally `vault_append` to add context about what changed
-4. Add a heading-anchored backlink from the task to the devlog entry. Important: `vault_add_links` resolves `target` by file basename only — `#heading` suffixes in `target` are not parsed and the call will fail with `not found`. To link to a specific session entry, use `vault_append` to add an inline wikilink in the task body:
+4. Add a heading-anchored backlink from the task to the devlog entry. Important: `vault_add_links` resolves `target` by file basename only — `#heading` suffixes in `target` are not parsed and the call will fail with `not found`. To link to a specific session entry, use `vault_append` to add an inline wikilink in the task body. Use the disambiguated devlog path (`<project>/development/devlog`) rather than the bare basename, since vaults can have multiple `devlog.md` files (one per project) and Obsidian's basename resolver may pick the wrong one:
    ```
    vault_append({
      path: "<task-path>",
-     content: "\n**Status change**: pending → done on <YYYY-MM-DD HH:mm>. See [[devlog#<YYYY-MM-DD HH:mm>]] for the session that completed this."
+     content: "\n**Status change**: pending → done on YYYY-MM-DD HH:mm. See [[<project>/development/devlog#YYYY-MM-DD HH:mm]] for the session that completed this."
    })
    ```
-   Use the same `### YYYY-MM-DD HH:mm` heading from Step 1 as the wikilink target. This produces a clickable heading-anchored backlink that Obsidian renders correctly. Bidirectional traceability: the devlog entry links to the task (Step 1), the task body links back to the specific session heading.
+   Substitute the actual project path and timestamp. Use the same `### YYYY-MM-DD HH:mm` heading from Step 1 as the wikilink target. This produces a clickable heading-anchored backlink that Obsidian renders correctly. Bidirectional traceability: the devlog entry links to the task (Step 1), the task body links back to the specific session heading.
 
 ## Step 4: Quality Check
 
