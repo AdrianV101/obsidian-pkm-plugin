@@ -17,9 +17,13 @@ Find the most relevant existing note for the topic:
 vault_semantic_search({ query: "<topic>", limit: 5 })
 ```
 
-- If a specific note path was provided, use that directly as the seed
-- Otherwise, pick the highest-scoring result as the seed
-- If **no relevant notes** exist (all scores < 0.3), report that the vault has minimal coverage and suggest creating a seed note using pkm-write
+**A note on score interpretation.** `vault_semantic_search` uses `text-embedding-3-large` (3072-dim) cosine similarity, which compresses hard. In a typical vault, even genuinely on-topic notes score around 0.45–0.65, and tangential notes that share surface tokens (e.g., "vibration" matching a "vibe coding" note) often score 0.40–0.45 too. Absolute scores cannot reliably separate "topically relevant seed" from "tangential surface match" — you must read and judge.
+
+**Routing:**
+
+- If a specific note path was provided, use that directly as the seed.
+- Otherwise: read the top result with `vault_read` and judge whether it is topically relevant to the query (not just sharing surface tokens). If yes, use it as the seed and advance to Step 2.
+- If the top result is tangential or off-topic, corroborate with one `vault_search` keyword query using a distinctive term from the topic. If `vault_search` returns zero matches AND the semantic top hits are all tangential on read, the vault has minimal coverage — report that and suggest creating a seed note using pkm-write. Do not advance into Steps 2–5 and do not synthesize from tangential matches.
 
 If `vault_semantic_search` is unavailable (no `OPENAI_API_KEY`), use `vault_search` with key terms and `vault_query` by tags/type to locate a seed note.
 

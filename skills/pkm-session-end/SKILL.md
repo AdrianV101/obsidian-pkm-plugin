@@ -40,19 +40,23 @@ Use the **actual date** and fill in real content from the session. Keep entries 
 
 ## Step 2: Review Session Work
 
-Query the activity log to find all notes created or modified this session:
+The parent agent's session-context message in the delegation prompt is the **primary boundary** for what counts as "this session." Use it to decide which work is in-scope to capture. The activity log is a discovery aid — useful for spotting files-touched you may have missed — not a session-scope definition.
+
+Why this matters: the MCP server's session ID can span work that was already captured in earlier devlog entries within the same session, so filtering purely by session ID risks re-capturing already-documented work or capturing work outside the parent's intended scope.
+
+Query the activity log to find files touched:
 
 ```
 vault_activity({ limit: 1 })
 ```
 
-The response header shows `current session: <id>` (an 8-character prefix). Use that prefix to filter:
+The response header shows `current session: <id>` (an 8-character prefix). Filter to the same session for full file history:
 
 ```
 vault_activity({ session: "<id-from-header>", limit: 50 })
 ```
 
-Note which files were created, modified, and searched.
+Cross-reference the touched files against the parent's session context. Files outside the parent's stated scope, or files already covered by prior devlog entries in the same session, are not your responsibility to capture again.
 
 ## Step 3: Capture Undocumented Work
 
@@ -72,10 +76,11 @@ vault_semantic_search({ query: "<topic/title>", limit: 5 })
 
 If unavailable, use `vault_search` with key terms + `vault_query` with matching tags.
 
-**Route based on results:**
-- **Close match (similarity > 0.8)**: Go to **3b** (update existing note)
-- **No close match**: Go to **3c** (create new note)
-- **Task status change**: Go to **3d** (update task)
+**Route based on results.** Note on score interpretation: `vault_semantic_search` uses `text-embedding-3-large` (3072-dim) cosine similarity, which compresses hard. Even a verbatim title/heading of an existing note typically scores around 0.55–0.65; scores above 0.7 are essentially never observed.
+
+- **Likely duplicate (top hit ≥ 0.5)**: Read the top hit with `vault_read` and confirm it's actually about the same topic before routing — a 0.5 score can be a real duplicate or a same-domain neighbor. If same topic: go to **3b** (update). If neighbor: go to **3c** (create with links).
+- **No close match (top hit < 0.5)**: Go to **3c** (create new note).
+- **Task status change**: Go to **3d** (update task).
 
 ### 3b: Update existing note
 
@@ -108,14 +113,14 @@ When a task's status, priority, or details changed during the session:
 1. `vault_query({ type: "task", custom_fields: { project: "<Project>" } })` to find the task
 2. `vault_update_frontmatter` to update status/priority
 3. Optionally `vault_append` to add context about what changed
-4. Add a backlink from the task to the devlog entry using a heading link:
+4. Add a heading-anchored backlink from the task to the devlog entry. Important: `vault_add_links` resolves `target` by file basename only — `#heading` suffixes in `target` are not parsed and the call will fail with `not found`. To link to a specific session entry, use `vault_append` to add an inline wikilink in the task body. Use the disambiguated devlog path (`<project>/development/devlog`) rather than the bare basename, since vaults can have multiple `devlog.md` files (one per project) and Obsidian's basename resolver may pick the wrong one:
    ```
-   vault_add_links({
+   vault_append({
      path: "<task-path>",
-     links: [{ target: "<project>/development/devlog.md#YYYY-MM-DD HH:mm", annotation: "session where status changed to <new-status>" }]
+     content: "\n**Status change**: pending → done on YYYY-MM-DD HH:mm. See [[<project>/development/devlog#YYYY-MM-DD HH:mm]] for the session that completed this."
    })
    ```
-   Use the same `### YYYY-MM-DD HH:mm` heading from Step 1 as the link target. This creates bidirectional traceability: the devlog links to the task, and the task links back to the session.
+   Substitute the actual project path and timestamp. Use the same `### YYYY-MM-DD HH:mm` heading from Step 1 as the wikilink target. This produces a clickable heading-anchored backlink that Obsidian renders correctly. Bidirectional traceability: the devlog entry links to the task (Step 1), the task body links back to the specific session heading.
 
 ## Step 4: Quality Check
 
