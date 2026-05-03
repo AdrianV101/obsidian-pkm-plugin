@@ -40,19 +40,23 @@ Use the **actual date** and fill in real content from the session. Keep entries 
 
 ## Step 2: Review Session Work
 
-Query the activity log to find all notes created or modified this session:
+The parent agent's session-context message in the delegation prompt is the **primary boundary** for what counts as "this session." Use it to decide which work is in-scope to capture. The activity log is a discovery aid — useful for spotting files-touched you may have missed — not a session-scope definition.
+
+Why this matters: the MCP server's session ID can span work that was already captured in earlier devlog entries within the same session, so filtering purely by session ID risks re-capturing already-documented work or capturing work outside the parent's intended scope.
+
+Query the activity log to find files touched:
 
 ```
 vault_activity({ limit: 1 })
 ```
 
-The response header shows `current session: <id>` (an 8-character prefix). Use that prefix to filter:
+The response header shows `current session: <id>` (an 8-character prefix). Filter to the same session for full file history:
 
 ```
 vault_activity({ session: "<id-from-header>", limit: 50 })
 ```
 
-Note which files were created, modified, and searched.
+Cross-reference the touched files against the parent's session context. Files outside the parent's stated scope, or files already covered by prior devlog entries in the same session, are not your responsibility to capture again.
 
 ## Step 3: Capture Undocumented Work
 
@@ -109,14 +113,14 @@ When a task's status, priority, or details changed during the session:
 1. `vault_query({ type: "task", custom_fields: { project: "<Project>" } })` to find the task
 2. `vault_update_frontmatter` to update status/priority
 3. Optionally `vault_append` to add context about what changed
-4. Add a backlink from the task to the devlog entry using a heading link:
+4. Add a heading-anchored backlink from the task to the devlog entry. Important: `vault_add_links` resolves `target` by file basename only — `#heading` suffixes in `target` are not parsed and the call will fail with `not found`. To link to a specific session entry, use `vault_append` to add an inline wikilink in the task body:
    ```
-   vault_add_links({
+   vault_append({
      path: "<task-path>",
-     links: [{ target: "<project>/development/devlog.md#YYYY-MM-DD HH:mm", annotation: "session where status changed to <new-status>" }]
+     content: "\n**Status change**: pending → done on <YYYY-MM-DD HH:mm>. See [[devlog#<YYYY-MM-DD HH:mm>]] for the session that completed this."
    })
    ```
-   Use the same `### YYYY-MM-DD HH:mm` heading from Step 1 as the link target. This creates bidirectional traceability: the devlog links to the task, and the task links back to the session.
+   Use the same `### YYYY-MM-DD HH:mm` heading from Step 1 as the wikilink target. This produces a clickable heading-anchored backlink that Obsidian renders correctly. Bidirectional traceability: the devlog entry links to the task (Step 1), the task body links back to the specific session heading.
 
 ## Step 4: Quality Check
 
