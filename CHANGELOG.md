@@ -6,6 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [3.10.0] - 2026-05-01
+
+### Changed
+- **`pkm-write` duplicate-check threshold** lowered from `> 0.8` to `≥ 0.5` with a verify-by-read step. The old threshold was effectively unreachable: `text-embedding-3-large` cosine scores compress to ~0.55–0.65 even for verbatim title matches against the same note, so the UPDATE branch never fired and every note routed to CREATE. Now the agent reads the top hit and judges whether it's a real duplicate vs a same-domain neighbor before routing.
+- **`pkm-write` Step 3** now explicitly tells the agent to clean up template stubs in `## Related` / `## Links` / `## References` before Step 6, since `vault_add_links` appends below existing content rather than replacing the placeholder.
+- **`pkm-write` Step 4** gains a well-linked-existing-note carve-out (UPDATE path only): if the existing note's `## Related` already covers the connections that `vault_suggest_links` would surface, skip Steps 5–7 instead of forcing additional low-quality links.
+- **`pkm-session-end`** ports the same threshold tune.
+- **`pkm-session-end` Step 2** clarifies the session boundary: the parent agent's session-context message is the primary scope, `vault_activity` is a discovery aid (not a session-scope definition). Prevents re-capturing previously-documented work in long-lived MCP sessions.
+- **`pkm-explore` Step 1** replaces the unreachable `< 0.3` minimal-coverage threshold with a read-the-top-hit + judge-topical-relevance + corroborate-with-`vault_search` rule. Same root cause as the 0.8 thresholds: scores compress, so absolute thresholds at the low end can't separate "tangential surface match" from "real seed."
+
+### Fixed
+- **`pkm-session-end` Step 3d backlink example** was broken. The skill prescribed `vault_add_links({ target: "<project>/development/devlog.md#YYYY-MM-DD HH:mm", ... })`, but `vault_add_links` resolves `target` by file basename only and silently drops `#heading` suffixes — the call returned `not found` every time. Replaced with `vault_append` of an inline `[[<project>/development/devlog#YYYY-MM-DD HH:mm]]` body wikilink, using the disambiguated devlog path so vaults with multiple per-project devlogs don't collide on basename resolution.
+
 ## [3.9.0] - 2026-05-01
 
 ### Added
