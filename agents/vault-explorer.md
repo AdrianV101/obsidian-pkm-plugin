@@ -33,7 +33,7 @@ description: >-
   Proactive exploration before significant work blocks.
   </commentary>
   </example>
-model: inherit
+model: sonnet
 color: cyan
 disallowedTools: Write, Edit, Bash
 skills:
