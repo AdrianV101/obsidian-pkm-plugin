@@ -9,9 +9,8 @@ import {
   validateFrontmatterStrict,
   extractInlineTags,
   matchesTagPattern,
-  findSectionRange,
-  listHeadings,
-  extractTailSections,
+  findTailSections,
+  capReadOutput,
   buildBasenameMap,
   resolveFuzzyPath,
   resolveFuzzyFolder,
@@ -27,6 +26,7 @@ import {
 } from "./helpers.js";
 import { exploreNeighborhood, formatNeighborhood, findFilesLinkingTo, rewriteWikilinks, extractWikilinks, resolveLink, buildIncomingIndex } from "./graph.js";
 import { getAllMarkdownFiles, extractFrontmatter } from "./utils.js";
+import { findSection, matchHeadings, parseHeadings, splitFrontmatter } from "./markdown.js";
 
 function positiveInt(value, fallback) {
   const n = Math.floor(Number(value));
@@ -136,36 +136,24 @@ export async function createHandlers({ vaultPath, templateRegistry, semanticInde
     }
 
     let text = content;
+    // Every explicit mode is capped like a full read: the auto-redirect threshold, or the hard cap with force
+    const cap = args.force ? FORCE_HARD_CAP : AUTO_REDIRECT_THRESHOLD;
+    const totalLines = content.split("\n").length;
+    const capFrom = (selection, firstLine) => capReadOutput(selection, { firstLine, totalLines, cap });
 
     if (args.heading) {
-      const range = findSectionRange(content, args.heading);
-      if (!range) {
-        const available = listHeadings(content);
-        const list = available.length > 0
-          ? `Available headings:\n${available.join("\n")}`
-          : "No headings found in file";
-        throw new Error(`Heading not found: ${args.heading}\n${list}`);
-      }
-      text = content.slice(range.headingStart, range.sectionEnd);
+      const range = findSection(content, args.heading);
+      text = capFrom(content.slice(range.headingStart, range.sectionEnd), range.heading.line);
     } else if (args.tail) {
-      // Extract frontmatter and prepend it
-      let frontmatter = "";
-      let body = content;
-      if (content.startsWith("---")) {
-        const endIndex = content.indexOf("\n---", 3);
-        if (endIndex !== -1) {
-          frontmatter = content.slice(0, endIndex + 4);
-          body = content.slice(endIndex + 4);
-        }
-      }
-      const lines = body.split("\n");
-      const tailCount = positiveInt(args.tail, 20);
-      const tailLines = lines.slice(-tailCount);
-      text = frontmatter + (frontmatter && !frontmatter.endsWith("\n") ? "\n" : "") + tailLines.join("\n");
+      // Frontmatter is always prepended
+      const { bodyOffset } = splitFrontmatter(content);
+      const tailLines = content.slice(bodyOffset).split("\n").slice(-positiveInt(args.tail, 20));
+      text = content.slice(0, bodyOffset) + capFrom(tailLines.join("\n"), totalLines - tailLines.length + 1);
     } else if (args.tail_sections) {
-      const level = positiveInt(args.section_level, 2);
-      text = extractTailSections(content, positiveInt(args.tail_sections, 3), level);
+      const { frontmatter, start, line } = findTailSections(content, positiveInt(args.tail_sections, 3), positiveInt(args.section_level, 2));
+      text = frontmatter + capFrom(content.slice(start), line);
     } else if (args.chunk !== undefined) {
+      // A chunk is at most CHUNK_SIZE chars, which never exceeds the cap
       const chunk = positiveInt(args.chunk, 0);
       const totalChunks = Math.ceil(content.length / CHUNK_SIZE);
       if (chunk < 1 || chunk > totalChunks) {
@@ -185,7 +173,7 @@ export async function createHandlers({ vaultPath, templateRegistry, semanticInde
         throw new Error(`Invalid line range: ${start}-${end}. File has ${allLines.length} lines.`);
       }
       const clampedEnd = Math.min(end, allLines.length);
-      text = `[Lines ${start}-${clampedEnd} of ${allLines.length}]\n\n` + allLines.slice(start - 1, clampedEnd).join("\n");
+      text = `[Lines ${start}-${clampedEnd} of ${allLines.length}]\n\n` + capFrom(allLines.slice(start - 1, clampedEnd).join("\n"), start);
     }
 
     return { content: [{ type: "text", text }] };
@@ -277,10 +265,7 @@ export async function createHandlers({ vaultPath, templateRegistry, semanticInde
       if (!args.heading) {
         throw new Error("'heading' is required when 'position' is specified");
       }
-      const range = findSectionRange(existing, args.heading);
-      if (!range) {
-        throw new Error(`Heading not found in ${args.path}: ${args.heading}`);
-      }
+      const range = findSection(existing, args.heading);
 
       if (args.position === "before_heading") {
         newContent = existing.slice(0, range.headingStart) + args.content + "\n" + existing.slice(range.headingStart);
@@ -295,11 +280,12 @@ export async function createHandlers({ vaultPath, templateRegistry, semanticInde
         throw new Error(`Unknown position: ${args.position}`);
       }
     } else if (args.heading) {
-      const range = findSectionRange(existing, args.heading);
-      if (range) {
-        newContent = existing.slice(0, range.afterHeading) + args.content + "\n" + existing.slice(range.afterHeading);
-      } else {
+      // Without a position, an unknown heading falls back to appending at the end
+      if (matchHeadings(parseHeadings(existing), args.heading).length === 0) {
         newContent = existing + "\n" + args.content;
+      } else {
+        const range = findSection(existing, args.heading);
+        newContent = existing.slice(0, range.afterHeading) + args.content + "\n" + existing.slice(range.afterHeading);
       }
     } else {
       newContent = existing + "\n" + args.content;
@@ -532,11 +518,7 @@ export async function createHandlers({ vaultPath, templateRegistry, semanticInde
     } else if (args.include_semantic && semanticIndex?.isAvailable) {
       const filePath = resolvePath(resolvedPath);
       const noteContent = await fs.readFile(filePath, "utf-8");
-      let body = noteContent;
-      if (body.startsWith("---")) {
-        const endIdx = body.indexOf("\n---", 3);
-        if (endIdx !== -1) body = body.slice(endIdx + 4).trim();
-      }
+      const body = splitFrontmatter(noteContent).body.trim();
 
       if (body) {
         const semanticLimit = args.semantic_limit || 5;
@@ -836,11 +818,7 @@ export async function createHandlers({ vaultPath, templateRegistry, semanticInde
       inputText = await fs.readFile(filePath, "utf-8");
     }
 
-    let body = inputText;
-    if (body.startsWith("---")) {
-      const endIdx = body.indexOf("\n---", 3);
-      if (endIdx !== -1) body = body.slice(endIdx + 4).trim();
-    }
+    const body = splitFrontmatter(inputText).body.trim();
     if (!body) throw new Error("No content to analyze");
 
     const linkedNames = new Set(
@@ -1122,18 +1100,17 @@ export async function createHandlers({ vaultPath, templateRegistry, semanticInde
       };
     }
 
-    let range = findSectionRange(content, section);
-    if (!range) {
+    if (matchHeadings(parseHeadings(content), section).length === 0) {
       if (!create_section) {
         throw new Error(`Section "${section}" not found in ${filePath}. Set create_section: true to create it.`);
       }
       const sectionBlock = (content.endsWith("\n") ? "\n" : "\n\n") + section + "\n";
       content = content + sectionBlock;
-      range = findSectionRange(content, section);
-      if (!range) {
+      if (matchHeadings(parseHeadings(content), section).length === 0) {
         throw new Error(`Failed to create section "${section}" in ${filePath}. Ensure the section parameter is a valid markdown heading (e.g., "## Related").`);
       }
     }
+    const range = findSection(content, section);
 
     const insertText = added.join("\n") + "\n";
     content = content.slice(0, range.sectionEnd) + insertText + content.slice(range.sectionEnd);

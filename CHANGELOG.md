@@ -15,6 +15,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **`obsidian-pkm doctor`** reads `VAULT_PATH` and the OpenAI key from the `env` block of `~/.claude/settings.json` when the shell environment lacks them, and says which source each value came from (the resolved key variable name is reported). It warns when the environment and `settings.json` hold different values (naming both sources, never the values), and never echoes `settings.json` content when the file fails to parse.
 
 ### Changed
+- **Heading lookups are exact and unambiguous.** `vault_read` `heading`, `vault_append` `heading` and `vault_add_links` `section` match `## Foo` by level and text, or `Foo` by text at any level. Prefixes no longer match (`## 2026-10` does not find `## 2026-10-08`). A heading that appears more than once now returns an error listing each match's line number instead of silently using the first. Headings inside fenced code blocks are ignored.
+- **Every `vault_read` mode is capped** (heading, tail, tail_sections, lines; a chunk is already within the cap) at ~80k characters (~400k with `force`). Output is cut at a line boundary and ends with `[truncated: lines a–b of N; continue with lines: {start: b+1}]`.
+- **`vault_peek` outlines show at most 50 headings**, and "Heading not found" errors list at most 30.
 - **`vault_write` normalises the new note's frontmatter formatting** (block lists, `null` for empty fields), and keys are validated for every value type. A template whose frontmatter isn't valid YAML is now rejected with the parse error.
 - **YAML frontmatter is parsed with `yaml` (YAML 1.2 core schema) instead of `js-yaml`.** Dates stay strings as before. A read-only comparison across a large real-world vault found no parsing differences. Edge cases that now parse differently: binary-looking values such as `0b101` stay strings, frontmatter that is a bare scalar or list is treated as absent, and only a line that is exactly `---` closes frontmatter.
 - **Capture fires on pull request creation, not on commits.** The PreToolUse `git commit` reminder (`hooks/pre-commit-reminder.sh`) is replaced by `hooks/capture-reminder.js`, a dependency-free PostToolUse hook. It fires only after a real `gh pr create` whose output contains the PR URL, so mentions like `grep "gh pr create"` no longer trigger it, and it passes the PR URL, `transcript_path` and `session_id` to `pkm-capture`.
@@ -25,6 +28,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Projects set up earlier with `/vault-pkm:init-project` keep the old "after git commits" capture wording in their own `CLAUDE.md`; edit it by hand to say capture happens when a pull request is created.
 
 ### Fixed
+- **`vault_read` with `heading: "2026-10-08"` finds `## 2026-10-08`.** A heading query without `#`s used to fail.
+- **Frontmatter, heading and code-block detection share one parser (`markdown.js`).** CRLF notes, `~~~` fences and unclosed fences are now handled the same way in reads, peeks, inline tags and semantic chunking.
 - **`vault_write` builds the new note's frontmatter as YAML**, so values containing `: `, `#`, quotes or newlines produce valid frontmatter. Before, `topic: "Review fixes: ..."` failed with "No frontmatter found". Template variables are substituted literally, so `$$E=mc^2$$` and `$'` are no longer mangled. Placeholders inside template frontmatter values are substituted without breaking YAML quoting.
 - **`vault_write` keeps non-string frontmatter fields** (numbers, booleans, lists) instead of silently dropping them. Tags lose a leading `#`.
 - **Template date tokens use local time** instead of UTC.

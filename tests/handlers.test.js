@@ -5,6 +5,7 @@ import path from "path";
 import os from "os";
 import { createHandlers } from "../handlers.js";
 import { ActivityLog } from "../activity.js";
+import { AUTO_REDIRECT_THRESHOLD } from "../helpers.js";
 
 let tmpDir;
 let handlers;
@@ -3139,5 +3140,100 @@ describe("vault_write with variables param", () => {
     assert.ok(content.includes("These are the details"), "details variable should be substituted");
     assert.ok(!content.includes("<% summary %>"), "template placeholder should be gone");
     assert.ok(!content.includes("<% details %>"), "template placeholder should be gone");
+  });
+});
+
+// ─── markdown.js adoption: heading lookup and read cap ───────────────
+
+describe("heading lookup and vault_read output cap", () => {
+  let dir;
+  let h;
+  const FRONTMATTER = "---\ntype: devlog\ncreated: 2026-01-01\ntags:\n  - dev\n---\n";
+  const longLines = Array.from({ length: 3000 }, (_, i) => `Line ${String(i + 1).padStart(4, "0")}: ${"x".repeat(40)}`);
+  // Lines 1-6 frontmatter, 7 "# Big", 8 "", 9 "## Long", 10-3009 long lines, 3010 "## After", 3011 "", 3012 "Tail.", 3013 ""
+  const BIG = FRONTMATTER + "# Big\n\n## Long\n" + longLines.join("\n") + "\n## After\n\nTail.\n";
+  const bigLines = BIG.split("\n");
+  const DUPES = "---\ntype: note\ncreated: 2026-01-01\ntags: [t]\n---\n# Dupes\n## Notes\na\n## Other\n## Notes\nb\n## Related\n- [[x]]\n## Related\n";
+  const MARKER = /\[truncated: lines (\d+)–(\d+) of (\d+); continue with lines: \{start: (\d+)\}\]$/;
+
+  before(async () => {
+    dir = await fs.mkdtemp(path.join(os.tmpdir(), "heading-cap-"));
+    await fs.writeFile(path.join(dir, "big.md"), BIG);
+    await fs.writeFile(path.join(dir, "dupes.md"), DUPES);
+    await fs.writeFile(path.join(dir, "target.md"), "---\ntype: note\ncreated: 2026-01-01\ntags: [t]\n---\n# Target\n");
+    h = await createHandlers({ vaultPath: dir, templateRegistry: new Map(), semanticIndex: null, activityLog: null, sessionId: "heading-cap" });
+  });
+
+  after(async () => {
+    await fs.rm(dir, { recursive: true });
+  });
+
+  for (const [mode, args, prefix, firstLine] of [
+    ["heading", { heading: "## Long" }, "", 9],
+    ["tail", { tail: 3004 }, FRONTMATTER, 10],
+    ["tail_sections", { tail_sections: 2 }, FRONTMATTER, 9],
+    ["lines", { lines: { start: 9, end: 3013 } }, "[Lines 9-3013 of 3013]\n\n", 9],
+  ]) {
+    it(`caps ${mode} output at the 80k cap on a line boundary and says where to continue`, async () => {
+      const text = (await h.get("vault_read")({ path: "big.md", ...args })).content[0].text;
+      assert.ok(text.startsWith(prefix), "mode prefix kept");
+      const m = text.match(MARKER);
+      assert.ok(m, "truncation marker present");
+      const [a, b, total, next] = m.slice(1).map(Number);
+      assert.deepEqual([a, total, next], [firstLine, bigLines.length, b + 1]);
+      const kept = text.slice(prefix.length, m.index);
+      assert.equal(kept, bigLines.slice(a - 1, b).join("\n") + "\n", "kept text is exactly file lines a..b");
+      assert.ok(kept.length <= AUTO_REDIRECT_THRESHOLD, "within the cap");
+      assert.ok(kept.length + bigLines[b].length + 1 > AUTO_REDIRECT_THRESHOLD, "as many whole lines as fit");
+    });
+  }
+
+  it("returns a chunk whole (a chunk is never larger than the cap)", async () => {
+    const text = (await h.get("vault_read")({ path: "big.md", chunk: 1 })).content[0].text;
+    assert.equal(text, `[Chunk 1 of 2, chars 1-80000 of ${BIG.length}]\n\n` + BIG.slice(0, 80_000));
+  });
+
+  it("with force, an explicit mode is capped at the 400k hard cap instead of 80k", async () => {
+    const text = (await h.get("vault_read")({ path: "big.md", heading: "## Long", force: true })).content[0].text;
+    assert.equal(text, BIG.slice(BIG.indexOf("## Long"), BIG.indexOf("## After")));
+  });
+
+  for (const [tool, call, message] of [
+    ["vault_read heading", (hs) => hs.get("vault_read")({ path: "dupes.md", heading: "## Notes" }), "line 7: ## Notes\n  line 10: ## Notes"],
+    ["vault_append with position", (hs) => hs.get("vault_append")({ path: "dupes.md", heading: "Notes", position: "end_of_section", content: "x" }), "line 7: ## Notes\n  line 10: ## Notes"],
+    ["vault_append without position", (hs) => hs.get("vault_append")({ path: "dupes.md", heading: "## Notes", content: "x" }), "line 7: ## Notes\n  line 10: ## Notes"],
+    ["vault_add_links", (hs) => hs.get("vault_add_links")({ path: "dupes.md", links: [{ target: "target.md" }] }), "line 12: ## Related\n  line 14: ## Related"],
+  ]) {
+    it(`${tool} rejects a duplicated heading with line numbers and leaves the note unchanged`, async () => {
+      await assert.rejects(() => call(h), (err) => {
+        assert.match(err.message, /is ambiguous \(2 matches\)/);
+        assert.ok(err.message.includes(message));
+        return true;
+      });
+      assert.equal(await fs.readFile(path.join(dir, "dupes.md"), "utf-8"), DUPES);
+    });
+  }
+
+  it("vault_read heading matches a heading given without #s", async () => {
+    const text = (await h.get("vault_read")({ path: "big.md", heading: "After" })).content[0].text;
+    assert.equal(text, "## After\n\nTail.\n");
+  });
+
+  it("vault_append inserts after a heading given without #s", async () => {
+    await fs.writeFile(path.join(dir, "append-text.md"), "# T\n## Notes\nold\n");
+    await h.get("vault_append")({ path: "append-text.md", heading: "Notes", content: "Inserted" });
+    assert.equal(await fs.readFile(path.join(dir, "append-text.md"), "utf-8"), "# T\n## Notes\nInserted\nold\n");
+  });
+
+  it("vault_add_links uses an existing section named without #s instead of creating one", async () => {
+    await fs.writeFile(path.join(dir, "links-text.md"), "# L\n\n## Related\n- [[x]]\n\n## Later\n");
+    await h.get("vault_add_links")({ path: "links-text.md", links: [{ target: "target.md" }], section: "Related" });
+    assert.equal(await fs.readFile(path.join(dir, "links-text.md"), "utf-8"), "# L\n\n## Related\n- [[x]]\n\n- [[target]]\n## Later\n");
+  });
+
+  it("vault_append without position still appends at the end when the heading is missing", async () => {
+    await fs.writeFile(path.join(dir, "append-missing.md"), "# T\nbody\n");
+    await h.get("vault_append")({ path: "append-missing.md", heading: "## Missing", content: "End" });
+    assert.equal(await fs.readFile(path.join(dir, "append-missing.md"), "utf-8"), "# T\nbody\n\nEnd");
   });
 });

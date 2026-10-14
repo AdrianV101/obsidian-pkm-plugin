@@ -17,12 +17,12 @@ export function createToolsList(templateDescriptions, templateNames, hasSemantic
   const tools = [
     {
       name: "vault_read",
-      description: "Read the contents of a markdown file from the vault. Supports pagination: read a single section by heading, last N lines, last N heading-level sections, chunk number, or line range. Files exceeding ~80k characters auto-redirect to peek data (file structure/outline) unless a pagination param or force=true is specified." + LINK_FORMAT_NOTE,
+      description: "Read the contents of a markdown file from the vault. Supports pagination: read a single section by heading, last N lines, last N heading-level sections, chunk number, or line range. Files exceeding ~80k characters auto-redirect to peek data (file structure/outline) unless a pagination param or force=true is specified. Every pagination mode's output is capped at ~80k characters (~400k with force), cut at a line boundary with a note naming the next 'lines' range to read." + LINK_FORMAT_NOTE,
       inputSchema: {
         type: "object",
         properties: {
           path: { type: "string", description: "Path relative to vault root (supports short names, e.g. 'devlog')" },
-          heading: { type: "string", description: "Read only the section under this heading (exact match, case-sensitive). Returns heading line + content until next same-or-higher-level heading." },
+          heading: { type: "string", description: "Read only the section under this heading. '## Foo' matches level and text; 'Foo' matches the text at any level (exact, case-sensitive, no prefix matching). Errors if the heading is missing or appears more than once. Returns heading line + content until next same-or-higher-level heading." },
           tail: { type: "number", description: "Return the last N lines of the file. Frontmatter is always prepended." },
           tail_sections: { type: "number", description: "Return the last N sections at the specified heading level. Frontmatter is always prepended." },
           section_level: { type: "number", description: "Heading level for tail_sections (1=`#`, 2=`##`, etc). Default: 2.", default: 2 },
@@ -106,7 +106,7 @@ Pass custom <%...%> variables via the 'variables' parameter.` + LINK_FORMAT_NOTE
         properties: {
           path: { type: "string", description: "Path relative to vault root" },
           content: { type: "string", description: "Content to append" },
-          heading: { type: "string", description: "Optional: append under this heading (e.g., '## Notes')" },
+          heading: { type: "string", description: "Optional: append under this heading (e.g., '## Notes', or 'Notes' to match any level). Errors if the heading appears more than once; without 'position', a missing heading appends at the end of the file." },
           position: { type: "string", enum: ["after_heading", "before_heading", "end_of_section"], description: "Where to insert relative to heading. after_heading: right after the heading line. before_heading: right before the heading line. end_of_section: at the end of the section (before the next same-or-higher-level heading, or EOF). Requires heading." }
         },
         required: ["path", "content"]

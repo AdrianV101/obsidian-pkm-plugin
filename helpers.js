@@ -8,7 +8,7 @@ import {
   renderFrontmatter,
   validateFieldEnum,
 } from "./frontmatter.js";
-import { splitFrontmatter } from "./markdown.js";
+import { maskCode, parseHeadings, sectionRange, splitFrontmatter } from "./markdown.js";
 
 export { updateFrontmatter, validateFieldEnum } from "./frontmatter.js";
 
@@ -16,6 +16,7 @@ export { updateFrontmatter, validateFieldEnum } from "./frontmatter.js";
 export const AUTO_REDIRECT_THRESHOLD = 80_000;  // ~20k tokens
 export const FORCE_HARD_CAP = 400_000;           // ~100k tokens
 export const CHUNK_SIZE = 80_000;                 // chars per chunk
+const MAX_OUTLINE_HEADINGS = 50;
 
 const PRIORITY_RANKS = { urgent: 3, high: 2, normal: 1, low: 0 };
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
@@ -382,18 +383,8 @@ export function validateFrontmatterStrict(content) {
  * @returns {string[]} lowercase tag names
  */
 export function extractInlineTags(content) {
-  let body = content;
-
-  if (content.startsWith("---")) {
-    const endIndex = content.indexOf("\n---", 3);
-    if (endIndex !== -1) {
-      body = content.slice(endIndex + 4);
-    }
-  }
-
-  body = body.replace(/```[\s\S]*?```/g, "");
-  body = body.replace(/`[^`]+`/g, "");
-  body = body.replace(/^#+\s/gm, "");
+  const { bodyOffset } = splitFrontmatter(content);
+  const body = maskCode(content).slice(bodyOffset).replace(/^#+\s/gm, "");
 
   const tags = new Set();
   const tagRegex = /(?:^|[^a-zA-Z0-9&])#([a-zA-Z_][a-zA-Z0-9_/-]*)/g;
@@ -406,118 +397,37 @@ export function extractInlineTags(content) {
 }
 
 /**
- * Extract the heading level (1-6) from a markdown heading line, or 0 if not a heading.
- *
- * @param {string} line - a single line of text
- * @returns {number} heading level 1-6, or 0
- */
-export function parseHeadingLevel(line) {
-  const match = line.match(/^(#{1,6})\s/);
-  return match ? match[1].length : 0;
-}
-
-/**
- * Find the byte-index range of a section under a given heading.
+ * Locate the last `n` sections at heading `level` (headings in fenced code don't count).
  *
  * @param {string} content - full file content
- * @param {string} heading - exact heading line to find (e.g. "## Section One")
- * @returns {{ headingStart: number, afterHeading: number, sectionEnd: number } | null}
- */
-export function findSectionRange(content, heading) {
-  let headingStart = -1;
-  let searchFrom = 0;
-  while (searchFrom < content.length) {
-    const idx = content.indexOf(heading, searchFrom);
-    if (idx === -1) break;
-    // Only match at line boundaries: start of string or preceded by \n
-    if (idx === 0 || content[idx - 1] === "\n") {
-      headingStart = idx;
-      break;
-    }
-    searchFrom = idx + 1;
-  }
-  if (headingStart === -1) return null;
-
-  const headingLineEnd = content.indexOf("\n", headingStart);
-  const afterHeading = headingLineEnd === -1 ? content.length : headingLineEnd + 1;
-
-  const level = parseHeadingLevel(heading);
-  let sectionEnd = content.length;
-
-  if (level > 0) {
-    const lines = content.slice(afterHeading).split("\n");
-    let offset = afterHeading;
-    for (const line of lines) {
-      const lineLevel = parseHeadingLevel(line);
-      if (lineLevel > 0 && lineLevel <= level) {
-        sectionEnd = offset;
-        break;
-      }
-      offset += line.length + 1;
-    }
-  }
-
-  return { headingStart, afterHeading, sectionEnd };
-}
-
-/**
- * Return all heading lines from markdown content, excluding those inside frontmatter.
- *
- * @param {string} content - full markdown content
- * @returns {string[]} heading lines
- */
-export function listHeadings(content) {
-  let body = content;
-  if (content.startsWith("---")) {
-    const endIndex = content.indexOf("\n---", 3);
-    if (endIndex !== -1) {
-      body = content.slice(endIndex + 4);
-    }
-  }
-
-  return body.split("\n").filter(line => /^#{1,6}\s/.test(line));
-}
-
-/**
- * Extract frontmatter + last N sections at a given heading level.
- *
- * @param {string} content - full file content
- * @param {number} n - number of sections to return
+ * @param {number} n - number of sections
  * @param {number} level - heading level (1-6)
- * @returns {string} frontmatter + last N sections
+ * @returns {{ frontmatter: string, start: number, line: number }} the frontmatter block to
+ *   prepend, and the offset and 1-based line where the tail begins. With no heading at that
+ *   level the tail is the whole content and there is no separate frontmatter block.
  */
-export function extractTailSections(content, n, level) {
-  // Extract frontmatter
-  let frontmatter = "";
-  let body = content;
-  if (content.startsWith("---")) {
-    const endIndex = content.indexOf("\n---", 3);
-    if (endIndex !== -1) {
-      frontmatter = content.slice(0, endIndex + 4);
-      body = content.slice(endIndex + 4);
-    }
-  }
+export function findTailSections(content, n, level) {
+  const atLevel = parseHeadings(content).filter(h => h.level === level);
+  if (atLevel.length === 0) return { frontmatter: "", start: 0, line: 1 };
+  const first = atLevel[Math.max(0, atLevel.length - n)];
+  return { frontmatter: content.slice(0, splitFrontmatter(content).bodyOffset), start: first.offset, line: first.line };
+}
 
-  // Find all headings at exactly the given level
-  const lines = body.split("\n");
-  const headingPositions = [];
-  let offset = 0;
-  for (const line of lines) {
-    if (parseHeadingLevel(line) === level) {
-      headingPositions.push(offset);
-    }
-    offset += line.length + 1;
-  }
-
-  if (headingPositions.length === 0) {
-    return content;
-  }
-
-  const startIdx = Math.max(0, headingPositions.length - n);
-  const sliceStart = headingPositions[startIdx];
-  const tail = body.slice(sliceStart);
-
-  return frontmatter + (frontmatter && !frontmatter.endsWith("\n") ? "\n" : "") + tail;
+/**
+ * Cap a vault_read selection at `cap` chars, keeping whole lines.
+ *
+ * @param {string} text - the selection; its first line is file line `firstLine`
+ * @param {{ firstLine: number, totalLines: number, cap: number }} position
+ * @returns {string} `text` when it fits; otherwise the lines that fit plus a marker
+ *   telling the caller which `lines` range to read next
+ */
+export function capReadOutput(text, { firstLine, totalLines, cap }) {
+  if (text.length <= cap) return text;
+  let kept = text.slice(0, text.lastIndexOf("\n", cap - 1) + 1);
+  // A single line longer than the cap is cut mid-line; reading continues at the next line.
+  if (kept === "") kept = text.slice(0, cap) + "\n";
+  const lastLine = firstLine + kept.split("\n").length - 2;
+  return `${kept}[truncated: lines ${firstLine}–${lastLine} of ${totalLines}; continue with lines: {start: ${lastLine + 1}}]`;
 }
 
 /**
@@ -684,47 +594,21 @@ export function resolveFuzzyFolder(folder, allFiles) {
  */
 export function computePeek(content, relativePath) {
   const sizeChars = content.length;
-  const lines = content.split("\n");
-  const sizeLines = lines.length;
+  const sizeLines = content.split("\n").length;
   const frontmatter = extractFrontmatter(content);
   const totalChunks = sizeChars === 0 ? 0 : Math.ceil(sizeChars / CHUNK_SIZE);
 
-  // Determine where frontmatter ends (line index)
-  let bodyStartLine = 0;
-  if (content.startsWith("---")) {
-    for (let i = 1; i < lines.length; i++) {
-      if (lines[i] === "---") {
-        bodyStartLine = i + 1;
-        break;
-      }
-    }
-  }
+  const parsed = parseHeadings(content);
+  const headings = parsed.map(h => {
+    const range = sectionRange(content, parsed, h);
+    return { heading: h.raw, level: h.level, lineNumber: h.line, charCount: range.sectionEnd - range.headingStart };
+  });
 
-  // Build heading outline with line numbers and char counts
-  const headings = [];
-  for (let i = bodyStartLine; i < lines.length; i++) {
-    const level = parseHeadingLevel(lines[i]);
-    if (level > 0) {
-      headings.push({ heading: lines[i], level, lineNumber: i + 1, charCount: 0 });
-    }
-  }
-
-  // Compute charCount for each heading: chars from this heading to next same-or-higher-level heading (or EOF)
-  for (let h = 0; h < headings.length; h++) {
-    const startLine = headings[h].lineNumber - 1; // 0-indexed
-    let endLine = lines.length;
-    for (let next = h + 1; next < headings.length; next++) {
-      if (headings[next].level <= headings[h].level) {
-        endLine = headings[next].lineNumber - 1;
-        break;
-      }
-    }
-    headings[h].charCount = lines.slice(startLine, endLine).join("\n").length;
-  }
-
-  // Preview: first ~10 non-empty lines after frontmatter, truncated to 200 chars each
-  const bodyLines = lines.slice(bodyStartLine);
-  const previewLines = bodyLines.filter(l => l.trim() !== "").slice(0, 10)
+  // Preview: first ~10 non-empty body lines, truncated to 200 chars each
+  const previewLines = splitFrontmatter(content).body.split("\n")
+    .map(l => l.replace(/\r$/, ""))
+    .filter(l => l.trim() !== "")
+    .slice(0, 10)
     .map(l => l.length > 200 ? l.slice(0, 200) + "..." : l);
   const preview = previewLines.join("\n");
 
@@ -758,10 +642,13 @@ export function formatPeek(peekData, { redirected = false, formatPath } = {}) {
   if (headings.length > 0) {
     parts.push("");
     parts.push("### Heading Outline");
-    for (const h of headings) {
+    for (const h of headings.slice(0, MAX_OUTLINE_HEADINGS)) {
       const indent = "  ".repeat(h.level - 1);
       const title = h.heading.replace(/^#+\s*/, "");
       parts.push(`${indent}${title} [${h.charCount} chars]`);
+    }
+    if (headings.length > MAX_OUTLINE_HEADINGS) {
+      parts.push(`… +${headings.length - MAX_OUTLINE_HEADINGS} more`);
     }
   }
 

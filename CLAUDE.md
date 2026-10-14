@@ -46,7 +46,7 @@ npm run typecheck
 The project consists of three parts:
 
 **MCP Server**: A Node.js ES module server implementing the Model Context Protocol. The main entry point is `index.js` (server setup and request routing); tool definitions live in `tools.js`, handlers in `handlers.js`, and pure helper functions in `helpers.js`. It provides 20 tools for vault interaction:
-- `vault_read` - Read note contents (supports pagination: `heading`, `tail`, `tail_sections` [with optional `section_level` param, default: 2], `chunk`, `lines`; auto-redirects to peek data for files >80k chars; `force` bypasses redirect)
+- `vault_read` - Read note contents (supports pagination: `heading`, `tail`, `tail_sections` [with optional `section_level` param, default: 2], `chunk`, `lines`; auto-redirects to peek data for files >80k chars; `force` bypasses redirect; `heading` matches `## Foo` (level + text) or `Foo` (text at any level) and errors on duplicates; every mode's output is capped at 80k chars (400k with `force`) with a `[truncated: …; continue with lines: {start: N}]` marker)
 - `vault_peek` - Inspect file metadata/structure without reading full content (size, frontmatter, indented heading tree, preview)
 - `vault_write` - Create new notes from templates (enforces frontmatter; settable fields: `status`, `priority`, `project`, `deciders`, `due`, `source`; `variables` param for custom `<%...%>` substitution in template body)
 - `vault_append` - Add content to existing files, with optional positional insert (after/before heading, end of section)

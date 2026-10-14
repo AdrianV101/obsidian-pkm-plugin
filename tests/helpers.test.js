@@ -13,10 +13,8 @@ import {
   validateFrontmatterStrict,
   extractInlineTags,
   matchesTagPattern,
-  parseHeadingLevel,
-  findSectionRange,
-  listHeadings,
-  extractTailSections,
+  findTailSections,
+  capReadOutput,
   buildBasenameMap,
   resolveFuzzyPath,
   resolveFuzzyFolder,
@@ -589,6 +587,15 @@ describe("extractInlineTags", () => {
     assert.equal(tags.length, 0);
   });
 
+  for (const [name, content] of [
+    ["~~~ fence", "---\ntype: note\n---\n~~~\n#not-a-tag\n~~~\n#real-tag"],
+    ["unclosed ``` fence", "---\ntype: note\n---\n#real-tag\n```\n#not-a-tag\n"],
+  ]) {
+    it(`ignores tags inside fenced code: ${name}`, () => {
+      assert.deepEqual(extractInlineTags(content), ["real-tag"]);
+    });
+  }
+
   it("does not extract tags from frontmatter with --- mid-line in value", () => {
     // Frontmatter with --- mid-line should be properly excluded from inline tag extraction
     const content = "---\ntype: note\ntags:\n  - frontmatter-tag\ndescription: This --- has #fake-tag\n---\n\n#real-tag in body";
@@ -639,144 +646,12 @@ describe("matchesTagPattern", () => {
   });
 });
 
-describe("parseHeadingLevel", () => {
-  it("parses h1 through h6", () => {
-    assert.equal(parseHeadingLevel("# Title"), 1);
-    assert.equal(parseHeadingLevel("## Section"), 2);
-    assert.equal(parseHeadingLevel("### Sub"), 3);
-    assert.equal(parseHeadingLevel("#### Deep"), 4);
-    assert.equal(parseHeadingLevel("##### Deeper"), 5);
-    assert.equal(parseHeadingLevel("###### Deepest"), 6);
-  });
-
-  it("returns 0 for non-headings", () => {
-    assert.equal(parseHeadingLevel("not a heading"), 0);
-    assert.equal(parseHeadingLevel(""), 0);
-    assert.equal(parseHeadingLevel("#no-space"), 0);
-    assert.equal(parseHeadingLevel("####### seven hashes"), 0);
-  });
-});
-
-describe("findSectionRange", () => {
-  const doc = `---
-type: note
----
-# Title
-
-Intro text.
-
-## Section One
-
-Content one.
-
-## Section Two
-
-Content two.
-
-### Nested
-
-Nested content.
-`;
-
-  it("finds a section with correct boundaries", () => {
-    const range = findSectionRange(doc, "## Section One");
-    assert.ok(range);
-    const section = doc.slice(range.afterHeading, range.sectionEnd);
-    assert.ok(section.includes("Content one."));
-    assert.ok(!section.includes("Content two."));
-  });
-
-  it("handles nested headings within a section", () => {
-    const range = findSectionRange(doc, "## Section Two");
-    assert.ok(range);
-    const section = doc.slice(range.afterHeading, range.sectionEnd);
-    assert.ok(section.includes("Content two."));
-    assert.ok(section.includes("### Nested"));
-    assert.ok(section.includes("Nested content."));
-  });
-
-  it("returns null for heading not found", () => {
-    assert.equal(findSectionRange(doc, "## Nonexistent"), null);
-  });
-
-  it("section extends to EOF when it is the last section at its level", () => {
-    const range = findSectionRange(doc, "## Section Two");
-    assert.ok(range);
-    assert.equal(range.sectionEnd, doc.length);
-  });
-
-  it("includes heading line in headingStart..afterHeading span", () => {
-    const range = findSectionRange(doc, "## Section One");
-    assert.ok(range);
-    const headingLine = doc.slice(range.headingStart, range.afterHeading);
-    assert.ok(headingLine.startsWith("## Section One"));
-  });
-
-  it("does NOT match heading text embedded in a paragraph", () => {
-    const content = "# Title\n\nThis paragraph mentions ## Section One inline.\n\n## Section One\n\nReal content.\n";
-    const range = findSectionRange(content, "## Section One");
-    assert.ok(range, "Should find the real heading");
-    // headingStart must be at the line-start occurrence, not the inline one
-    const before = content.slice(0, range.headingStart);
-    assert.ok(before.includes("inline"), "The inline mention should be before the matched heading");
-    const section = content.slice(range.afterHeading, range.sectionEnd);
-    assert.ok(section.includes("Real content."));
-  });
-
-  it("does NOT match heading text mid-line (e.g. in inline content)", () => {
-    // The heading text appears mid-line, not at line start
-    const content = "# Title\n\nSee also: ## Section One is referenced here.\n\n## Section One\n\nReal content.\n";
-    const range = findSectionRange(content, "## Section One");
-    assert.ok(range, "Should find the line-anchored heading");
-    const section = content.slice(range.afterHeading, range.sectionEnd);
-    assert.ok(section.includes("Real content."));
-    // Ensure it did NOT match the mid-line occurrence
-    assert.ok(range.headingStart > content.indexOf("See also:"), "Should skip the mid-line match");
-  });
-
-  it("matches heading at the very start of the string", () => {
-    const content = "## Section One\n\nContent here.\n";
-    const range = findSectionRange(content, "## Section One");
-    assert.ok(range, "Should find heading at start of string");
-    assert.equal(range.headingStart, 0);
-  });
-});
-
-describe("listHeadings", () => {
-  it("lists all headings excluding frontmatter", () => {
-    const content = `---
-type: note
----
-# Title
-
-## Section One
-
-### Sub
-
-## Section Two
-`;
-    const headings = listHeadings(content);
-    assert.deepEqual(headings, ["# Title", "## Section One", "### Sub", "## Section Two"]);
-  });
-
-  it("returns empty array for no headings", () => {
-    const content = "Just plain text\nwith no headings.\n";
-    assert.deepEqual(listHeadings(content), []);
-  });
-
-  it("excludes headings inside frontmatter", () => {
-    const content = `---
-# Not a heading
-type: note
----
-## Real Heading
-`;
-    const headings = listHeadings(content);
-    assert.deepEqual(headings, ["## Real Heading"]);
-  });
-});
-
-describe("extractTailSections", () => {
+describe("findTailSections", () => {
+  // Assemble the text vault_read returns, so the original assertions still apply
+  const extractTailSections = (content, n, level) => {
+    const { frontmatter, start } = findTailSections(content, n, level);
+    return frontmatter + content.slice(start);
+  };
   const doc = `---
 type: devlog
 created: 2026-01-01
@@ -836,6 +711,32 @@ Entry three.
     const result = extractTailSections(noFm, 1, 2);
     assert.ok(result.includes("## B"));
     assert.ok(!result.includes("## A"));
+  });
+
+  it("does not count headings inside fenced code and reports the tail's first line", () => {
+    const content = "---\ntype: devlog\n---\n## A\n```\n## not a section\n```\n## B\nb\n";
+    assert.deepEqual(findTailSections(content, 2, 2), { frontmatter: "---\ntype: devlog\n---\n", start: 21, line: 4 });
+  });
+});
+
+describe("capReadOutput", () => {
+  it("returns the text unchanged when it fits the cap", () => {
+    assert.equal(capReadOutput("a\nbb\n", { firstLine: 1, totalLines: 3, cap: 5 }), "a\nbb\n");
+  });
+
+  it("keeps the whole lines that fit and names the next line to read", () => {
+    const text = "line1\nline2\nline3\nline4\n";
+    assert.equal(
+      capReadOutput(text, { firstLine: 10, totalLines: 40, cap: 14 }),
+      "line1\nline2\n[truncated: lines 10–11 of 40; continue with lines: {start: 12}]"
+    );
+  });
+
+  it("cuts a single line longer than the cap mid-line and continues at the next line", () => {
+    assert.equal(
+      capReadOutput("abcdefghij\nk\n", { firstLine: 3, totalLines: 9, cap: 4 }),
+      "abcd\n[truncated: lines 3–3 of 9; continue with lines: {start: 4}]"
+    );
   });
 });
 
@@ -1079,6 +980,15 @@ describe("computePeek", () => {
     assert.ok(result.frontmatter !== null);
     assert.equal(result.preview, "");
   });
+
+  for (const [name, content, expected] of [
+    ["headings inside fenced code are not in the outline", "# T\n```\n## code\n```\n## Real\n", [["# T", 1], ["## Real", 5]]],
+    ["CRLF frontmatter and headings", "---\r\n# yaml comment\r\ntype: x\r\n---\r\n# T\r\n## A\r\n", [["# T", 5], ["## A", 6]]],
+  ]) {
+    it(`builds the outline with markdown.js parsing: ${name}`, () => {
+      assert.deepEqual(computePeek(content, "t.md").headings.map(h => [h.heading, h.lineNumber]), expected);
+    });
+  }
 });
 
 describe("formatPeek", () => {
@@ -1145,6 +1055,14 @@ describe("formatPeek", () => {
     const data = { ...basePeekData, headings: [] };
     const text = formatPeek(data);
     assert.ok(text.includes("notes/big.md"));
+  });
+
+  it("caps the heading outline at 50 entries with a +N more line", () => {
+    const headings = Array.from({ length: 57 }, (_, i) => ({ heading: `## H${i + 1}`, level: 2, lineNumber: i + 1, charCount: 10 }));
+    const text = formatPeek({ ...basePeekData, headings, preview: "" });
+    assert.ok(text.includes("  H50 [10 chars]"));
+    assert.ok(!text.includes("H51 ["));
+    assert.ok(text.includes("… +7 more"));
   });
 });
 
