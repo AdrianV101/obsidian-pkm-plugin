@@ -15,6 +15,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **`obsidian-pkm doctor`** reads `VAULT_PATH` and the OpenAI key from the `env` block of `~/.claude/settings.json` when the shell environment lacks them, and says which source each value came from (the resolved key variable name is reported). It warns when the environment and `settings.json` hold different values (naming both sources, never the values), and never echoes `settings.json` content when the file fails to parse.
 
 ### Changed
+- `vault_trash` refuses folders; trash the notes inside one by one. `vault_move` still moves folders, but not into or out of dot-folders and never the vault root.
 - **Heading lookups are exact and unambiguous.** `vault_read` `heading`, `vault_append` `heading` and `vault_add_links` `section` match `## Foo` by level and text, or `Foo` by text at any level. Prefixes no longer match (`## 2026-10` does not find `## 2026-10-08`). A heading that appears more than once now returns an error listing each match's line number instead of silently using the first. Headings inside fenced code blocks are ignored.
 - **Every `vault_read` mode is capped** (heading, tail, tail_sections, lines; a chunk is already within the cap) at ~80k characters (~400k with `force`). Output is cut at a line boundary and ends with `[truncated: lines a–b of N; continue with lines: {start: b+1}]`.
 - **`vault_peek` outlines show at most 50 headings**, and "Heading not found" errors list at most 30.
@@ -28,6 +29,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Projects set up earlier with `/vault-pkm:init-project` keep the old "after git commits" capture wording in their own `CLAUDE.md`; edit it by hand to say capture happens when a pull request is created.
 
 ### Fixed
+- A `VAULT_PATH` with a trailing slash no longer makes every path look like it escapes the vault (server and session-start hook).
 - **`vault_read` with `heading: "2026-10-08"` finds `## 2026-10-08`.** A heading query without `#`s used to fail.
 - **Frontmatter, heading and code-block detection share one parser (`markdown.js`).** CRLF notes, `~~~` fences and unclosed fences are now handled the same way in reads, peeks, inline tags and semantic chunking.
 - **`vault_write` builds the new note's frontmatter as YAML**, so values containing `: `, `#`, quotes or newlines produce valid frontmatter. Before, `topic: "Review fixes: ..."` failed with "No frontmatter found". Template variables are substituted literally, so `$$E=mc^2$$` and `$'` are no longer mangled. Placeholders inside template frontmatter values are substituted without breaking YAML quoting.
@@ -39,6 +41,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Docs: removed the hard-coded test-count badge; corrected the Node EOL, prebuilt-binary and Obsidian Sync claims; fixed the README project structure (no `docs/`; adds `tools.js`, `doctor.js`, the hooks), the broken troubleshooting anchor, and the claim that `plugin.json` holds permissions; CONTRIBUTING now points tool definitions at `tools.js` and documents the `next` branching policy.
 
 ### Security
+- Every tool now resolves paths through their real location: a symlink inside the vault that points outside it can no longer be read or written through (`vault-fs.js` `resolveSafe`).
+- Write tools (`vault_write`, `vault_append`, `vault_edit`, `vault_update_frontmatter`, `vault_add_links`, `vault_trash`, and both paths of `vault_move`) only accept `.md` notes outside dot-folders, so `.obsidian/`, `.git/` and `.trash/` can no longer be modified through them.
 - Development/CI lockfile (`package-lock.json`, which is not published) refreshed with `npm audit fix`, clearing 1 critical (`proxy-addr`) and 5 high (`@modelcontextprotocol/sdk`, `fast-uri`, `hono`, `ip-address`, `js-yaml`) advisories in the dependency tree used for development and CI. Installed copies of the plugin resolve their own dependencies.
 
 ## [3.10.1] - 2026-05-03

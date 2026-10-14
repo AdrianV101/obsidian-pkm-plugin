@@ -6,8 +6,9 @@ import fs from "node:fs/promises";
 import path from "node:path";
 
 function assertPathWithinVault(relativePath, vaultPath) {
-  const resolved = path.resolve(vaultPath, relativePath);
-  if (resolved !== vaultPath && !resolved.startsWith(vaultPath + path.sep)) {
+  const base = path.resolve(vaultPath);
+  const resolved = path.resolve(base, relativePath);
+  if (resolved !== base && !resolved.startsWith(base + path.sep)) {
     throw new Error("Path escapes vault directory");
   }
 }

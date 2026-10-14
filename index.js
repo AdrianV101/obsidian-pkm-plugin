@@ -15,6 +15,7 @@ import { ActivityLog } from "./activity.js";
 import { loadTemplates } from "./helpers.js";
 import { createHandlers } from "./handlers.js";
 import { createToolsList } from "./tools.js";
+import { normalizeVaultRoot } from "./vault-fs.js";
 
 // Read version from package.json
 const require = createRequire(import.meta.url);
@@ -22,7 +23,7 @@ const { version: PKG_VERSION } = require("./package.json");
 
 export async function startServer() {
   // Get vault path from environment
-  const VAULT_PATH = process.env.VAULT_PATH || (os.homedir() + "/Documents/PKM");
+  const VAULT_PATH = normalizeVaultRoot(process.env.VAULT_PATH || path.join(os.homedir(), "Documents", "PKM"));
   // Vault name for obsidian:// URI links — defaults to basename of VAULT_PATH.
   // Override when the on-disk folder name differs from the registered Obsidian vault name.
   const VAULT_NAME = process.env.VAULT_PKM_VAULT_NAME || path.basename(VAULT_PATH);

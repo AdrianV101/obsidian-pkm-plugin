@@ -1,4 +1,5 @@
 import fs from "fs/promises";
+import { resolveLexical } from "./vault-fs.js";
 import path from "path";
 import {
   DANGEROUS_KEYS,
@@ -59,21 +60,7 @@ export function compareFrontmatterValues(a, b, field) {
   return aStr.localeCompare(bStr);
 }
 
-/**
- * Resolve a relative path against the vault root with directory traversal protection.
- *
- * @param {string} relativePath - path relative to vault root
- * @param {string} vaultPath - absolute vault root path
- * @returns {string} absolute resolved path
- * @throws {Error} if resolved path escapes the vault directory
- */
-export function resolvePath(relativePath, vaultPath) {
-  const resolved = path.resolve(vaultPath, relativePath);
-  if (resolved !== vaultPath && !resolved.startsWith(vaultPath + path.sep)) {
-    throw new Error("Path escapes vault directory. Paths must be relative to the vault root (e.g., '01-Projects/MyApp/_index.md').");
-  }
-  return resolved;
-}
+export { resolveLexical as resolvePath };
 
 /**
  * Check if note metadata matches a set of query filters.
@@ -222,7 +209,7 @@ export function extractTemplateDescription(content, frontmatter) {
  * @returns {Promise<Map<string, Object>>} template name -> { shortName, path, description, frontmatter, content }
  */
 export async function loadTemplates(vaultPath) {
-  const templatesDir = resolvePath("05-Templates", vaultPath);
+  const templatesDir = resolveLexical("05-Templates", vaultPath);
   const templateMap = new Map();
 
   try {
