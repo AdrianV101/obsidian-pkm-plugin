@@ -28,7 +28,7 @@
   "scripts": {
     "start": "node cli.js",
     "test": "node --test tests/*.test.js",
-    "lint": "eslint *.js tests/",
+    "lint": "eslint *.js hooks/ tests/",
     "prepublishOnly": "npm test && npm run lint"
   },
   "repository": {
