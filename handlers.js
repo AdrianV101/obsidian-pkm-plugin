@@ -131,7 +131,8 @@ function withVaultRelativeMessage(e, roots) {
     const pattern = new RegExp(`${escapeRegExp(root)}(?:[\\\\/]([^'"\\n]*))?(?=['"\\s]|$)`, "gm");
     message = message.replace(pattern, (_, rest) => (rest ? toVaultRel(rest) : "") || ".");
   }
-  e.message = message;
+  // DOMException exposes message as a prototype getter, so it is shadowed rather than assigned.
+  if (message !== e.message) Object.defineProperty(e, "message", { value: message, writable: true, configurable: true });
   return e;
 }
 

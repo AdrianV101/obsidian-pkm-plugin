@@ -206,6 +206,31 @@ describe("vault_move races and write errors", () => {
     }
   });
 
+  // DOMException's message is a prototype getter, so the path rewrite must not assign to it naively.
+  for (const [label, message, expected] of [
+    ["an abort error passes through unchanged", "This operation was aborted", "This operation was aborted"],
+    ["one naming the vault is reported vault-relative", "ROOT/notes/a.md failed", "notes/a.md failed"],
+  ]) {
+    it(`a DOMException from a tool: ${label}`, async () => {
+      const v = await makeVault({ "notes/a.md": note("A") });
+      try {
+        const thrown = new DOMException(message.replace("ROOT", v.root), "AbortError");
+        const h = await createHandlers({
+          vaultPath: v.root, templateRegistry: new Map(), activityLog: null, sessionId: "dom",
+          semanticIndex: { isAvailable: true, search: async () => { throw thrown; } },
+        });
+        await assert.rejects(h.get("vault_semantic_search")({ query: "q" }), (err) => {
+          assert.equal(err, thrown);
+          assert.equal(err.name, "AbortError");
+          assert.equal(err.message, expected);
+          return true;
+        });
+      } finally {
+        await v.cleanup();
+      }
+    });
+  }
+
   // Low-level filesystem errors name absolute paths; tools must report them vault-relative.
   const FS_ERRORS = [
     ["vault_read of an unreadable note (EACCES)", "vault_read", { path: "notes/locked.md" }, /notes\/locked\.md/, { posixOnly: true }],
