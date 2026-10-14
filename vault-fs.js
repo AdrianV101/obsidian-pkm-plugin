@@ -492,6 +492,32 @@ function sameVersion(a, b) {
   return a.mtimeMs === b.mtimeMs && a.size === b.size && a.ino === b.ino;
 }
 
+// Windows refuses to replace a file that another process (an editor, a sync client, antivirus,
+// the search indexer) has open; such handles are usually short-lived, so the rename is retried.
+const RENAME_RETRY_CODES = new Set(["EPERM", "EACCES", "EBUSY"]);
+const RENAME_RETRY_BUDGET_MS = 2000;
+const RENAME_RETRY_MAX_DELAY_MS = 500;
+
+/**
+ * Rename the staged temp file over the note unless the note changed since `statBefore`.
+ * @returns {Promise<boolean>} false when the note changed (nothing renamed)
+ */
+async function renameIfUnchanged(tmp, target, statBefore, { rename, sleep, windows }) {
+  let waited = 0;
+  for (let retry = 0; ; retry++) {
+    if (!sameVersion(statBefore, await fs.stat(target))) return false;
+    try {
+      await rename(tmp, target);
+      return true;
+    } catch (e) {
+      if (!windows || !RENAME_RETRY_CODES.has(e.code) || waited >= RENAME_RETRY_BUDGET_MS) throw e;
+      const ms = Math.min(RENAME_RETRY_MAX_DELAY_MS, 10 * 2 ** retry, RENAME_RETRY_BUDGET_MS - waited);
+      waited += ms;
+      await sleep(ms);
+    }
+  }
+}
+
 /**
  * Write the new content to a temp file beside the target with the target's permission bits,
  * and, where the filesystem allows, its creation time (renaming a new file over the note would
@@ -518,7 +544,9 @@ async function stageFile(tmp, content, before) {
  * content (up to `maxAttempts`). Writers outside the plugin take no lock, so a write landing
  * between the final check and the rename (microseconds) can still be lost. A transform result
  * identical to the input skips the write. Permission bits and (where supported) creation time
- * are kept; extended attributes and hard-link aliases are not, since the note is replaced.
+ * are kept; extended attributes and hard-link aliases are not, since the note is replaced. On
+ * Windows a rename refused because another process has the note open is retried for up to ~2 s,
+ * re-checking the note before each try.
  * @param {string} absPath
  * @param {(content: string) => string | Promise<string>} transform
  * @param {{
@@ -526,7 +554,8 @@ async function stageFile(tmp, content, before) {
  *   sleep?: (ms: number) => Promise<void>,
  *   rename?: (from: string, to: string) => Promise<void>,
  *   afterStage?: () => Promise<void> | void,
- * }} [options] `sleep`, `rename` and `afterStage` are test seams
+ *   windows?: boolean,
+ * }} [options] `sleep`, `rename`, `afterStage` and `windows` are test seams
  * @returns {Promise<{ before: string, after: string }>}
  * @throws ENOENT (as-is) when the file does not exist; EACCES when it has no write permission;
  *   ECONFLICT when it kept changing or its lock was never released
@@ -535,6 +564,8 @@ export async function mutateFile(absPath, transform, {
   maxAttempts = 3,
   rename = (from, to) => fs.rename(from, to),
   afterStage,
+  sleep = defaultSleep,
+  windows = process.platform === "win32",
   ...lockOptions
 } = {}) {
   return withNoteLock(absPath, async (target) => {
@@ -551,22 +582,23 @@ export async function mutateFile(absPath, transform, {
         return { before, after };
       }
       const tmp = tempPathFor(target);
+      let renamed;
       try {
         await stageFile(tmp, after, statBefore);
         if (afterStage) await afterStage();
-        if (!sameVersion(statBefore, await fs.stat(target))) {
-          await fs.rm(tmp, { force: true });
-          continue;
-        }
-        await rename(tmp, target);
+        renamed = await renameIfUnchanged(tmp, target, statBefore, { rename, sleep, windows });
       } catch (e) {
         await fs.rm(tmp, { force: true });
         throw e;
       }
+      if (!renamed) {
+        await fs.rm(tmp, { force: true });
+        continue;
+      }
       return { before, after };
     }
     throw conflict(`Gave up updating ${path.basename(target)} after ${maxAttempts} attempts: it kept changing on disk. Try again.`);
-  }, lockOptions);
+  }, { ...lockOptions, sleep });
 }
 
 const LINK_UNSUPPORTED = new Set(["EPERM", "ENOTSUP", "EOPNOTSUPP", "ENOSYS"]);

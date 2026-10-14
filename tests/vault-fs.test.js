@@ -662,11 +662,94 @@ describe("mutateFile staging and locking", () => {
   it("removes the staged temp and the lock when the rename fails", async () => {
     const { d, p } = await sub();
     await assert.rejects(
-      () => mutateFile(p, (c) => c + "x", { rename: async () => { throw Object.assign(new Error("denied"), { code: "EACCES" }); } }),
+      () => mutateFile(p, (c) => c + "x", { rename: async () => { throw Object.assign(new Error("denied"), { code: "EACCES" }); }, sleep: async () => {} }),
       { code: "EACCES" }
     );
     assert.equal(await fs.readFile(p, "utf-8"), "start\n");
     assert.deepEqual(await tempNames(d), []);
+  });
+
+  describe("Windows: a rename refused because another process has the note open", () => {
+    const failing = (code, times) => {
+      let calls = 0;
+      return {
+        rename: async (from, to) => {
+          if (++calls <= times) throw Object.assign(new Error(`${code}: operation not permitted, rename`), { code });
+          await fs.rename(from, to);
+        },
+        calls: () => calls,
+      };
+    };
+    const recording = () => {
+      const delays = [];
+      return { delays, sleep: async (ms) => { delays.push(ms); } };
+    };
+
+    for (const code of ["EPERM", "EACCES", "EBUSY"]) {
+      it(`is retried with a short backoff and then succeeds (${code})`, async () => {
+        const { d, p } = await sub();
+        const r = failing(code, 2);
+        const s = recording();
+        await mutateFile(p, (c) => c + "x", { windows: true, rename: r.rename, sleep: s.sleep });
+        assert.equal(await fs.readFile(p, "utf-8"), "start\nx");
+        assert.equal(r.calls(), 3);
+        assert.equal(s.delays.length, 2);
+        assert.deepEqual(await tempNames(d), []);
+      });
+    }
+
+    it("is given up after about 2 s of refusals, leaving the note unchanged and no temp file", async () => {
+      const { d, p } = await sub();
+      const r = failing("EPERM", Infinity);
+      const s = recording();
+      await assert.rejects(() => mutateFile(p, (c) => c + "x", { windows: true, rename: r.rename, sleep: s.sleep }), { code: "EPERM" });
+      assert.equal(s.delays.reduce((a, b) => a + b, 0), 2000);
+      assert.equal(await fs.readFile(p, "utf-8"), "start\n");
+      assert.deepEqual(await tempNames(d), []);
+    });
+
+    it("re-checks the note before each retry, so a change landing meanwhile is re-applied, not overwritten", async () => {
+      const { d, p } = await sub();
+      const r = failing("EPERM", 1);
+      let calls = 0;
+      await mutateFile(p, (c) => { calls++; return c + "ours\n"; }, {
+        windows: true,
+        rename: r.rename,
+        sleep: async () => { await fs.appendFile(p, "external\n"); },
+      });
+      assert.equal(calls, 2);
+      assert.equal(await fs.readFile(p, "utf-8"), "start\nexternal\nours\n");
+      assert.deepEqual(await tempNames(d), []);
+    });
+
+    it("is not retried on other platforms", async () => {
+      const { p } = await sub();
+      const r = failing("EPERM", 1);
+      const s = recording();
+      await assert.rejects(() => mutateFile(p, (c) => c + "x", { windows: false, rename: r.rename, sleep: s.sleep }), { code: "EPERM" });
+      assert.deepEqual(s.delays, []);
+      assert.equal(await fs.readFile(p, "utf-8"), "start\n");
+    });
+
+    it("succeeds once a reader that held the note open closes it", { skip: !IS_WIN && "Windows file-sharing semantics" }, async () => {
+      const { d, p } = await sub();
+      const reader = await fs.open(p, "r");
+      let closed = false;
+      try {
+        await mutateFile(p, (c) => c + "x", {
+          sleep: async () => {
+            if (!closed) {
+              closed = true;
+              await reader.close();
+            }
+          },
+        });
+      } finally {
+        if (!closed) await reader.close();
+      }
+      assert.equal(await fs.readFile(p, "utf-8"), "start\nx");
+      assert.deepEqual(await tempNames(d), []);
+    });
   });
 
   it("holds a lock file for the critical section and releases it afterwards", async () => {
