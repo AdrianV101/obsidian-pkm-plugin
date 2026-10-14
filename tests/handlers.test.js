@@ -1,10 +1,12 @@
-import { describe, it, before, after, beforeEach } from "node:test";
+import { describe, it, before, after, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import fs from "fs/promises";
 import path from "path";
 import os from "os";
 import { createHandlers } from "../handlers.js";
 import { ActivityLog } from "../activity.js";
+import { SemanticIndex } from "../embeddings.js";
+import { embeddingsResponse, quotaResponse, installFakeOpenAI, makeVault } from "./fake-openai.js";
 import { createToolsList } from "../tools.js";
 import { AUTO_REDIRECT_THRESHOLD } from "../helpers.js";
 
@@ -3494,5 +3496,79 @@ describe("neighbourhood node cap", () => {
     const tool = createToolsList("", [], false).find(t => t.name === "vault_neighborhood");
     assert.equal(tool.inputSchema.properties.max_nodes.type, "number");
     assert.ok(!tool.inputSchema.required.includes("max_nodes"));
+  });
+});
+
+// ─── semantic tools while the index is disabled ────────────────────────
+
+describe("semantic tools while the semantic index is disabled", () => {
+  let fake;
+  let vault;
+  let idx;
+  let semanticHandlers;
+  const disabledError = /^Semantic search disabled since \d{4}-\d{2}-\d{2}: OpenAI quota exhausted\. Add credits; it re-enables automatically\.$/;
+
+  beforeEach(async () => {
+    vault = await makeVault({ "a.md": "Alpha body. [[b]]", "b.md": "Beta body." });
+    fake = installFakeOpenAI(() => quotaResponse());
+    idx = new SemanticIndex({
+      vaultPath: vault,
+      openaiApiKey: "test-key",
+      dbPath: path.join(vault, ".obsidian", "test-index.db"),
+      sleep: async () => {},
+    });
+    await idx.initialize();
+    await idx.whenSynced();
+    assert.equal(idx.health().status, "disabled");
+    semanticHandlers = await createHandlers({
+      vaultPath: vault, templateRegistry: new Map(), semanticIndex: idx, activityLog: null, sessionId: "semantic-disabled",
+    });
+  });
+
+  afterEach(async () => {
+    await idx.shutdown();
+    fake.restore();
+    await fs.rm(vault, { recursive: true, force: true });
+  });
+
+  const calls = [
+    { tool: "vault_semantic_search", args: { query: "alpha" }, rejects: true },
+    { tool: "vault_suggest_links", args: { content: "alpha" }, rejects: true },
+    { tool: "vault_neighborhood", args: { path: "a.md", include_semantic: true }, rejects: false },
+  ];
+  for (const c of calls) {
+    it(`${c.tool} probes once, then reports the disabled reason`, async () => {
+      const before = fake.calls.length;
+      if (c.rejects) {
+        await assert.rejects(() => semanticHandlers.get(c.tool)(c.args), (err) => disabledError.test(err.message));
+      } else {
+        const result = await semanticHandlers.get(c.tool)(c.args);
+        assert.ok(result.content[0].text.includes("(Semantic expansion skipped: Semantic search disabled since "), result.content[0].text);
+      }
+      assert.equal(fake.calls.length, before + 1, "exactly one probe request");
+    });
+  }
+
+  it("a successful probe re-enables the index and the call returns results", async () => {
+    fake.handler = (inputs) => embeddingsResponse(inputs);
+    const result = await semanticHandlers.get("vault_semantic_search")({ query: "alpha" });
+    assert.ok(!result.isError);
+    assert.match(result.content[0].text, /^(Found \d+ semantically related|No semantically related)/);
+    assert.equal(idx.isAvailable, true);
+  });
+});
+
+describe("anchored semantic search footer", () => {
+  it("carries the stale-notes footer when the index reports stale notes", async () => {
+    const staleIndex = {
+      isAvailable: true,
+      health: () => ({ status: "ok", reason: null, since: null, staleFiles: 2, lastSuccessAt: null }),
+      searchRaw: async () => [{ path: "notes/alpha.md", heading: null, score: 0.9, preview: "Alpha" }],
+    };
+    const anchoredHandlers = await createHandlers({
+      vaultPath: tmpDir, templateRegistry: new Map(), semanticIndex: staleIndex, activityLog: null, sessionId: "stale-footer",
+    });
+    const result = await anchoredHandlers.get("vault_semantic_search")({ query: "x", anchor: "notes/beta.md" });
+    assert.ok(result.content[0].text.endsWith("*2 notes have changed since last indexed; results may be stale.*"), result.content[0].text);
   });
 });

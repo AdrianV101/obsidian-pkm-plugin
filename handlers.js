@@ -35,6 +35,9 @@ import {
   DEFAULT_MAX_NODES,
 } from "./graph.js";
 import { getAllMarkdownFiles, extractFrontmatter } from "./utils.js";
+import { formatDisabledMessage, formatStaleFooter } from "./semantic-health.js";
+
+const NO_SEMANTIC_KEY = "VAULT_PKM_OPENAI_KEY not set";
 import { mutateFile, writeNew, withNoteLock, normalizeVaultRoot, resolveSafe, hasDotSegment, assertWritableReal, FileIndex, toVaultRel } from "./vault-fs.js";
 import { findSection, matchHeadings, parseHeadings, splitFrontmatter } from "./markdown.js";
 
@@ -159,6 +162,25 @@ export async function createHandlers({ vaultPath: rawVaultPath, templateRegistry
   };
 
   const SESSION_ID_DISPLAY_LEN = 8;
+
+  /**
+   * Why semantic features can't run right now, or null when they can.
+   * A disabled index gets one probe request first, so it re-enables as soon as the API works again.
+   */
+  async function semanticUnavailableReason() {
+    if (semanticIndex?.isAvailable) return null;
+    if (semanticIndex?.health?.().status === "disabled") {
+      await semanticIndex.probe();
+      return semanticIndex.isAvailable ? null : formatDisabledMessage(semanticIndex.health());
+    }
+    return NO_SEMANTIC_KEY;
+  }
+
+  async function requireSemantic(feature) {
+    const reason = await semanticUnavailableReason();
+    if (reason === NO_SEMANTIC_KEY) throw new Error(`${feature} not available (${NO_SEMANTIC_KEY})`);
+    if (reason) throw new Error(reason);
+  }
 
   /** Fresh note listing plus the link resolver built from it (graph tools never use the startup snapshot). */
   async function freshGraph() {
@@ -559,9 +581,10 @@ export async function createHandlers({ vaultPath: rawVaultPath, templateRegistry
     });
 
     // --- Semantic expansion (Tier 3) ---
-    if (args.include_semantic && !semanticIndex?.isAvailable) {
-      text += "\n(Semantic expansion skipped: VAULT_PKM_OPENAI_KEY not set)\n";
-    } else if (args.include_semantic && semanticIndex?.isAvailable) {
+    const semanticSkipReason = args.include_semantic ? await semanticUnavailableReason() : null;
+    if (semanticSkipReason) {
+      text += `\n(Semantic expansion skipped: ${semanticSkipReason})\n`;
+    } else if (args.include_semantic) {
       const noteContent = await fs.readFile(resolvedAbs, "utf-8");
       const body = splitFrontmatter(noteContent).body.trim();
 
@@ -780,9 +803,7 @@ export async function createHandlers({ vaultPath: rawVaultPath, templateRegistry
   }
 
   async function handleSemanticSearch(args) {
-    if (!semanticIndex?.isAvailable) {
-      throw new Error("Semantic search not available (VAULT_PKM_OPENAI_KEY not set)");
-    }
+    await requireSemantic("Semantic search");
 
     const resolvedFolder = args.folder ? path.relative(vaultPath, await resolveFolder(args.folder)) : undefined;
 
@@ -820,9 +841,10 @@ export async function createHandlers({ vaultPath: rawVaultPath, templateRegistry
         throw new Error(`graph_weight must be a number between 0 and 1, got: ${args.graph_weight}`);
       }
       const trimmed = blendWithGraph(rawResults, neighborhood, graphWeight, targetLimit);
+      const staleFooter = formatStaleFooter(semanticIndex.health?.().staleFiles ?? 0);
 
       if (trimmed.length === 0) {
-        return { content: [{ type: "text", text: "No semantically related notes found." }] };
+        return { content: [{ type: "text", text: `No semantically related notes found.${staleFooter}` }] };
       }
 
       const formatted = trimmed.map(r => {
@@ -831,7 +853,7 @@ export async function createHandlers({ vaultPath: rawVaultPath, templateRegistry
       }).join("\n\n");
 
       return {
-        content: [{ type: "text", text: `Found ${trimmed.length} result${trimmed.length === 1 ? "" : "s"} (anchored to ${linkFor(args.anchor)}):\n\n${formatted}` }]
+        content: [{ type: "text", text: `Found ${trimmed.length} result${trimmed.length === 1 ? "" : "s"} (anchored to ${linkFor(args.anchor)}):\n\n${formatted}${staleFooter}` }]
       };
     }
 
@@ -847,9 +869,7 @@ export async function createHandlers({ vaultPath: rawVaultPath, templateRegistry
   }
 
   async function handleSuggestLinks(args) {
-    if (!semanticIndex?.isAvailable) {
-      throw new Error("Link suggestions not available (VAULT_PKM_OPENAI_KEY not set)");
-    }
+    await requireSemantic("Link suggestions");
 
     const resolvedFolder = args.folder ? path.relative(vaultPath, await resolveFolder(args.folder)) : undefined;
 

@@ -6,6 +6,7 @@ import path from "path";
 import crypto from "crypto";
 import { getAllMarkdownFiles } from "./utils.js";
 import { splitFrontmatter } from "./markdown.js";
+import { formatDisabledMessage, formatStaleFooter } from "./semantic-health.js";
 
 const EMBEDDING_MODEL = "text-embedding-3-large";
 const EMBEDDING_DIMENSIONS = 3072;
@@ -23,6 +24,7 @@ const MAX_ATTEMPTS = 3;
 // note stays stale until the next sync or write notification.
 const MAX_RETRY_WAIT_MS = 30000;
 const RETRYABLE_KINDS = new Set(["rate_limit", "transient"]);
+const DISABLING_KINDS = new Set(["auth", "quota"]);
 const TOO_LARGE_RE = /maximum context length|context_length_exceeded|max_tokens_per_request|\bmax(?:imum)?\s+\d+\s+tokens\b|too many tokens/i;
 
 const defaultSleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
@@ -95,6 +97,11 @@ export function classifyEmbeddingError(status, bodyText, headers, now = Date.now
   return { kind: "other", retryAfterMs: null };
 }
 
+function disabledReason(err) {
+  if (err.kind === "quota") return "OpenAI quota exhausted. Add credits; it re-enables automatically.";
+  return `OpenAI rejected the API key (HTTP ${err.status}). Check VAULT_PKM_OPENAI_KEY; it re-enables automatically once a request succeeds.`;
+}
+
 /**
  * Semantic similarity search over vault notes using OpenAI embeddings.
  * Stores embeddings in SQLite + sqlite-vec for fast KNN lookups.
@@ -106,23 +113,46 @@ export class SemanticIndex {
    * @param {string} opts.vaultPath - absolute path to vault root
    * @param {string} opts.openaiApiKey - OpenAI API key for embeddings
    * @param {string} [opts.dbPath] - override path for the SQLite database
+   * @param {string} [opts.statsPath] - override path for semantic-stats.json
+   * @param {(ms: number) => Promise<void>} [opts.sleep] - delay used between retries
    */
-  constructor({ vaultPath, openaiApiKey, dbPath }) {
+  constructor({ vaultPath, openaiApiKey, dbPath, statsPath, sleep = defaultSleep }) {
     this.vaultPath = vaultPath;
     this.openaiApiKey = openaiApiKey;
     this.dbPath = dbPath || path.join(vaultPath, ".obsidian", "semantic-index.db");
+    this.statsPath = statsPath || path.join(vaultPath, ".obsidian", "semantic-stats.json");
     this.db = null;
     this.watcher = null;
+    this._sleep = sleep;
     this._debounceTimers = new Map();
     this._syncState = { syncing: false, total: 0, done: 0 };
+    this._syncPromise = null;
     this._inflight = new Set();
     this._abortController = null;
     this._lastKnownVaultFiles = 0;
-    this.statsPath = path.join(vaultPath, ".obsidian", "semantic-stats.json");
+    this._disabled = null; // { reason, since } while auth/quota failures block embedding
+    this._lastSuccessAt = null;
+    this._stale = new Set();
+    this._probePromise = null;
   }
 
   get isAvailable() {
-    return this.db !== null && !!this.openaiApiKey;
+    return this.db !== null && !!this.openaiApiKey && this._disabled === null;
+  }
+
+  /** @returns {import("./semantic-health.js").SemanticHealth} */
+  health() {
+    /** @type {"ok"|"syncing"|"disabled"} */
+    let status = "ok";
+    if (this._disabled) status = "disabled";
+    else if (this._syncState.syncing) status = "syncing";
+    return {
+      status,
+      reason: this._disabled?.reason ?? null,
+      since: this._disabled?.since ?? null,
+      staleFiles: this._stale.size,
+      lastSuccessAt: this._lastSuccessAt,
+    };
   }
 
   async initialize() {
@@ -162,14 +192,20 @@ export class SemanticIndex {
       CREATE INDEX IF NOT EXISTS idx_chunks_file ON chunks(file_path);
     `);
 
-    // Write initial stats (existing DB state from prior runs)
+    // A disabled state outlives restarts so "disabled since" stays truthful.
+    const persisted = this._readPersistedStats();
+    if (persisted?.status === "disabled" && persisted.reason && persisted.since) {
+      this._disabled = { reason: persisted.reason, since: persisted.since };
+    }
+    this._lastSuccessAt = persisted?.last_success_at
+      ?? this.db.prepare("SELECT MAX(updated_at) AS t FROM files").get().t
+      ?? null;
+
     this._writeStats();
 
     // Start background sync (non-blocking)
     this._abortController = new AbortController();
-    this._startupSync().catch(err => {
-      console.error(`Semantic index startup sync error: ${err.message}`);
-    });
+    this._startSync();
 
     // Start file watcher
     this._startWatcher();
@@ -188,6 +224,7 @@ export class SemanticIndex {
       clearTimeout(timer);
     }
     this._debounceTimers.clear();
+    if (this._syncPromise) await this._syncPromise;
     if (this._inflight.size > 0) {
       await Promise.allSettled([...this._inflight]);
     }
@@ -196,6 +233,53 @@ export class SemanticIndex {
       this.db.close();
       this.db = null;
     }
+  }
+
+  /** Resolves with the latest sync's summary ({ updated, failed, skipped }) once it finishes. */
+  whenSynced() {
+    return this._syncPromise ?? Promise.resolve(null);
+  }
+
+  /**
+   * Send one embedding request. While disabled, success re-enables the index and
+   * starts a sync; failure keeps it disabled. Concurrent callers share one request.
+   * @returns {Promise<boolean>} whether the request succeeded
+   */
+  probe() {
+    if (!this.db || !this.openaiApiKey) return Promise.resolve(false);
+    if (!this._probePromise) {
+      this._probePromise = this._runProbe().finally(() => { this._probePromise = null; });
+    }
+    return this._probePromise;
+  }
+
+  async _runProbe() {
+    try {
+      await getEmbeddings(["ping"], this.openaiApiKey, { maxAttempts: 1, sleep: this._sleep });
+    } catch (err) {
+      this._noteFailure(err);
+      return false;
+    }
+    this._noteSuccess();
+    if (this._disabled) {
+      this._disabled = null;
+      console.error("Semantic index: re-enabled after a successful probe");
+      this._writeStats();
+      this._startSync();
+    }
+    return true;
+  }
+
+  _noteSuccess() {
+    this._lastSuccessAt = new Date().toISOString();
+  }
+
+  _noteFailure(err) {
+    if (!(err instanceof EmbeddingError) || !DISABLING_KINDS.has(err.kind)) return;
+    if (this._disabled) return;
+    this._disabled = { reason: disabledReason(err), since: new Date().toISOString() };
+    console.error(`Semantic index: ${formatDisabledMessage(this.health())}`);
+    this._writeStats();
   }
 
   /** Track a reindexFile call so shutdown() can await it. */
@@ -226,9 +310,10 @@ export class SemanticIndex {
     if (this._syncState.syncing) {
       syncNote = `\n\n*Index syncing (${this._syncState.done}/${this._syncState.total} files)...*`;
     }
+    const footer = syncNote + formatStaleFooter(this._stale.size);
 
     if (results.length === 0) {
-      return `No semantically related notes found.${syncNote}`;
+      return `No semantically related notes found.${footer}`;
     }
 
     const formatted = results.map(r => {
@@ -236,7 +321,7 @@ export class SemanticIndex {
       return `**${fmt(r.path)}**${heading} (score: ${r.score})\n${r.preview}`;
     }).join("\n\n");
 
-    return `Found ${results.length} semantically related note${results.length === 1 ? "" : "s"}:\n\n${formatted}${syncNote}`;
+    return `Found ${results.length} semantically related note${results.length === 1 ? "" : "s"}:\n\n${formatted}${footer}`;
   }
 
   /**
@@ -251,10 +336,19 @@ export class SemanticIndex {
    */
   async searchRaw({ query, limit = 5, folder, threshold, excludeFiles }) {
     if (!this.isAvailable) {
+      if (this._disabled) throw new Error(formatDisabledMessage(this.health()));
       throw new Error("Semantic index not available");
     }
 
-    const [queryEmbedding] = await getEmbeddings([query], this.openaiApiKey);
+    let queryEmbedding;
+    try {
+      [queryEmbedding] = await getEmbeddings([query], this.openaiApiKey, { sleep: this._sleep });
+    } catch (err) {
+      this._noteFailure(err);
+      if (this._disabled) throw new Error(formatDisabledMessage(this.health()), { cause: err });
+      throw err;
+    }
+    this._noteSuccess();
 
     const vecResults = this.db.prepare(`
       SELECT rowid, distance
@@ -307,6 +401,7 @@ export class SemanticIndex {
 
   /**
    * (Re-)index a single file: chunk it, embed it, store in SQLite.
+   * Rejects when embedding fails; the file then counts as stale.
    * @param {string} relativePath - vault-relative file path
    */
   async reindexFile(relativePath) {
@@ -329,43 +424,40 @@ export class SemanticIndex {
 
     // Check if unchanged
     const existing = this.db.prepare("SELECT content_hash FROM files WHERE path = ?").get(relativePath);
-    if (existing && existing.content_hash === hash) return;
+    if (existing && existing.content_hash === hash) {
+      this._stale.delete(relativePath);
+      return;
+    }
 
-    // Chunk the note
     const chunks = chunkNote(content, relativePath);
     if (chunks.length === 0) {
-      // Note has no indexable content — clean up any old chunks
-      this.removeFile(relativePath);
+      // Nothing to embed: record the file so it does not count as stale.
+      this._storeFile(relativePath, Math.floor(stat.mtimeMs), hash, [], []);
       return;
     }
 
-    // Get embeddings
-    const texts = chunks.map(c => c.text);
+    if (this._disabled) {
+      this._stale.add(relativePath);
+      throw new Error(formatDisabledMessage(this.health()));
+    }
+
     let embeddings;
     try {
-      embeddings = await getEmbeddings(texts, this.openaiApiKey);
-    } catch (e) {
-      console.error(`Embedding error for ${relativePath}: ${e.message}`);
-      return;
+      embeddings = await getEmbeddings(chunks.map(c => c.text), this.openaiApiKey, { sleep: this._sleep });
+    } catch (err) {
+      this._stale.add(relativePath);
+      this._noteFailure(err);
+      throw err;
     }
+    this._noteSuccess();
 
-    // Store in transaction
+    this._storeFile(relativePath, Math.floor(stat.mtimeMs), hash, chunks, embeddings);
+  }
+
+  _storeFile(relativePath, mtimeMs, hash, chunks, embeddings) {
     const txn = this.db.transaction(() => {
-      // Remove old chunks
-      const oldChunks = this.db.prepare(
-        "SELECT id FROM chunks WHERE file_path = ?"
-      ).all(relativePath);
+      this._deleteChunks(relativePath);
 
-      if (oldChunks.length > 0) {
-        const deleteVec = this.db.prepare("DELETE FROM vec_chunks WHERE rowid = ?");
-        const deleteChunk = this.db.prepare("DELETE FROM chunks WHERE id = ?");
-        for (const { id } of oldChunks) {
-          deleteVec.run(BigInt(id));
-          deleteChunk.run(id);
-        }
-      }
-
-      // Insert new chunks
       const insertChunk = this.db.prepare(`
         INSERT INTO chunks (file_path, chunk_index, heading, content_preview)
         VALUES (?, ?, ?, ?)
@@ -373,31 +465,29 @@ export class SemanticIndex {
       const insertVec = this.db.prepare(`
         INSERT INTO vec_chunks (rowid, embedding) VALUES (?, ?)
       `);
-
       for (let i = 0; i < chunks.length; i++) {
-        const result = insertChunk.run(
-          relativePath,
-          i,
-          chunks[i].heading || null,
-          chunks[i].preview
-        );
+        const result = insertChunk.run(relativePath, i, chunks[i].heading || null, chunks[i].preview);
         insertVec.run(BigInt(result.lastInsertRowid), new Float32Array(embeddings[i]));
       }
 
-      // Update file record
       this.db.prepare(`
         INSERT OR REPLACE INTO files (path, mtime_ms, content_hash, chunk_count, updated_at)
         VALUES (?, ?, ?, ?, ?)
-      `).run(
-        relativePath,
-        Math.floor(stat.mtimeMs),
-        hash,
-        chunks.length,
-        new Date().toISOString()
-      );
+      `).run(relativePath, mtimeMs, hash, chunks.length, new Date().toISOString());
     });
-
     txn();
+    this._stale.delete(relativePath);
+  }
+
+  _deleteChunks(relativePath) {
+    const oldChunks = this.db.prepare("SELECT id FROM chunks WHERE file_path = ?").all(relativePath);
+    if (oldChunks.length === 0) return;
+    const deleteVec = this.db.prepare("DELETE FROM vec_chunks WHERE rowid = ?");
+    const deleteChunk = this.db.prepare("DELETE FROM chunks WHERE id = ?");
+    for (const { id } of oldChunks) {
+      deleteVec.run(BigInt(id));
+      deleteChunk.run(id);
+    }
   }
 
   /**
@@ -408,29 +498,26 @@ export class SemanticIndex {
     if (!this.db) return;
 
     const txn = this.db.transaction(() => {
-      const oldChunks = this.db.prepare(
-        "SELECT id FROM chunks WHERE file_path = ?"
-      ).all(relativePath);
-
-      if (oldChunks.length > 0) {
-        const deleteVec = this.db.prepare("DELETE FROM vec_chunks WHERE rowid = ?");
-        const deleteChunk = this.db.prepare("DELETE FROM chunks WHERE id = ?");
-        for (const { id } of oldChunks) {
-          deleteVec.run(BigInt(id));
-          deleteChunk.run(id);
-        }
-      }
-
+      this._deleteChunks(relativePath);
       this.db.prepare("DELETE FROM files WHERE path = ?").run(relativePath);
     });
 
     txn();
+    this._stale.delete(relativePath);
   }
 
   // --- Private methods ---
 
+  _readPersistedStats() {
+    try {
+      return JSON.parse(fsSync.readFileSync(this.statsPath, "utf-8"));
+    } catch {
+      return null;
+    }
+  }
+
   /**
-   * Write embedding stats to a JSON sidecar file for the session-start hook.
+   * Write embedding stats and health to a JSON sidecar file for the session-start hook and doctor.
    * Fire-and-forget — errors are logged but never thrown.
    */
   _writeStats() {
@@ -438,12 +525,17 @@ export class SemanticIndex {
       if (!this.db) return;
       const { indexed_files } = this.db.prepare("SELECT COUNT(*) as indexed_files FROM files").get();
       const { total_chunks } = this.db.prepare("SELECT COUNT(*) as total_chunks FROM chunks").get();
-      const row = this.db.prepare("SELECT MAX(updated_at) as last_sync FROM files").get();
+      const health = this.health();
       const stats = {
         indexed_files,
         total_chunks,
         vault_files: this._lastKnownVaultFiles,
-        last_sync: row.last_sync || null
+        status: health.status,
+        reason: health.reason,
+        since: health.since,
+        last_success_at: health.lastSuccessAt,
+        stale_files: health.staleFiles,
+        updated_at: new Date().toISOString(),
       };
       fsSync.mkdirSync(path.dirname(this.statsPath), { recursive: true });
       const tmp = this.statsPath + ".tmp";
@@ -454,71 +546,88 @@ export class SemanticIndex {
     }
   }
 
+  _startSync() {
+    if (!this.db) return Promise.resolve(null);
+    if (!this._syncState.syncing) {
+      this._syncPromise = this._startupSync().catch(err => {
+        console.error(`Semantic index startup sync error: ${err.message}`);
+        return null;
+      });
+    }
+    return this._syncPromise;
+  }
+
+  /** Compare disk with the index: drop deleted notes, return notes whose mtime changed or that are unindexed. */
+  async _scan() {
+    const vaultFiles = await getAllMarkdownFiles(this.vaultPath);
+    const indexedFiles = new Map();
+    for (const row of this.db.prepare("SELECT path, mtime_ms FROM files").all()) {
+      indexedFiles.set(row.path, row);
+    }
+    this._lastKnownVaultFiles = vaultFiles.length;
+
+    const toReindex = [];
+    const vaultFileSet = new Set(vaultFiles);
+    for (const relPath of vaultFiles) {
+      try {
+        const stat = await fs.stat(path.resolve(this.vaultPath, relPath));
+        const indexed = indexedFiles.get(relPath);
+        if (!indexed || Math.floor(stat.mtimeMs) !== indexed.mtime_ms) toReindex.push(relPath);
+      } catch {
+        // File disappeared between listing and stat
+      }
+    }
+    for (const indexedPath of indexedFiles.keys()) {
+      if (!vaultFileSet.has(indexedPath)) this.removeFile(indexedPath);
+    }
+    this._stale = new Set(toReindex);
+    return toReindex;
+  }
+
   async _startupSync() {
     this._syncState.syncing = true;
+    const summary = { updated: 0, failed: 0, skipped: 0 };
 
     try {
-      // Get all vault .md files
-      const vaultFiles = await getAllMarkdownFiles(this.vaultPath);
-
-      // Get all indexed files
-      const indexedFiles = new Map();
-      for (const row of this.db.prepare("SELECT path, mtime_ms, content_hash FROM files").all()) {
-        indexedFiles.set(row.path, row);
-      }
-
-      this._lastKnownVaultFiles = vaultFiles.length;
-
-      // Find files needing reindex
-      const toReindex = [];
-      const vaultFileSet = new Set(vaultFiles);
-
-      for (const relPath of vaultFiles) {
-        const absPath = path.resolve(this.vaultPath, relPath);
-        try {
-          const stat = await fs.stat(absPath);
-          const indexed = indexedFiles.get(relPath);
-          if (!indexed || Math.floor(stat.mtimeMs) !== indexed.mtime_ms) {
-            toReindex.push(relPath);
-          }
-        } catch {
-          // File disappeared between listing and stat
-        }
-      }
-
-      // Find deleted files
-      for (const indexedPath of indexedFiles.keys()) {
-        if (!vaultFileSet.has(indexedPath)) {
-          this.removeFile(indexedPath);
-        }
-      }
-
+      const toReindex = await this._scan();
       if (toReindex.length === 0) {
         console.error("Semantic index: up to date");
-        return;
+        return summary;
+      }
+
+      if (this._disabled && !(await this.probe())) {
+        summary.skipped = toReindex.length;
+        console.error(`Semantic index: ${formatDisabledMessage(this.health())} (${toReindex.length} notes stale)`);
+        return summary;
       }
 
       this._syncState.total = toReindex.length;
       this._syncState.done = 0;
       console.error(`Semantic index: syncing ${toReindex.length} files...`);
 
-      // Process in batches
       for (let i = 0; i < toReindex.length; i += REINDEX_BATCH_SIZE) {
         if (this._abortController?.signal.aborted) {
           console.error("Semantic index: startup sync aborted");
           break;
         }
+        if (this._disabled) break;
         const batch = toReindex.slice(i, i + REINDEX_BATCH_SIZE);
         const results = await Promise.allSettled(batch.map(f => this._trackedReindex(f)));
-        const failures = results.filter(r => r.status === "rejected");
-        if (failures.length > 0) {
-          console.error(`Semantic index: ${failures.length} files failed in batch`);
+        for (const r of results) {
+          if (r.status === "fulfilled") summary.updated++;
+          else summary.failed++;
         }
         this._syncState.done += batch.length;
         console.error(`Semantic index: syncing ${this._syncState.done}/${this._syncState.total} files...`);
       }
 
-      console.error(`Semantic index: sync complete (${toReindex.length} files updated)`);
+      summary.skipped = toReindex.length - summary.updated - summary.failed;
+      const counts = `${summary.updated} updated, ${summary.failed} failed`
+        + (summary.skipped > 0 ? `, ${summary.skipped} not attempted` : "");
+      console.error(this._disabled
+        ? `Semantic index: sync stopped: ${formatDisabledMessage(this.health())} (${counts})`
+        : `Semantic index: sync complete (${counts})`);
+      return summary;
     } finally {
       this._syncState.syncing = false;
       this._writeStats();
@@ -554,7 +663,7 @@ export class SemanticIndex {
           } catch (e) {
             if (e.code === "ENOENT") {
               this.removeFile(relativePath);
-            } else {
+            } else if (!this._disabled) {
               console.error(`Watcher reindex error for ${relativePath}: ${e.message}`);
             }
           }

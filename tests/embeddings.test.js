@@ -20,6 +20,9 @@ import {
   errorResponse,
   installFakeOpenAI,
   recordingSleep,
+  quotaResponse,
+  makeVault,
+  manyNotes,
 } from "./fake-openai.js";
 
 const { Response, Headers } = globalThis;
@@ -882,5 +885,214 @@ A note about project management and agile methodology.
     assert.equal(afterCount, 0);
 
     await idx.shutdown();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// SemanticIndex health: disabled state, probe, visible failures
+// ---------------------------------------------------------------------------
+describe("SemanticIndex health", () => {
+  let fake;
+  const opened = [];
+  const vaults = [];
+
+  async function vaultWith(files) {
+    const dir = await makeVault(files);
+    vaults.push(dir);
+    return dir;
+  }
+
+  async function openIndex(vaultPath) {
+    const idx = new SemanticIndex({
+      vaultPath,
+      openaiApiKey: "test-key",
+      dbPath: path.join(vaultPath, ".obsidian", "test-index.db"),
+      sleep: async () => {},
+    });
+    opened.push(idx);
+    await idx.initialize();
+    return idx;
+  }
+
+  async function readStats(vaultPath) {
+    return JSON.parse(await fs.readFile(path.join(vaultPath, ".obsidian", "semantic-stats.json"), "utf-8"));
+  }
+
+  afterEach(async () => {
+    for (const idx of opened.splice(0)) await idx.shutdown();
+    fake?.restore();
+    fake = null;
+    for (const dir of vaults.splice(0)) await fs.rm(dir, { recursive: true, force: true });
+  });
+
+  const disablingFailures = [
+    { kind: "quota", respond: () => quotaResponse(), reason: /^OpenAI quota exhausted\. Add credits; it re-enables automatically\.$/ },
+    { kind: "auth", respond: () => errorResponse(401, "{\"error\":{\"code\":\"invalid_api_key\"}}"), reason: /^OpenAI rejected the API key \(HTTP 401\)/ },
+  ];
+  for (const c of disablingFailures) {
+    it(`${c.kind} failure during sync disables the index, stops embedding, and persists status/reason/since`, async () => {
+      const vault = await vaultWith(manyNotes(25));
+      fake = installFakeOpenAI(() => c.respond());
+      const idx = await openIndex(vault);
+      const summary = await idx.whenSynced();
+
+      assert.ok(fake.calls.length >= 1 && fake.calls.length <= 10, `only the first batch may hit the API, got ${fake.calls.length}`);
+      assert.deepEqual(summary, { updated: 0, failed: 10, skipped: 15 });
+      const health = idx.health();
+      assert.equal(health.status, "disabled");
+      assert.match(health.reason, c.reason);
+      assert.ok(!Number.isNaN(Date.parse(health.since)));
+      assert.equal(idx.isAvailable, false);
+
+      const stats = await readStats(vault);
+      assert.equal(stats.status, "disabled");
+      assert.equal(stats.reason, health.reason);
+      assert.equal(stats.since, health.since);
+      assert.equal(stats.stale_files, 25);
+    });
+  }
+
+  it("probe() while disabled re-enables the index and syncs the stale notes", async () => {
+    const vault = await vaultWith(manyNotes(25));
+    fake = installFakeOpenAI(() => quotaResponse());
+    const idx = await openIndex(vault);
+    await idx.whenSynced();
+    assert.equal(idx.isAvailable, false);
+
+    fake.handler = (inputs) => embeddingsResponse(inputs);
+    assert.equal(await idx.probe(), true);
+    assert.equal(idx.isAvailable, true);
+    await idx.whenSynced();
+
+    assert.equal(idx.db.prepare("SELECT COUNT(*) AS n FROM files").get().n, 25);
+    const stats = await readStats(vault);
+    assert.equal(stats.status, "ok");
+    assert.equal(stats.reason, null);
+    assert.equal(stats.since, null);
+    assert.equal(stats.stale_files, 0);
+    assert.ok(!Number.isNaN(Date.parse(stats.last_success_at)));
+  });
+
+  it("a failed probe sends one request, keeps the index disabled and keeps the original since", async () => {
+    const vault = await vaultWith(manyNotes(3));
+    fake = installFakeOpenAI(() => quotaResponse());
+    const idx = await openIndex(vault);
+    await idx.whenSynced();
+    const { since } = idx.health();
+    const before = fake.calls.length;
+
+    const results = await Promise.all([idx.probe(), idx.probe()]);
+
+    assert.deepEqual(results, [false, false]);
+    assert.equal(fake.calls.length, before + 1, "concurrent probes share one request");
+    assert.equal(idx.health().status, "disabled");
+    assert.equal(idx.health().since, since);
+  });
+
+  it("the disabled state survives a restart: one probe, no other API calls, original since", async () => {
+    const vault = await vaultWith(manyNotes(25));
+    fake = installFakeOpenAI(() => quotaResponse());
+    const first = await openIndex(vault);
+    await first.whenSynced();
+    const { since } = first.health();
+    await first.shutdown();
+    const before = fake.calls.length;
+
+    const second = await openIndex(vault);
+    const summary = await second.whenSynced();
+
+    assert.equal(fake.calls.length, before + 1, "only the startup probe hits the API");
+    assert.deepEqual(summary, { updated: 0, failed: 0, skipped: 25 });
+    assert.equal(second.health().status, "disabled");
+    assert.equal(second.health().since, since);
+    assert.equal(second.health().staleFiles, 25);
+  });
+
+  it("a quota error on a search query disables the index and searchRaw reports it", async () => {
+    const vault = await vaultWith(manyNotes(2));
+    fake = installFakeOpenAI();
+    const idx = await openIndex(vault);
+    await idx.whenSynced();
+
+    fake.handler = () => quotaResponse();
+    const expected = /^Semantic search disabled since \d{4}-\d{2}-\d{2}: OpenAI quota exhausted\. Add credits; it re-enables automatically\.$/;
+    await assert.rejects(() => idx.searchRaw({ query: "anything" }), (err) => expected.test(err.message));
+    const callsAfterFirst = fake.calls.length;
+    await assert.rejects(() => idx.searchRaw({ query: "anything" }), (err) => expected.test(err.message));
+    assert.equal(fake.calls.length, callsAfterFirst, "a disabled index makes no query request");
+  });
+
+  it("reindexFile rejects with the EmbeddingError and the note counts as stale", async () => {
+    const vault = await vaultWith(manyNotes(2));
+    fake = installFakeOpenAI();
+    const idx = await openIndex(vault);
+    await idx.whenSynced();
+
+    await fs.writeFile(path.join(vault, "notes", "n00.md"), "---\ntype: note\n---\nChanged body.\n");
+    fake.handler = () => errorResponse(500, "server error");
+    await assert.rejects(
+      () => idx.reindexFile("notes/n00.md"),
+      (err) => err instanceof EmbeddingError && err.kind === "transient"
+    );
+    assert.equal(idx.health().staleFiles, 1);
+    assert.equal(idx.health().status, "ok", "transient failures do not disable the index");
+  });
+
+  it("startup sync summary and log report updated and failed notes", async (t) => {
+    const vault = await vaultWith({
+      "a.md": "Alpha body.",
+      "b.md": "Beta body.",
+      "c.md": "BROKEN body.",
+    });
+    fake = installFakeOpenAI((inputs) => (inputs.some(i => i.includes("BROKEN"))
+      ? errorResponse(404, "nope")
+      : embeddingsResponse(inputs)));
+    const logs = t.mock.method(console, "error", () => {});
+    const idx = await openIndex(vault);
+    const summary = await idx.whenSynced();
+
+    assert.deepEqual(summary, { updated: 2, failed: 1, skipped: 0 });
+    const lines = logs.mock.calls.map(call => String(call.arguments[0]));
+    assert.ok(lines.includes("Semantic index: sync complete (2 updated, 1 failed)"), lines.join("\n"));
+    assert.equal((await readStats(vault)).stale_files, 1);
+  });
+
+  it("stats record last_success_at and stale_files; empty notes are indexed with zero chunks", async () => {
+    const vault = await vaultWith({
+      "full.md": "Some body text.",
+      "empty.md": "---\ntype: note\n---\n",
+    });
+    fake = installFakeOpenAI();
+    const idx = await openIndex(vault);
+    await idx.whenSynced();
+
+    const stats = await readStats(vault);
+    assert.equal(stats.status, "ok");
+    assert.equal(stats.stale_files, 0);
+    assert.ok(!Number.isNaN(Date.parse(stats.last_success_at)));
+    assert.equal(idx.db.prepare("SELECT chunk_count FROM files WHERE path = ?").get("empty.md").chunk_count, 0);
+
+    await idx.shutdown();
+    const before = fake.calls.length;
+    const reopened = await openIndex(vault);
+    assert.deepEqual(await reopened.whenSynced(), { updated: 0, failed: 0, skipped: 0 });
+    assert.equal(fake.calls.length, before, "an empty note is not re-read as stale on restart");
+  });
+
+  it("search output gains a stale footer only when notes are stale", async () => {
+    const vault = await vaultWith(manyNotes(2));
+    fake = installFakeOpenAI();
+    const idx = await openIndex(vault);
+    await idx.whenSynced();
+    const footer = "*1 note has changed since last indexed; results may be stale.*";
+
+    assert.ok(!(await idx.search({ query: "note" })).includes("changed since last indexed"));
+
+    await fs.writeFile(path.join(vault, "notes", "n00.md"), "Changed body.");
+    fake.handler = () => errorResponse(500, "server error");
+    await assert.rejects(() => idx.reindexFile("notes/n00.md"));
+    fake.handler = (inputs) => embeddingsResponse(inputs);
+
+    assert.ok((await idx.search({ query: "note" })).endsWith(footer));
   });
 });

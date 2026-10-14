@@ -11,6 +11,7 @@ import path from "path";
 import { createRequire } from "module";
 import fs from "fs/promises";
 import { SemanticIndex } from "./embeddings.js";
+import { describeHealth } from "./semantic-health.js";
 import { ActivityLog } from "./activity.js";
 import { loadTemplates } from "./helpers.js";
 import { createHandlers } from "./handlers.js";
@@ -50,7 +51,7 @@ export async function startServer() {
 
   // List available tools
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
-    tools: createToolsList(templateDescriptions, Array.from(templateRegistry.keys()), !!semanticIndex?.isAvailable)
+    tools: createToolsList(templateDescriptions, Array.from(templateRegistry.keys()), semanticIndex !== null)
   }));
 
   // Handle tool calls
@@ -143,7 +144,8 @@ export async function startServer() {
 
     const transport = new StdioServerTransport();
     await server.connect(transport);
-    console.error(`PKM MCP Server running... (${templateRegistry.size} templates loaded${semanticIndex?.isAvailable ? ", semantic search enabled" : ""}, activity log ${activityLog ? "enabled" : "disabled"})`);
+    const semanticStatus = semanticIndex ? `, semantic search ${describeHealth(semanticIndex.health())}` : "";
+    console.error(`PKM MCP Server running... (${templateRegistry.size} templates loaded${semanticStatus}, activity log ${activityLog ? "enabled" : "disabled"})`);
   }
 
   let shuttingDown = false;
