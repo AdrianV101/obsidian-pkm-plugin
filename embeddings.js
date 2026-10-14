@@ -572,6 +572,11 @@ export class SemanticIndex {
     const absPath = path.resolve(this.vaultPath, relativePath);
     let content;
     try {
+      // The scan skips symlinks, so a link (e.g. one just moved) is not a note of its own.
+      if ((await fs.lstat(absPath)).isSymbolicLink()) {
+        this.removeFile(relativePath);
+        return;
+      }
       content = await fs.readFile(absPath, "utf-8");
     } catch (e) {
       if (e.code === "ENOENT") {
@@ -965,7 +970,10 @@ export class SemanticIndex {
       }
     }
     for (let i = 0; i < changed.length; i += REINDEX_BATCH_SIZE) {
-      if (this._closing || this._abortController?.signal.aborted || this._disabled || this._pauseSync) break;
+      if (this._closing || this._abortController?.signal.aborted || this._disabled || this._pauseSync) {
+        for (const rel of changed.slice(i)) this._stale.add(rel);
+        break;
+      }
       await Promise.allSettled(changed.slice(i, i + REINDEX_BATCH_SIZE).map(rel => this.reindexFile(rel)));
     }
   }

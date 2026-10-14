@@ -3700,3 +3700,63 @@ describe("write tools notify with the on-disk spelling of the note", () => {
     }
   });
 });
+
+describe("trash and move notify the index about the path they acted on", () => {
+  let vault;
+  let events;
+  let h;
+  const nfd = "Cafe\u0301";
+  const nfc = "Caf\u00e9";
+
+  beforeEach(async () => {
+    vault = await makeVault({
+      "05-Templates/research-note.md": TEMPLATE_CONTENT,
+      "notes/real.md": "# Real\n\nBody.\n",
+      [`${nfd}/x.md`]: "# X\n\nBody.\n",
+    });
+    events = [];
+    h = await createHandlers({
+      vaultPath: vault,
+      templateRegistry: await buildTemplateRegistry(vault),
+      semanticIndex: {
+        isAvailable: false,
+        notifyChanged: (p) => events.push(["changed", p]),
+        notifyRemoved: async (p) => { events.push(["removed", p]); },
+        notifyMoved: (from, to) => events.push(["moved", from, to]),
+      },
+      activityLog: null,
+      sessionId: "r2",
+    });
+  });
+
+  afterEach(async () => {
+    await fs.rm(vault, { recursive: true, force: true });
+  });
+
+  it("trashing a symlinked note reports the link, not its target", async (t) => {
+    if (process.platform === "win32") return t.skip("symlinks need privileges on Windows");
+    await fs.symlink("real.md", path.join(vault, "notes", "link.md"));
+    const result = await h.get("vault_trash")({ path: "notes/link.md" });
+    assert.ok(!result.isError, result.content?.[0]?.text);
+    assert.deepEqual(events, [["removed", "notes/link.md"]]);
+  });
+
+  it("moving a symlinked note reports the link, not its target", async (t) => {
+    if (process.platform === "win32") return t.skip("symlinks need privileges on Windows");
+    await fs.symlink("real.md", path.join(vault, "notes", "link.md"));
+    const result = await h.get("vault_move")({ old_path: "notes/link.md", new_path: "archive/link.md" });
+    assert.ok(!result.isError, result.content?.[0]?.text);
+    assert.deepEqual(events.filter(e => e[0] === "moved"), [["moved", "notes/link.md", "archive/link.md"]]);
+  });
+
+  it("moving a folder reports its stored (NFD) name when the request used the NFC spelling", async (t) => {
+    try {
+      await fs.access(path.join(vault, nfc));
+    } catch {
+      return t.skip("this filesystem does not equate NFC and NFD names");
+    }
+    const result = await h.get("vault_move")({ old_path: nfc, new_path: "moved" });
+    assert.ok(!result.isError, result.content?.[0]?.text);
+    assert.deepEqual(events.filter(e => e[0] === "moved"), [["moved", nfd, "moved"]]);
+  });
+});

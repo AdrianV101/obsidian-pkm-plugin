@@ -1683,4 +1683,39 @@ describe("SemanticIndex freshness", () => {
     assert.deepEqual(results.map(r => r.path).sort(), ["target/t1.md", "target/t2.md"]);
     assert.equal(knnQueries, 0, "no KNN widening for a folder smaller than the limit");
   });
+
+  it("a folder reconcile that stops because the index is disabled leaves the remaining notes stale", async () => {
+    const vault = await vaultWith({ "a.md": "Alpha body." });
+    fake = installFakeOpenAI();
+    const idx = await openIndex(vault);
+    await idx.shutdown();
+    const statsPath = path.join(vault, ".obsidian", "semantic-stats.json");
+    const stats = JSON.parse(await fs.readFile(statsPath, "utf-8"));
+    await fs.writeFile(statsPath, JSON.stringify({ ...stats, status: "disabled", reason: "quota", since: "2026-10-01T00:00:00Z" }));
+    const watcher = fakeWatch();
+    const disabled = await openIndex(vault, { watch: watcher.watch });
+    for (let i = 0; i < 3; i++) {
+      await fs.mkdir(path.join(vault, "drop"), { recursive: true });
+      await fs.writeFile(path.join(vault, "drop", `n${i}.md`), `Dropped ${i}.`);
+    }
+    const before = fake.calls.length;
+
+    watcher.emit("drop");
+    await disabled.whenIdle();
+
+    assert.equal(fake.calls.length, before);
+    assert.equal(disabled.health().staleFiles, 3);
+  });
+
+  it("a symlinked note is not indexed as a note of its own", async (t) => {
+    if (process.platform === "win32") return t.skip("symlinks need privileges on Windows");
+    const vault = await vaultWith({ "real.md": "Real body." });
+    fake = installFakeOpenAI();
+    const idx = await openIndex(vault);
+    await fs.symlink("real.md", path.join(vault, "link.md"));
+
+    await idx.reindexFile("link.md");
+
+    assert.deepEqual(indexedPaths(idx), ["real.md"]);
+  });
 });

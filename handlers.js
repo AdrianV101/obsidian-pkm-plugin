@@ -141,6 +141,24 @@ export async function createHandlers({ vaultPath: rawVaultPath, templateRegistry
 
   const fileIndex = await FileIndex.build(vaultPath);
 
+  /**
+   * The spelling the file or folder has on disk when it differs from `rel` only by Unicode
+   * normalisation or case; otherwise `rel` as typed. Symlinks resolve to a different name, so
+   * trash and move (which act on the link itself) keep the typed path.
+   */
+  const sameNameOnDisk = async (rel) => {
+    const typed = toVaultRel(rel);
+    try {
+      const real = await fs.realpath(path.join(vaultPath, typed));
+      const realRoot = await fs.realpath(vaultPath);
+      const onDisk = toVaultRel(path.relative(realRoot, real));
+      const fold = (s) => s.normalize("NFC").toLowerCase();
+      return fold(onDisk) === fold(typed) ? onDisk : typed;
+    } catch {
+      return typed;
+    }
+  };
+
   /** The note's on-disk spelling, which is what the semantic index stores (Unicode form, case). */
   const onDiskPath = async (rel) => {
     try {
@@ -1014,7 +1032,7 @@ export async function createHandlers({ vaultPath: rawVaultPath, templateRegistry
       // No collision — use original path
     }
 
-    const indexedPath = await onDiskPath(resolvedRelative);
+    const indexedPath = await sameNameOnDisk(resolvedRelative);
 
     // Create trash directory and move file
     await fs.mkdir(path.dirname(trashAbsolute), { recursive: true });
@@ -1084,7 +1102,7 @@ export async function createHandlers({ vaultPath: rawVaultPath, templateRegistry
     const basenameUnique = afterResolution.status === "resolved" && afterResolution.path === newRelative;
     const newLinkTarget = basenameUnique ? newBasename : newRelative.replace(/\.md$/, "");
 
-    const indexedOldPath = sourceStat.isDirectory() ? oldRelative : await onDiskPath(oldRelative);
+    const indexedOldPath = await sameNameOnDisk(oldRelative);
 
     // Create destination directory and move file
     await fs.mkdir(path.dirname(newAbsolute), { recursive: true });
