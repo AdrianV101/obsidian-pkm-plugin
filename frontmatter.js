@@ -125,11 +125,12 @@ export function renderFrontmatter(obj) {
  * @returns {[number, number]}
  */
 function pairLineSpan(text, pair) {
-  const keyStart = isNode(pair.key) && pair.key.range ? pair.key.range[0] : 0;
+  const keyRange = isNode(pair.key) ? pair.key.range : null;
+  if (!keyRange) throw new Error("Failed to parse frontmatter: cannot locate key position");
+  const keyStart = keyRange[0];
   const start = keyStart === 0 ? 0 : text.lastIndexOf("\n", keyStart - 1) + 1;
-  const valueEnd = isNode(pair.value) && pair.value.range
-    ? pair.value.range[1]
-    : isNode(pair.key) && pair.key.range ? pair.key.range[1] : keyStart;
+  const valueRange = isNode(pair.value) ? pair.value.range : null;
+  const valueEnd = valueRange ? valueRange[1] : keyRange[1];
   if (valueEnd > start && text[valueEnd - 1] === "\n") return [start, valueEnd];
   const nl = text.indexOf("\n", valueEnd);
   return [start, nl === -1 ? text.length : nl + 1];
