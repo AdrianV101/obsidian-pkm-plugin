@@ -3,34 +3,53 @@ import fs from "fs/promises";
 import path from "path";
 
 const MAX_ARG_CHARS = 200;
+// Top-level arguments whose value is a vault path. The same names inside free-text containers
+// (frontmatter, fields, custom_fields, variables) are user content and are summarised.
 const PATH_KEYS = new Set(["path", "source", "destination", "folder", "target", "old_path", "new_path"]);
 const DEFAULT_RETENTION_DAYS = 90;
 const SCHEMA_VERSION = 1;
 const DAY_MS = 86_400_000;
+const MIN_DATE_MS = -8.64e15;
 
-function summarizeValue(value, key) {
+function summarizeValue(value, isPath = false) {
   if (typeof value === "string") {
-    return value.length > MAX_ARG_CHARS && !PATH_KEYS.has(key) ? `<${value.length} chars>` : value;
+    return value.length > MAX_ARG_CHARS && !isPath ? `<${value.length} chars>` : value;
   }
-  if (Array.isArray(value)) return value.map(item => summarizeValue(item, key));
+  if (Array.isArray(value)) return value.map(item => summarizeValue(item));
   if (value !== null && typeof value === "object") {
     const out = {};
-    for (const [k, v] of Object.entries(value)) out[k] = summarizeValue(v, k);
+    for (const [k, v] of Object.entries(value)) out[k] = summarizeValue(v);
     return out;
   }
   return value;
 }
 
+/** A vault_add_links entry: its `target` is a vault path, the rest is free text. */
+function summarizeLink(link) {
+  if (link === null || typeof link !== "object" || Array.isArray(link)) return summarizeValue(link);
+  const out = {};
+  for (const [k, v] of Object.entries(link)) out[k] = summarizeValue(v, k === "target");
+  return out;
+}
+
 /**
- * Shrink tool arguments before they are stored: any string longer than 200 chars
- * becomes "<N chars>", except under path-like keys, at any nesting depth.
- * Returns a new value; the input (which the handler still uses) is never mutated.
+ * Shrink tool arguments before they are stored: any string longer than 200 chars becomes
+ * "<N chars>", at any nesting depth, except vault paths: the top-level path arguments
+ * (`path`, `source`, `destination`, `folder`, `target`, `old_path`, `new_path`) and
+ * `links[].target`. Returns a new value; the input (which the handler still uses) is never mutated.
  * @param {unknown} args
  * @returns {unknown}
  */
 export function summarizeArgs(args) {
   if (args === null || args === undefined) return {};
-  return summarizeValue(args, null);
+  if (typeof args !== "object" || Array.isArray(args)) return summarizeValue(args);
+  const out = {};
+  for (const [key, value] of Object.entries(args)) {
+    out[key] = key === "links" && Array.isArray(value)
+      ? value.map(summarizeLink)
+      : summarizeValue(value, PATH_KEYS.has(key));
+  }
+  return out;
 }
 
 function parseArgsJson(text) {
@@ -130,6 +149,9 @@ export class ActivityLog {
       this.db.pragma("auto_vacuum = INCREMENTAL");
       this.db.pragma("journal_mode = WAL");
       this.db.pragma("journal_size_limit = 32000000");
+      // Deleted content is overwritten with zeros, so what the migration, retention or clear()
+      // drops does not linger in the file even if the one-time VACUUM below fails.
+      this.db.pragma("secure_delete = ON");
 
       this.db.exec(`
         CREATE TABLE IF NOT EXISTS activity (
@@ -195,8 +217,10 @@ export class ActivityLog {
 
   #applyRetention() {
     if (this.retentionDays === 0) return;
-    const cutoff = new Date(Date.now() - this.retentionDays * DAY_MS).toISOString();
-    this.db.prepare("DELETE FROM activity WHERE timestamp < ?").run(cutoff);
+    const cutoffMs = Date.now() - this.retentionDays * DAY_MS;
+    // A window reaching back before the earliest representable date keeps everything.
+    if (!(cutoffMs >= MIN_DATE_MS)) return;
+    this.db.prepare("DELETE FROM activity WHERE timestamp < ?").run(new Date(cutoffMs).toISOString());
   }
 
   #reclaimSpace() {
@@ -212,6 +236,8 @@ export class ActivityLog {
       } catch (e) {
         console.error(`[activity] VACUUM skipped: ${e.message}`);
       }
+      // Until a checkpoint, the database file still holds the pre-migration pages (note bodies).
+      this.db.pragma("wal_checkpoint(TRUNCATE)");
     }
   }
 

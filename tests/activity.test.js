@@ -351,7 +351,7 @@ describe("summarizeArgs", () => {
     }
   });
 
-  it("summarizes nested objects and arrays with the same key rule", () => {
+  it("summarizes nested objects and arrays, keeping links[].target as a path", () => {
     const long = "y".repeat(300);
     const result = summarizeArgs({
       links: [{ target: "a/".repeat(150) + "t.md", annotation: long }],
@@ -363,6 +363,19 @@ describe("summarizeArgs", () => {
       frontmatter: { summary: "<300 chars>", tags: ["x"] },
       variables: { body: "<300 chars>" },
     });
+  });
+
+  it("summarises path-named keys inside free-text containers (frontmatter, fields, custom_fields, variables) like any other string", () => {
+    const long = "S".repeat(5000);
+    for (const container of ["frontmatter", "fields", "custom_fields", "variables"]) {
+      for (const key of PATH_KEYS) {
+        assert.deepEqual(
+          summarizeArgs({ path: "n.md", [container]: { [key]: long } }),
+          { path: "n.md", [container]: { [key]: "<5000 chars>" } },
+          `${container}.${key}`
+        );
+      }
+    }
   });
 
   it("keeps non-string values unchanged", () => {
@@ -487,6 +500,74 @@ describe("migration from the pre-path-column schema", () => {
     await fs.rm(dir, { recursive: true });
   });
 
+  // The migration drops note bodies from rows; their old bytes must not survive in freed pages
+  // of the database file or in the WAL.
+  const MARKER = "PRIVATE-BODY-MARKER";
+  const bodyBytesLeft = async (dir) => {
+    let count = 0;
+    for (const suffix of ["", "-wal"]) {
+      let bytes;
+      try {
+        bytes = await fs.readFile(path.join(dir, ".obsidian", `activity-log.db${suffix}`));
+      } catch (e) {
+        if (e.code === "ENOENT") continue;
+        throw e;
+      }
+      for (let i = bytes.indexOf(MARKER); i !== -1; i = bytes.indexOf(MARKER, i + 1)) count++;
+    }
+    return count;
+  };
+  // With `afterSmallRows`, the bodies are logged after enough small rows that the table's root page
+  // never held one. Otherwise the root keeps fragments of its first rows in its slack space when it
+  // splits, outside any row; only a VACUUM clears those.
+  const oldDbWithBodies = async ({ afterSmallRows = false } = {}) => {
+    const dir = await freshVault();
+    const body = `${MARKER} `.repeat(250);
+    const small = afterSmallRows ? Array.from({ length: 300 }, (_, i) => ({ tool: "vault_read", args: { path: `s${i}.md` } })) : [];
+    const bodies = Array.from({ length: 40 }, (_, i) => ({ tool: "vault_append", args: { path: `n${i}.md`, content: body } }));
+    const db = createOldSchemaDb(dir, [...small, ...bodies]);
+    db.pragma("wal_checkpoint(TRUNCATE)");
+    db.close();
+    assert.ok(await bodyBytesLeft(dir) > 0, "the old database holds the bodies");
+    return dir;
+  };
+
+  it("leaves no byte of a note body in the database file or WAL once initialize returns", async () => {
+    const dir = await oldDbWithBodies();
+    const log = new ActivityLog({ vaultPath: dir, sessionId: "new" });
+    await log.initialize();
+    try {
+      assert.equal(await bodyBytesLeft(dir), 0);
+    } finally {
+      log.shutdown();
+      await fs.rm(dir, { recursive: true });
+    }
+  });
+
+  it("zeroes the bodies the migration drops even when the one-time VACUUM fails", async () => {
+    const dir = await oldDbWithBodies({ afterSmallRows: true });
+    const exec = Database.prototype.exec;
+    Database.prototype.exec = function (sql) {
+      if (/^\s*VACUUM\b/i.test(sql)) throw new Error("injected VACUUM failure (database is locked)");
+      return exec.call(this, sql);
+    };
+    const log = new ActivityLog({ vaultPath: dir, sessionId: "new" });
+    try {
+      await log.initialize();
+    } finally {
+      Database.prototype.exec = exec;
+    }
+    try {
+      assert.notEqual(log.db, null, "the log stays enabled");
+      assert.equal(await bodyBytesLeft(dir), 0, "after initialize");
+      log.shutdown();
+      assert.equal(await bodyBytesLeft(dir), 0, "after shutdown");
+    } finally {
+      log.shutdown();
+      await fs.rm(dir, { recursive: true });
+    }
+  });
+
   it("is all-or-nothing: a failure part-way leaves the old DB untouched and initialize rejects", async () => {
     const dir = await freshVault();
     const db = createOldSchemaDb(dir, [
@@ -549,6 +630,13 @@ describe("retention", () => {
     } finally {
       if (saved === undefined) delete process.env.VAULT_PKM_ACTIVITY_RETENTION_DAYS;
       else process.env.VAULT_PKM_ACTIVITY_RETENTION_DAYS = saved;
+    }
+  });
+
+  it("a retention too long to compute a cutoff date keeps everything instead of disabling the log", async () => {
+    for (const retentionDays of [1e9, "1e9", Number.MAX_VALUE]) {
+      const tools = await survivingTools(await vaultWithAges([0, 3650]), { retentionDays });
+      assert.deepEqual(tools, ["age_0", "age_3650"], `retentionDays ${retentionDays}`);
     }
   });
 
