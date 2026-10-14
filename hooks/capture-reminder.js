@@ -7,6 +7,7 @@
 // node_modules, so it may only import node: builtins.
 
 import { realpathSync } from "node:fs";
+import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const PR_URL_RE = /https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/\d+/;
@@ -104,11 +105,36 @@ function splitSimpleCommands(command) {
  */
 export function isPrCreateCommand(command) {
   if (typeof command !== "string") return false;
-  return splitSimpleCommands(command).some((words) => {
-    let i = 0;
-    while (i < words.length && ASSIGNMENT_RE.test(words[i])) i++;
-    return words[i] === "gh" && words[i + 1] === "pr" && words[i + 2] === "create";
-  });
+  return splitSimpleCommands(command).some(isPrCreateSegment);
+}
+
+/**
+ * The command inside a word that is wholly a `$(…)` or backtick substitution,
+ * optionally behind a `VAR=` prefix; null for any other word.
+ * @param {string} word
+ * @returns {string|null}
+ */
+function substitutionBody(word) {
+  const value = word.replace(ASSIGNMENT_RE, "");
+  if (value.startsWith("$(") && value.endsWith(")")) return value.slice(2, -1);
+  if (value.length > 1 && value.startsWith("`") && value.endsWith("`")) return value.slice(1, -1);
+  return null;
+}
+
+/**
+ * @param {string[]} words - one simple command
+ * @returns {boolean}
+ */
+function isPrCreateSegment(words) {
+  let i = 0;
+  for (; i < words.length && ASSIGNMENT_RE.test(words[i]); i++) {
+    const body = substitutionBody(words[i]);
+    if (body !== null && isPrCreateCommand(body)) return true;
+  }
+  if (i >= words.length) return false;
+  const body = substitutionBody(words[i]);
+  if (body !== null) return isPrCreateCommand(body);
+  return path.basename(words[i]) === "gh" && words[i + 1] === "pr" && words[i + 2] === "create";
 }
 
 /**

@@ -65,6 +65,11 @@ describe("capture-reminder hook", { concurrency: true }, () => {
       "cd repo && GH_HOST=x A=1 gh pr create --fill",
       "GH_TOKEN=\"$(gh auth token --user AdrianV101)\" gh pr create --draft --fill",
       "GH_TOKEN=$(gh auth token --user AdrianV101) gh pr create --draft --fill",
+      "URL=$(gh pr create --fill) && echo \"$URL\"",
+      "URL=\"$(gh pr create --draft --fill)\"; echo \"$URL\"",
+      "$(gh pr create --fill)",
+      "/opt/homebrew/bin/gh pr create --fill",
+      "GH_HOST=x /usr/local/bin/gh pr create --draft",
       "gh pr create --draft --title \"fix: a; b && c | d\" --body \"$(cat <<'EOF'\n## Summary\nIt's done.\nEOF\n)\"",
     ];
     for (const command of commands) {
@@ -80,6 +85,9 @@ describe("capture-reminder hook", { concurrency: true }, () => {
       "echo gh pr create",
       "echo \"next: gh pr create --draft\"",
       "git commit -m \"docs: explain the gh pr create flow\"",
+      "URL=$(gh pr view 42 --json url) && echo \"$URL\"",
+      "/opt/homebrew/bin/gh pr list",
+      "/opt/homebrew/bin/ghx pr create",
       "gh pr view 42 --json url",
       "gh pr list --author @me",
     ];
