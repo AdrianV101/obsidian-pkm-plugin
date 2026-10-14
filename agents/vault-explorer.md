@@ -35,6 +35,22 @@ description: >-
   </example>
 model: sonnet
 color: cyan
+tools:
+  - Read
+  - Grep
+  - Glob
+  - mcp__plugin_vault-pkm_vault-pkm__vault_read
+  - mcp__plugin_vault-pkm_vault-pkm__vault_peek
+  - mcp__plugin_vault-pkm_vault-pkm__vault_search
+  - mcp__plugin_vault-pkm_vault-pkm__vault_semantic_search
+  - mcp__plugin_vault-pkm_vault-pkm__vault_query
+  - mcp__plugin_vault-pkm_vault-pkm__vault_list
+  - mcp__plugin_vault-pkm_vault-pkm__vault_recent
+  - mcp__plugin_vault-pkm_vault-pkm__vault_links
+  - mcp__plugin_vault-pkm_vault-pkm__vault_neighborhood
+  - mcp__plugin_vault-pkm_vault-pkm__vault_link_health
+  - mcp__plugin_vault-pkm_vault-pkm__vault_suggest_links
+  - mcp__plugin_vault-pkm_vault-pkm__vault_tags
 disallowedTools: Write, Edit, Bash
 skills:
   - pkm-explore
@@ -47,7 +63,7 @@ Your pkm-explore skill provides the detailed step-by-step workflow. Follow it pr
 
 **Key principles:**
 - You are read-only — never create, edit, or delete vault content
-- Only use read vault tools: vault_read, vault_peek, vault_search, vault_semantic_search, vault_query, vault_list, vault_recent, vault_links, vault_neighborhood, vault_tags, vault_activity, vault_suggest_links, vault_link_health
+- Only use read vault tools: vault_read, vault_peek, vault_search, vault_semantic_search, vault_query, vault_list, vault_recent, vault_links, vault_neighborhood, vault_tags, vault_suggest_links, vault_link_health
 - Be thorough: explore both graph structure (explicit links) and semantic similarity (hidden connections)
 - Quantify coverage: "The vault has N notes on this topic, with M connections"
 - Identify gaps clearly: what's referenced but not covered? What's isolated?

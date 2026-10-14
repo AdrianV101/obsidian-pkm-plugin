@@ -66,6 +66,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - The write rules no longer lose a dot-folder segment when a symlink's real target is a dot-folder entry whose name contains backslashes.
 
 ### Security
+- `vault-explorer` and `link-auditor` now run with an explicit `tools:` allowlist (the 12 read-only vault tools plus Read, Grep and Glob; `link-auditor` also gets `vault_add_links`), so the allowlists enforce what each agent's prompt already said. Neither can call `vault_write`, `vault_move`, `vault_trash` or `vault_activity` (whose `clear` deletes log rows).
 - **Note bodies no longer persist in the activity log.** A one-time migration rewrites existing entries through the same summariser, so content of notes written, appended or since trashed is dropped. The database switches once to incremental auto-vacuum so the freed space is returned.
 - Every tool now resolves paths through their real location: a symlink inside the vault that points outside it can no longer be read or written through (`vault-fs.js` `resolveSafe`).
 - Write tools (`vault_write`, `vault_append`, `vault_edit`, `vault_update_frontmatter`, `vault_add_links`, `vault_trash`, and both paths of `vault_move`) only accept `.md` notes outside dot-folders, so `.obsidian/`, `.git/` and `.trash/` can no longer be modified through them. The rules also judge the real target of an in-vault symlink (a link into `.git/` or to a non-`.md` file is refused) and read backslashes as separators on every platform.
