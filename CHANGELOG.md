@@ -17,6 +17,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 - `vault_trash` refuses folders; trash the notes inside one by one. `vault_move` still moves folders, but not into or out of dot-folders and never the vault root.
+- **The activity log keeps 90 days and stores summarised arguments.** Strings over 200 characters are stored as `"<N chars>"`; path-like arguments are kept. Set `VAULT_PKM_ACTIVITY_RETENTION_DAYS` to change the window (`0` keeps everything). The `vault_activity` `path` filter now matches an exact note or everything under a folder (it was a substring match on the JSON arguments) and uses a new indexed `path` column.
 - **Heading lookups are exact and unambiguous.** `vault_read` `heading`, `vault_append` `heading` and `vault_add_links` `section` match `## Foo` by level and text, or `Foo` by text at any level. Prefixes no longer match (`## 2026-10` does not find `## 2026-10-08`). A heading that appears more than once now returns an error listing each match's line number instead of silently using the first. Headings inside fenced code blocks are ignored.
 - **Every `vault_read` mode is capped** (heading, tail, tail_sections, lines; a chunk is already within the cap) at ~80k characters (~400k with `force`). Output is cut at a line boundary and ends with `[truncated: lines a–b of N; continue with lines: {start: b+1}]`.
 - **`vault_peek` outlines show at most 50 headings**, and "Heading not found" errors list at most 30.
@@ -64,6 +65,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - The write rules no longer lose a dot-folder segment when a symlink's real target is a dot-folder entry whose name contains backslashes.
 
 ### Security
+- **Note bodies no longer persist in the activity log.** A one-time migration rewrites existing entries through the same summariser, so content of notes written, appended or since trashed is dropped. The database switches once to incremental auto-vacuum so the freed space is returned.
 - Every tool now resolves paths through their real location: a symlink inside the vault that points outside it can no longer be read or written through (`vault-fs.js` `resolveSafe`).
 - Write tools (`vault_write`, `vault_append`, `vault_edit`, `vault_update_frontmatter`, `vault_add_links`, `vault_trash`, and both paths of `vault_move`) only accept `.md` notes outside dot-folders, so `.obsidian/`, `.git/` and `.trash/` can no longer be modified through them. The rules also judge the real target of an in-vault symlink (a link into `.git/` or to a non-`.md` file is refused) and read backslashes as separators on every platform.
 - Development/CI lockfile (`package-lock.json`, which is not published) refreshed with `npm audit fix`, clearing 1 critical (`proxy-addr`) and 5 high (`@modelcontextprotocol/sdk`, `fast-uri`, `hono`, `ip-address`, `js-yaml`) advisories in the dependency tree used for development and CI. Installed copies of the plugin resolve their own dependencies.

@@ -15,7 +15,7 @@ This document describes how the `vault-pkm` plugin (also published as `obsidian-
 All persistent data is stored inside your vault directory (`VAULT_PATH`) on your own machine:
 
 - **Notes you create or edit** via `vault_write`, `vault_append`, `vault_edit`, `vault_update_frontmatter`, `vault_add_links`, `vault_move`, and `vault_trash` — written as plain Markdown files in your vault.
-- **Activity log** at `$VAULT_PATH/.obsidian/activity-log.db` — a SQLite database recording MCP tool calls (tool name, timestamp, session ID, and path) so Claude can recall prior session activity. You can clear it at any time via `vault_activity({ action: "clear" })` or by deleting the file.
+- **Activity log** at `$VAULT_PATH/.obsidian/activity-log.db` — a SQLite database recording MCP tool calls (tool name, timestamp, session ID, note path and summarised arguments — any argument longer than 200 characters, such as note content, is stored only as its length) so Claude can recall prior session activity. Entries older than 90 days are deleted at server start (`VAULT_PKM_ACTIVITY_RETENTION_DAYS`, `0` = keep forever). You can clear it at any time via `vault_activity({ action: "clear" })` or by deleting the file.
 - **Semantic index** at `$VAULT_PATH/.obsidian/semantic-index.db` (only if semantic search is enabled) — a SQLite database containing OpenAI embedding vectors for your note chunks. It is a regenerable cache; deleting it is safe.
 
 Nothing in `.obsidian/` is uploaded anywhere by this plugin. If your vault is synced via Obsidian Sync, iCloud, Dropbox, etc., those services apply their own privacy terms.

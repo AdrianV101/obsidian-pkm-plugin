@@ -3072,6 +3072,16 @@ describe("vault_activity (with live activityLog)", () => {
       /Unknown action/
     );
   });
+
+  it("query shows summarized args, including rows an older version stored in full", async () => {
+    activityLog.log("vault_write", { path: "big/new.md", content: "w".repeat(5000) });
+    activityLog.db.prepare("INSERT INTO activity (timestamp, session_id, tool_name, args_json, path) VALUES (?, ?, ?, ?, ?)")
+      .run(new Date().toISOString(), testSessionId, "vault_append", JSON.stringify({ path: "big/old.md", content: "v".repeat(5000) }), "big/old.md");
+    const text = (await activityHandlers.get("vault_activity")({ action: "query", path: "big" })).content[0].text;
+    assert.ok(text.includes("2 entries"), text);
+    assert.equal(text.split("<5000 chars>").length - 1, 2, text);
+    assert.ok(!text.includes("w".repeat(201)) && !text.includes("v".repeat(201)));
+  });
 });
 
 // ─── T2 Quick Wins ──────────────────────────────────────────────────

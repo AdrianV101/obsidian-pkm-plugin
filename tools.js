@@ -299,7 +299,7 @@ Pass custom <%...%> variables via the 'variables' parameter.` + LINK_FORMAT_NOTE
           },
           path: {
             type: "string",
-            description: "Filter by file path substring in arguments"
+            description: "Filter by note path (exact) or folder (every note beneath it), e.g. '01-Projects/MyApp'"
           }
         }
       }

@@ -128,7 +128,10 @@ Logs all MCP tool calls with timestamps and session IDs. Enables cross-session m
 - Storage: SQLite DB at `$VAULT_PATH/.obsidian/activity-log.db` (separate from semantic index)
 - Session ID: generated via `crypto.randomUUID()` at MCP server startup (each conversation gets its own)
 - Logs every tool call except `vault_activity` itself
-- Supports filtering by tool name, session ID, date range, and path substring
+- Supports filtering by tool name, session ID, date range, and path (exact note, or folder prefix)
+- Arguments are summarised before storage: strings over 200 chars become `"<N chars>"` (path-like keys `path`, `source`, `destination`, `folder`, `target`, `old_path`, `new_path` are kept)
+- Retention: rows older than `VAULT_PKM_ACTIVITY_RETENTION_DAYS` (default 90; `0` keeps everything) are deleted at server start; the DB uses `auto_vacuum = INCREMENTAL`
+- Schema version in `PRAGMA user_version` (1 = indexed `path` column + summarised args)
 - Privacy: `action: "clear"` deletes entries (with optional filters), or delete the DB file
 
 ```javascript
