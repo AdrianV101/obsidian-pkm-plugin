@@ -355,7 +355,7 @@ Your `VAULT_PATH` is wrong or missing. The server validates this at startup and 
 Run `npx obsidian-pkm init` to install templates, or copy the `templates/` files from this repo into your vault's `05-Templates/` directory. The server loads templates from there at startup.
 
 **Semantic search not appearing in tool list**
-Set `VAULT_PKM_OPENAI_KEY` in `~/.claude/settings.json`. See [Enable Semantic Search](#5-enable-semantic-search-optional). Without it, `vault_semantic_search` and `vault_suggest_links` are hidden entirely.
+Set `VAULT_PKM_OPENAI_KEY` in `~/.claude/settings.json`. See [Enable Semantic Search](#5-enable-semantic-search-optional). Without a key, `vault_semantic_search` and `vault_suggest_links` are hidden entirely. With a key they stay listed even while the index is disabled (for example after a quota error), so a call can re-check the API.
 
 **Server not showing up in Claude Code after install**
 Run `claude mcp list` to check. If `vault-pkm` is missing, reinstall the plugin: `claude plugin install vault-pkm@claude-community`. Then run `/vault-pkm:setup` to configure it.
@@ -367,7 +367,7 @@ Notes written through the vault tools are reindexed right away. Other changes ar
 OpenAI rejected the key (HTTP 401/403) or the account has no credits left (HTTP 429 `insufficient_quota`). Fix the key or add credits. The next semantic tool call retries once; when it succeeds the index re-enables and catches up on its own.
 
 **Hidden `.lock` / `.tmp` files next to notes, or sync conflicts on them**
-Every note write briefly creates hidden files beside the note: a lock (`.<hash>.lock`) and a staging file (`.<hash>.<pid>.<rand>.tmp`). They are removed within moments, but a sync or version-control tool that does not skip dotfiles can pick them up. Ignore the patterns `.*.lock` and `.*.tmp` there (for example `(?d).*.lock` and `(?d).*.tmp` in Syncthing's `.stignore`, or `.*.lock` and `.*.tmp` in the `.gitignore` used by obsidian-git). A crashed write can leave one behind; it is safe to delete, and the plugin treats a lock older than 10 seconds as stale.
+Every note write briefly creates hidden files beside the note: a lock (`.<hash>.lock`, plus `.<hash>.takeover.lock` while a stale lock is being taken over) and a staging file (`.<hash>.<pid>.<rand>.tmp`). They are removed within moments, but a sync or version-control tool that does not skip dotfiles can pick them up. Ignore the patterns `.*.lock` and `.*.tmp` there (for example `(?d).*.lock` and `(?d).*.tmp` in Syncthing's `.stignore`, or `.*.lock` and `.*.tmp` in the `.gitignore` used by obsidian-git). A crashed write can leave one behind; it is safe to delete, and the plugin treats a lock older than 10 seconds as stale.
 
 **Not sure if everything is set up correctly?**
 Run `npx obsidian-pkm doctor` for a diagnostic checklist that validates your Node version, vault path, templates, API keys, and native dependencies. It reads `VAULT_PATH` and the OpenAI key from your shell environment or, failing that, from the `env` block of `~/.claude/settings.json`, and says which source it used.

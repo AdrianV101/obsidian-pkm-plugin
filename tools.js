@@ -54,7 +54,7 @@ export function createToolsList(templateDescriptions, templateNames, hasSemantic
     },
     {
       name: "vault_write",
-      description: `Create a new note from a template. Notes must be created from templates to ensure proper frontmatter.
+      description: `Create a new note from a template. Notes must be created from templates to ensure proper frontmatter. The path must be a .md file outside dot-folders (not .obsidian/, .git/ or .trash/), and an existing note is never overwritten.
 
 Available templates:
 ${templateDescriptions || "(Loading...)"}
@@ -306,7 +306,7 @@ Pass custom <%...%> variables via the 'variables' parameter.` + LINK_FORMAT_NOTE
     },
     {
       name: "vault_trash",
-      description: "Soft-delete a file by moving it to .trash/ (Obsidian convention). Reports files with broken incoming links as warnings. Use vault_move to relocate files instead." + LINK_FORMAT_NOTE,
+      description: "Soft-delete a note by moving it to .trash/ (Obsidian convention). Only .md notes outside dot-folders can be trashed; folders are refused (trash the notes inside one by one). Reports files with broken incoming links as warnings. Use vault_move to relocate files instead." + LINK_FORMAT_NOTE,
       inputSchema: {
         type: "object",
         properties: {

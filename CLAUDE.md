@@ -131,8 +131,8 @@ Logs all MCP tool calls with timestamps and session IDs. Enables cross-session m
 - Session ID: generated via `crypto.randomUUID()` at MCP server startup (each conversation gets its own)
 - Logs every tool call except `vault_activity` itself
 - Supports filtering by tool name, session ID, date range, and path (exact note, or folder prefix; the filter matches the stored argument, so it needs the full vault-relative path, is case-sensitive, and a short name or partial folder matches nothing)
-- Arguments are summarised before storage: strings over 200 chars become `"<N chars>"` (path-like keys `path`, `source`, `destination`, `folder`, `target`, `old_path`, `new_path` are kept)
-- Retention: rows older than `VAULT_PKM_ACTIVITY_RETENTION_DAYS` (default 90; `0` keeps everything) are deleted at server start; the DB uses `auto_vacuum = INCREMENTAL`
+- Arguments are summarised before storage: strings over 200 chars become `"<N chars>"`, except vault paths: the top-level `path`, `source`, `destination`, `folder`, `target`, `old_path`, `new_path` arguments and `links[].target` (the same key names inside `frontmatter`, `fields`, `custom_fields` or `variables` are summarised)
+- Retention: rows older than `VAULT_PKM_ACTIVITY_RETENTION_DAYS` (default 90; `0`, or a window too long to compute, keeps everything) are deleted at server start; the DB uses `auto_vacuum = INCREMENTAL` and `secure_delete = ON` (deleted content is zeroed)
 - Schema version in `PRAGMA user_version` (1 = indexed `path` column + summarised args)
 - Privacy: `action: "clear"` deletes entries (with optional filters), or delete the DB file
 
