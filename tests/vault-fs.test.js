@@ -856,7 +856,7 @@ describe("mutateFile staging and locking", () => {
     const { d, p } = await sub();
     const lock = await lockPathFor(d, p);
     const old = new Date(Date.now() - 60_000);
-    for (const file of [lock, `${lock}.takeover`]) {
+    for (const file of [lock, lock.replace(/\.lock$/, ".takeover.lock")]) {
       await fs.writeFile(file, "token of a crashed process");
       await fs.utimes(file, old, old);
     }

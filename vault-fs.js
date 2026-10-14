@@ -464,7 +464,8 @@ async function takeOverIfStale(lock, staleLockMs, beforeTakeover) {
   const state = await lockState(lock, staleLockMs);
   if (state !== "stale") return state === "gone";
   if (beforeTakeover) await beforeTakeover();
-  const guard = `${lock}.takeover`;
+  // Named like a lock (".*.lock"), so sync-tool ignore patterns for locks cover it too.
+  const guard = lock.replace(/\.lock$/, ".takeover.lock");
   const token = uniqueToken();
   try {
     await fs.writeFile(guard, token, { flag: "wx" });
