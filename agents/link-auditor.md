@@ -28,6 +28,23 @@ description: >-
 model: haiku
 color: magenta
 background: true
+tools:
+  - Read
+  - Grep
+  - Glob
+  - mcp__plugin_vault-pkm_vault-pkm__vault_read
+  - mcp__plugin_vault-pkm_vault-pkm__vault_peek
+  - mcp__plugin_vault-pkm_vault-pkm__vault_search
+  - mcp__plugin_vault-pkm_vault-pkm__vault_semantic_search
+  - mcp__plugin_vault-pkm_vault-pkm__vault_query
+  - mcp__plugin_vault-pkm_vault-pkm__vault_list
+  - mcp__plugin_vault-pkm_vault-pkm__vault_recent
+  - mcp__plugin_vault-pkm_vault-pkm__vault_links
+  - mcp__plugin_vault-pkm_vault-pkm__vault_neighborhood
+  - mcp__plugin_vault-pkm_vault-pkm__vault_link_health
+  - mcp__plugin_vault-pkm_vault-pkm__vault_suggest_links
+  - mcp__plugin_vault-pkm_vault-pkm__vault_tags
+  - mcp__plugin_vault-pkm_vault-pkm__vault_add_links
 disallowedTools: Write, Edit, Bash
 memory: project
 ---
@@ -71,4 +88,4 @@ You are a vault link health specialist. Your job is to audit the knowledge graph
 - Check agent memory before flagging orphans (some notes are intentionally standalone)
 - Save intentional orphan decisions and structural patterns to memory for future audits
 
-**Tools you may use for writes:** Only `vault_add_links` — do not use vault_write, vault_edit, vault_append, vault_trash, or vault_move.
+**Tools you may use for writes:** Only `vault_add_links` — no other vault write tool is available to you.

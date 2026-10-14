@@ -2,7 +2,8 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
   extractWikilinks,
-  resolveLink,
+  createLinkResolver,
+  collectLinkedPaths,
   formatNeighborhood,
 } from "../graph.js";
 import { buildBasenameMap } from "../helpers.js";
@@ -70,57 +71,124 @@ describe("buildBasenameMap (used by graph)", () => {
   });
 });
 
-describe("resolveLink", () => {
+describe("extractWikilinks code masking and escapes", () => {
+  it("ignores wikilinks inside fenced code blocks and inline code spans", () => {
+    const shapes = [
+      "```\n[[ghost]]\n```",
+      "~~~md\n[[ghost]]\n~~~",
+      "````\n```\n[[ghost]]\n```\n````",
+      "Inline `[[ghost]]` span",
+      "Double ``[[ghost]] with ` tick`` span",
+    ];
+    for (const code of shapes) {
+      const content = `Before [[real]]\n${code}\nAfter [[also-real]]`;
+      assert.deepEqual(extractWikilinks(content), ["real", "also-real"], JSON.stringify(code));
+    }
+  });
+
+  it("treats \\| inside a link as the alias separator", () => {
+    assert.deepEqual(extractWikilinks("| [[a\\|b]] | [[c#h\\|d]] |"), ["a", "c#h"]);
+  });
+
+  it("extracts embeds like ordinary links", () => {
+    assert.deepEqual(extractWikilinks("![[diagram.png]] and ![[note#Section|300]]"), ["diagram.png", "note#Section"]);
+  });
+});
+
+describe("createLinkResolver", () => {
   const files = [
     "01-Projects/note-a.md",
     "02-Areas/note-a.md",
     "03-Resources/unique.md",
     "folder/subfolder/deep.md",
+    "root-note.md",
+    "elsewhere/root-note.md",
+    "a/x/n.md",
+    "b/x/n.md",
   ];
-  const { basenameMap: resolutionMap, allFilesSet } = buildBasenameMap(files);
+  const resolver = createLinkResolver(files);
 
-  it("resolves exact path match", () => {
-    const result = resolveLink("01-Projects/note-a", resolutionMap, allFilesSet);
-    assert.deepEqual(result.paths, ["01-Projects/note-a.md"]);
-    assert.equal(result.ambiguous, false);
+  it("resolves an exact vault path with or without .md, case-insensitively", () => {
+    for (const target of ["01-Projects/note-a", "01-Projects/note-a.md", "01-projects/NOTE-A"]) {
+      assert.deepEqual(resolver.resolve(target), { status: "resolved", path: "01-Projects/note-a.md" }, target);
+    }
   });
 
-  it("resolves unique basename", () => {
-    const result = resolveLink("unique", resolutionMap, allFilesSet);
-    assert.deepEqual(result.paths, ["03-Resources/unique.md"]);
-    assert.equal(result.ambiguous, false);
+  it("resolves a bare name by basename, case-insensitively", () => {
+    for (const target of ["unique", "Unique", "UNIQUE.md"]) {
+      assert.deepEqual(resolver.resolve(target), { status: "resolved", path: "03-Resources/unique.md" }, target);
+    }
   });
 
-  it("flags ambiguous basename", () => {
-    const result = resolveLink("note-a", resolutionMap, allFilesSet);
-    assert.equal(result.paths.length, 2);
-    assert.equal(result.ambiguous, true);
+  it("prefers a root-level note whose path equals the bare name over same-basename notes elsewhere", () => {
+    assert.deepEqual(resolver.resolve("root-note"), { status: "resolved", path: "root-note.md" });
   });
 
-  it("strips heading references", () => {
-    const result = resolveLink("unique#section", resolutionMap, allFilesSet);
-    assert.deepEqual(result.paths, ["03-Resources/unique.md"]);
+  it("reports a bare name shared by several notes as ambiguous with every candidate", () => {
+    assert.deepEqual(resolver.resolve("note-a"), {
+      status: "ambiguous",
+      candidates: ["01-Projects/note-a.md", "02-Areas/note-a.md"],
+    });
   });
 
-  it("strips block references", () => {
-    const result = resolveLink("unique^block-id", resolutionMap, allFilesSet);
-    assert.deepEqual(result.paths, ["03-Resources/unique.md"]);
+  it("resolves a target containing / by segment-aligned path suffix", () => {
+    for (const target of ["subfolder/deep", "Subfolder/Deep.md"]) {
+      assert.deepEqual(resolver.resolve(target), { status: "resolved", path: "folder/subfolder/deep.md" }, target);
+    }
+    assert.deepEqual(resolver.resolve("older/deep"), { status: "broken" });
   });
 
-  it("returns empty for nonexistent link", () => {
-    const result = resolveLink("nonexistent", resolutionMap, allFilesSet);
-    assert.deepEqual(result.paths, []);
-    assert.equal(result.ambiguous, false);
+  it("never falls back to the basename for a target containing /", () => {
+    assert.deepEqual(resolver.resolve("wrong-folder/unique"), { status: "broken" });
   });
 
-  it("returns empty for empty link target", () => {
-    const result = resolveLink("#just-heading", resolutionMap, allFilesSet);
-    assert.deepEqual(result.paths, []);
+  it("reports a path suffix shared by several notes as ambiguous", () => {
+    assert.deepEqual(resolver.resolve("x/n"), { status: "ambiguous", candidates: ["a/x/n.md", "b/x/n.md"] });
   });
 
-  it("handles .md extension in link", () => {
-    const result = resolveLink("01-Projects/note-a.md", resolutionMap, allFilesSet);
-    assert.deepEqual(result.paths, ["01-Projects/note-a.md"]);
+  it("resolves heading and block references to the note itself", () => {
+    for (const target of ["unique#section", "unique#^block-id", "unique^block-id", "03-Resources/unique#Heading One"]) {
+      assert.deepEqual(resolver.resolve(target), { status: "resolved", path: "03-Resources/unique.md" }, target);
+    }
+  });
+
+  it("reports targets with no note part as broken", () => {
+    for (const target of ["#just-heading", "^block", "", "   "]) {
+      assert.deepEqual(resolver.resolve(target), { status: "broken" }, JSON.stringify(target));
+    }
+  });
+
+  it("reports targets that match no note as broken", () => {
+    for (const target of ["nonexistent", "diagram.png", "01-Projects/missing"]) {
+      assert.deepEqual(resolver.resolve(target), { status: "broken" }, target);
+    }
+  });
+});
+
+describe("createLinkResolver unicode normalisation", () => {
+  const nfd = "caf\u0065\u0301";
+  const nfc = "caf\u00e9";
+  it("matches NFC links to NFD files and NFD links to NFC files, returning the on-disk spelling", () => {
+    const onNfd = createLinkResolver([`notes/${nfd}.md`, `x/${nfd}.md`]);
+    assert.deepEqual(onNfd.resolve(`notes/${nfc}`), { status: "resolved", path: `notes/${nfd}.md` });
+    assert.deepEqual(onNfd.resolve(`${nfc}`).status, "ambiguous");
+    const onNfc = createLinkResolver([`notes/${nfc}.md`]);
+    assert.deepEqual(onNfc.resolve(nfd), { status: "resolved", path: `notes/${nfc}.md` });
+    assert.deepEqual(onNfc.resolve(`notes/${nfd}`), { status: "resolved", path: `notes/${nfc}.md` });
+  });
+});
+
+describe("extractWikilinks multi-line", () => {
+  it("does not treat a bracket pair spanning lines as a link", () => {
+    assert.deepEqual(extractWikilinks("[[a\nb]] and [[c]]"), ["c"]);
+  });
+});
+
+describe("collectLinkedPaths", () => {
+  it("returns every note the content's links may point to, skipping code and broken links", () => {
+    const resolver = createLinkResolver(["a/one.md", "b/two.md", "c/two.md", "d/three.md"]);
+    const content = "[[one]] [[two]] [[missing]]\n```\n[[three]]\n```\n`[[d/three]]`";
+    assert.deepEqual([...collectLinkedPaths(content, resolver)].sort(), ["a/one.md", "b/two.md", "c/two.md"]);
   });
 });
 
@@ -175,5 +243,19 @@ describe("formatNeighborhood", () => {
     );
 
     assert.ok(result.includes("Center"));
+  });
+});
+
+describe("formatNeighborhood omitted nodes", () => {
+  it("prints a '+N not shown' line only when nodes were omitted", () => {
+    const depthGroups = new Map([[0, [{ path: "start.md", depth: 0, ambiguous: false, metadata: { type: null, status: null, tags: [] } }]]]);
+    for (const [omittedNodes, expected] of [[11, true], [0, false], [undefined, false]]) {
+      const text = formatNeighborhood(
+        { depthGroups, totalNodes: 1 + (omittedNodes || 0), omittedNodes },
+        { startPath: "start.md", depth: 2, direction: "both" }
+      );
+      assert.equal(text.includes("+11 not shown"), expected, `omittedNodes ${omittedNodes}`);
+      assert.equal(/not shown/.test(text), expected, `omittedNodes ${omittedNodes}`);
+    }
   });
 });

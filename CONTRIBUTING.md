@@ -50,11 +50,15 @@ Be respectful, constructive, and inclusive. We follow the [Contributor Covenant]
 index.js        - MCP server setup, request routing
 tools.js        - MCP tool definitions (names, descriptions, input schemas)
 handlers.js     - Tool handler implementations (all 20 handlers)
-helpers.js      - Pure helper functions (path resolution, filtering, templates, fuzzy matching, peek/redirect)
+vault-fs.js     - Path containment and write rules, the live FileIndex, and mutateFile/writeNew (the only way notes are modified or created)
+helpers.js      - Helper functions (frontmatter filtering and sorting, templates, tags, read-output capping, peek/redirect, folder fuzzy matching, graph blending, obsidian:// links)
+markdown.js     - Dependency-free markdown parsing (frontmatter split, ATX headings, fenced/inline code masking); hooks import it
+frontmatter.js  - YAML frontmatter parsing, rendering and byte-preserving updates (yaml package)
 graph.js        - Wikilink resolution and BFS graph traversal
 embeddings.js   - Semantic search (OpenAI embeddings, SQLite + sqlite-vec)
+semantic-health.js - Dependency-free semantic index health formatting (server, hooks and doctor)
 activity.js     - Activity logging (session tracking, SQLite)
-utils.js        - Shared utilities (frontmatter parsing, file listing)
+utils.js        - Re-exports extractFrontmatter and getAllMarkdownFiles for older imports
 cli.js          - CLI entry point (routes `init` / `doctor` subcommands or starts server)
 init.js         - Vault scaffolding wizard (templates, PARA folders)
 doctor.js       - `obsidian-pkm doctor` setup diagnostics

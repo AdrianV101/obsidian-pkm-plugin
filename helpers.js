@@ -1,49 +1,26 @@
 import fs from "fs/promises";
+import { resolveLexical } from "./vault-fs.js";
 import path from "path";
-import yaml from "js-yaml";
-import { extractFrontmatter } from "./utils.js";
+import {
+  DANGEROUS_KEYS,
+  assertSafeFrontmatterKey,
+  extractFrontmatter,
+  parseFrontmatterText,
+  renderFrontmatter,
+  validateFieldEnum,
+} from "./frontmatter.js";
+import { maskCode, parseHeadings, sectionRange, splitFrontmatter } from "./markdown.js";
+
+export { updateFrontmatter, validateFieldEnum } from "./frontmatter.js";
 
 // Large-file thresholds (character counts, ~4 chars per token)
 export const AUTO_REDIRECT_THRESHOLD = 80_000;  // ~20k tokens
 export const FORCE_HARD_CAP = 400_000;           // ~100k tokens
 export const CHUNK_SIZE = 80_000;                 // chars per chunk
+const MAX_OUTLINE_HEADINGS = 50;
 
 const PRIORITY_RANKS = { urgent: 3, high: 2, normal: 1, low: 0 };
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
-const DANGEROUS_KEYS = new Set(["__proto__", "constructor", "prototype"]);
-
-// Canonical frontmatter field constraints, keyed by note type.
-// Used by vault_write (template-based) and vault_update_frontmatter (existing files).
-const FIELD_ENUMS = {
-  status: {
-    task: ["pending", "active", "done", "cancelled"],
-  },
-  priority: {
-    task: Object.keys(PRIORITY_RANKS),  // low, normal, high, urgent
-  },
-};
-
-/**
- * Validate a frontmatter field value against FIELD_ENUMS for a given note type.
- * Throws if the value is not in the allowed set.
- *
- * @param {string} fieldName - the frontmatter field (e.g. "status")
- * @param {*} value - the value being set
- * @param {string} noteType - the note's type field (e.g. "task")
- */
-export function validateFieldEnum(fieldName, value, noteType) {
-  if (value === null || value === undefined) return;
-  const enumsByType = FIELD_ENUMS[fieldName];
-  if (!enumsByType) return;
-  const allowed = enumsByType[noteType];
-  if (!allowed) return;
-  const strValue = String(value);
-  if (!allowed.includes(strValue)) {
-    throw new Error(
-      `Invalid ${fieldName} "${strValue}" for type "${noteType}". Allowed values: ${allowed.join(", ")}`
-    );
-  }
-}
 
 /**
  * Compare two frontmatter values for sorting.
@@ -83,20 +60,13 @@ export function compareFrontmatterValues(a, b, field) {
   return aStr.localeCompare(bStr);
 }
 
-/**
- * Resolve a relative path against the vault root with directory traversal protection.
- *
- * @param {string} relativePath - path relative to vault root
- * @param {string} vaultPath - absolute vault root path
- * @returns {string} absolute resolved path
- * @throws {Error} if resolved path escapes the vault directory
- */
-export function resolvePath(relativePath, vaultPath) {
-  const resolved = path.resolve(vaultPath, relativePath);
-  if (resolved !== vaultPath && !resolved.startsWith(vaultPath + path.sep)) {
-    throw new Error("Path escapes vault directory. Paths must be relative to the vault root (e.g., '01-Projects/MyApp/_index.md').");
-  }
-  return resolved;
+export { resolveLexical as resolvePath };
+
+/** A frontmatter `tags` value as a list: a scalar is one tag, a missing value none. */
+export function toTagList(tags) {
+  if (Array.isArray(tags)) return tags;
+  if (tags === null || tags === undefined) return [];
+  return [tags];
 }
 
 /**
@@ -125,7 +95,7 @@ export function matchesFilters(metadata, filters) {
   }
 
   if (filters.tags && filters.tags.length > 0) {
-    const noteTags = (metadata.tags || []).filter(Boolean).map(t => String(t).toLowerCase());
+    const noteTags = toTagList(metadata.tags).filter(Boolean).map(t => String(t).toLowerCase());
     const allPresent = filters.tags.every(tag =>
       noteTags.includes(tag.toLowerCase())
     );
@@ -133,7 +103,7 @@ export function matchesFilters(metadata, filters) {
   }
 
   if (filters.tags_any && filters.tags_any.length > 0) {
-    const noteTags = (metadata.tags || []).filter(Boolean).map(t => String(t).toLowerCase());
+    const noteTags = toTagList(metadata.tags).filter(Boolean).map(t => String(t).toLowerCase());
     const anyPresent = filters.tags_any.some(tag =>
       noteTags.includes(tag.toLowerCase())
     );
@@ -185,8 +155,9 @@ export function formatMetadata(metadata) {
       : metadata.created;
     parts.push(`created: ${dateStr}`);
   }
-  const tagLine = metadata.tags?.length > 0
-    ? `tags: ${metadata.tags.join(", ")}`
+  const tags = toTagList(metadata.tags);
+  const tagLine = tags.length > 0
+    ? `tags: ${tags.join(", ")}`
     : "";
   return { summary: parts.join(" | "), tagLine };
 }
@@ -207,6 +178,30 @@ export function countOccurrences(content, searchString) {
     position += searchString.length;
   }
   return count;
+}
+
+/**
+ * 1-based line numbers of each non-overlapping occurrence of a substring.
+ *
+ * @param {string} content - text to search
+ * @param {string} searchString - substring to find
+ * @returns {number[]}
+ */
+export function occurrenceLines(content, searchString) {
+  const lines = [];
+  if (searchString.length === 0) return lines;
+  let line = 1;
+  let scanned = 0;
+  let position = 0;
+  while ((position = content.indexOf(searchString, position)) !== -1) {
+    for (let i = scanned; i < position; i++) {
+      if (content.charCodeAt(i) === 10) line++;
+    }
+    scanned = position;
+    lines.push(line);
+    position += searchString.length;
+  }
+  return lines;
 }
 
 /**
@@ -246,7 +241,7 @@ export function extractTemplateDescription(content, frontmatter) {
  * @returns {Promise<Map<string, Object>>} template name -> { shortName, path, description, frontmatter, content }
  */
 export async function loadTemplates(vaultPath) {
-  const templatesDir = resolvePath("05-Templates", vaultPath);
+  const templatesDir = resolveLexical("05-Templates", vaultPath);
   const templateMap = new Map();
 
   try {
@@ -278,110 +273,90 @@ export async function loadTemplates(vaultPath) {
 }
 
 /**
+ * Local-time renderings of the date formats templates use.
+ *
+ * @param {Date} now
+ * @returns {Record<string, string>}
+ */
+function localDateFormats(now) {
+  const pad = (n) => String(n).padStart(2, "0");
+  const year = String(now.getFullYear());
+  const month = pad(now.getMonth() + 1);
+  const day = pad(now.getDate());
+  const date = `${year}-${month}-${day}`;
+  return {
+    "YYYY-MM-DD": date,
+    "YYYY-MM-DD HH:mm": `${date} ${pad(now.getHours())}:${pad(now.getMinutes())}`,
+    "YYYY": year,
+    "MM": month,
+    "DD": day,
+  };
+}
+
+/**
+ * Apply `substitute` to every string inside a parsed YAML value.
+ *
+ * @param {*} value
+ * @param {(text: string) => string} substitute
+ * @returns {*}
+ */
+function substituteInValue(value, substitute) {
+  if (typeof value === "string") return substitute(value);
+  if (Array.isArray(value)) return value.map(item => substituteInValue(item, substitute));
+  if (value && typeof value === "object") {
+    return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, substituteInValue(v, substitute)]));
+  }
+  return value;
+}
+
+/**
  * Substitute Templater-compatible variables and frontmatter fields in template content.
+ * The frontmatter is parsed, merged with `vars.frontmatter` and re-serialized as YAML,
+ * so values containing ": ", "#", quotes or newlines stay valid.
  *
  * @param {string} content - raw template content
  * @param {Object} vars
  * @param {string} [vars.title] - note title (for tp.file.title)
  * @param {Object} [vars.custom] - custom variable key-value pairs
- * @param {Object} [vars.frontmatter] - frontmatter fields to substitute
+ * @param {Object} [vars.frontmatter] - frontmatter fields to set (null/undefined keep the template value)
+ * @param {Date} [vars.now] - clock for date tokens (defaults to the current time)
  * @returns {string} content with variables replaced
+ * @throws {Error} on invalid template frontmatter, unsafe keys, or enum violations
  */
 export function substituteTemplateVariables(content, vars) {
-  const now = new Date();
-  const dateFormats = {
-    "YYYY-MM-DD": now.toISOString().split("T")[0],
-    "YYYY-MM-DD HH:mm": now.toISOString().replace("T", " ").slice(0, 16),
-    "YYYY": now.getFullYear().toString(),
-    "MM": String(now.getMonth() + 1).padStart(2, "0"),
-    "DD": String(now.getDate()).padStart(2, "0")
+  const dates = localDateFormats(vars.now ?? new Date());
+  const substitute = (text) => {
+    let result = text
+      .replace(/<%\s*tp\.date\.now\("([^"]+)"\)\s*%>/g, (_match, format) => dates[format] ?? dates["YYYY-MM-DD"])
+      .replace(/<%\s*tp\.file\.title\s*%>/g, () => vars.title || "Untitled");
+    for (const [key, value] of Object.entries(vars.custom ?? {})) {
+      const escaped = key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      result = result.replace(new RegExp(`<%\\s*${escaped}\\s*%>`, "g"), () => String(value));
+    }
+    return result;
   };
 
-  let result = content;
+  const { frontmatterText, bodyOffset } = splitFrontmatter(content);
+  if (frontmatterText === null) return substitute(content);
 
-  result = result.replace(/<%\s*tp\.date\.now\("([^"]+)"\)\s*%>/g, (match, format) => {
-    return dateFormats[format] || now.toISOString().split("T")[0];
-  });
-
-  result = result.replace(/<%\s*tp\.file\.title\s*%>/g, vars.title || "Untitled");
-
-  if (vars.custom) {
-    for (const [key, value] of Object.entries(vars.custom)) {
-      const escaped = key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      const regex = new RegExp(`<%\\s*${escaped}\\s*%>`, "g");
-      result = result.replace(regex, value);
+  const fields = substituteInValue(parseFrontmatterText(frontmatterText) ?? {}, substitute);
+  const noteType = typeof fields.type === "string" ? fields.type : null;
+  for (const [key, value] of Object.entries(vars.frontmatter ?? {})) {
+    assertSafeFrontmatterKey(key);
+    if (value === null || value === undefined) continue;
+    if (key === "tags") {
+      if (Array.isArray(value)) {
+        fields.tags = value.map(tag => (typeof tag === "string" ? tag.replace(/^#+/, "") : tag));
+      }
+      continue;
     }
+    if (noteType) validateFieldEnum(key, value, noteType);
+    fields[key] = value;
   }
 
-  if (vars.frontmatter && content.startsWith("---")) {
-    const endIndex = result.indexOf("\n---", 3);
-    if (endIndex !== -1) {
-      const frontmatterSection = result.slice(0, endIndex + 4);
-      const body = result.slice(endIndex + 4);
-
-      let updatedFrontmatter = frontmatterSection;
-
-      if (vars.frontmatter.tags && Array.isArray(vars.frontmatter.tags)) {
-        const tagsYaml = vars.frontmatter.tags.map(t => `  - ${t}`).join("\n");
-        let tagsReplaced = false;
-
-        if (updatedFrontmatter.match(/^tags:\s*\[.*\]/m)) {
-          updatedFrontmatter = updatedFrontmatter.replace(
-            /^tags:\s*\[.*\]/m,
-            `tags:\n${tagsYaml}`
-          );
-          tagsReplaced = true;
-        }
-
-        if (!tagsReplaced && updatedFrontmatter.match(/tags:\s*\n(?:\s+-[^\n]*\n?)*/)) {
-          updatedFrontmatter = updatedFrontmatter.replace(
-            /tags:\s*\n(?:\s+-[^\n]*\n?)*/,
-            `tags:\n${tagsYaml}\n`
-          );
-          tagsReplaced = true;
-        }
-
-        if (!tagsReplaced) {
-          updatedFrontmatter = updatedFrontmatter.replace(
-            /\n---$/,
-            `\ntags:\n${tagsYaml}\n---`
-          );
-        }
-      }
-
-      // Extract note type from template for enum validation
-      const typeMatch = frontmatterSection.match(/^type:\s*(.+)$/m);
-      const noteType = typeMatch ? typeMatch[1].trim() : null;
-
-      for (const [key, value] of Object.entries(vars.frontmatter)) {
-        if (key === "tags") continue;
-        if (DANGEROUS_KEYS.has(key)) {
-          throw new Error(`Disallowed frontmatter key: "${key}"`);
-        }
-        if (noteType && typeof value === "string") {
-          validateFieldEnum(key, value, noteType);
-        }
-        if (typeof value === "string") {
-          if (!/^[a-zA-Z][a-zA-Z0-9_-]*$/.test(key)) {
-            throw new Error(`Invalid frontmatter key: "${key}". Keys must start with a letter and contain only letters, digits, hyphens, or underscores.`);
-          }
-          const fieldRegex = new RegExp(`^${key}:.*$`, "m");
-          if (updatedFrontmatter.match(fieldRegex)) {
-            updatedFrontmatter = updatedFrontmatter.replace(fieldRegex, `${key}: ${value}`);
-          } else {
-            updatedFrontmatter = updatedFrontmatter.replace(
-              /\n---$/,
-              `\n${key}: ${value}\n---`
-            );
-          }
-        }
-      }
-
-      result = updatedFrontmatter + body;
-    }
-  }
-
-  return result;
+  const openingFence = content.slice(0, content.indexOf("\n") + 1);
+  const closingFence = content.slice(openingFence.length + frontmatterText.length, bodyOffset);
+  return openingFence + renderFrontmatter(fields) + closingFence + substitute(content.slice(bodyOffset));
 }
 
 /**
@@ -427,18 +402,8 @@ export function validateFrontmatterStrict(content) {
  * @returns {string[]} lowercase tag names
  */
 export function extractInlineTags(content) {
-  let body = content;
-
-  if (content.startsWith("---")) {
-    const endIndex = content.indexOf("\n---", 3);
-    if (endIndex !== -1) {
-      body = content.slice(endIndex + 4);
-    }
-  }
-
-  body = body.replace(/```[\s\S]*?```/g, "");
-  body = body.replace(/`[^`]+`/g, "");
-  body = body.replace(/^#+\s/gm, "");
+  const { bodyOffset } = splitFrontmatter(content);
+  const body = maskCode(content).slice(bodyOffset).replace(/^#+\s/gm, "");
 
   const tags = new Set();
   const tagRegex = /(?:^|[^a-zA-Z0-9&])#([a-zA-Z_][a-zA-Z0-9_/-]*)/g;
@@ -451,118 +416,37 @@ export function extractInlineTags(content) {
 }
 
 /**
- * Extract the heading level (1-6) from a markdown heading line, or 0 if not a heading.
- *
- * @param {string} line - a single line of text
- * @returns {number} heading level 1-6, or 0
- */
-export function parseHeadingLevel(line) {
-  const match = line.match(/^(#{1,6})\s/);
-  return match ? match[1].length : 0;
-}
-
-/**
- * Find the byte-index range of a section under a given heading.
+ * Locate the last `n` sections at heading `level` (headings in fenced code don't count).
  *
  * @param {string} content - full file content
- * @param {string} heading - exact heading line to find (e.g. "## Section One")
- * @returns {{ headingStart: number, afterHeading: number, sectionEnd: number } | null}
- */
-export function findSectionRange(content, heading) {
-  let headingStart = -1;
-  let searchFrom = 0;
-  while (searchFrom < content.length) {
-    const idx = content.indexOf(heading, searchFrom);
-    if (idx === -1) break;
-    // Only match at line boundaries: start of string or preceded by \n
-    if (idx === 0 || content[idx - 1] === "\n") {
-      headingStart = idx;
-      break;
-    }
-    searchFrom = idx + 1;
-  }
-  if (headingStart === -1) return null;
-
-  const headingLineEnd = content.indexOf("\n", headingStart);
-  const afterHeading = headingLineEnd === -1 ? content.length : headingLineEnd + 1;
-
-  const level = parseHeadingLevel(heading);
-  let sectionEnd = content.length;
-
-  if (level > 0) {
-    const lines = content.slice(afterHeading).split("\n");
-    let offset = afterHeading;
-    for (const line of lines) {
-      const lineLevel = parseHeadingLevel(line);
-      if (lineLevel > 0 && lineLevel <= level) {
-        sectionEnd = offset;
-        break;
-      }
-      offset += line.length + 1;
-    }
-  }
-
-  return { headingStart, afterHeading, sectionEnd };
-}
-
-/**
- * Return all heading lines from markdown content, excluding those inside frontmatter.
- *
- * @param {string} content - full markdown content
- * @returns {string[]} heading lines
- */
-export function listHeadings(content) {
-  let body = content;
-  if (content.startsWith("---")) {
-    const endIndex = content.indexOf("\n---", 3);
-    if (endIndex !== -1) {
-      body = content.slice(endIndex + 4);
-    }
-  }
-
-  return body.split("\n").filter(line => /^#{1,6}\s/.test(line));
-}
-
-/**
- * Extract frontmatter + last N sections at a given heading level.
- *
- * @param {string} content - full file content
- * @param {number} n - number of sections to return
+ * @param {number} n - number of sections
  * @param {number} level - heading level (1-6)
- * @returns {string} frontmatter + last N sections
+ * @returns {{ frontmatter: string, start: number, line: number }} the frontmatter block to
+ *   prepend, and the offset and 1-based line where the tail begins. With no heading at that
+ *   level the tail is the whole content and there is no separate frontmatter block.
  */
-export function extractTailSections(content, n, level) {
-  // Extract frontmatter
-  let frontmatter = "";
-  let body = content;
-  if (content.startsWith("---")) {
-    const endIndex = content.indexOf("\n---", 3);
-    if (endIndex !== -1) {
-      frontmatter = content.slice(0, endIndex + 4);
-      body = content.slice(endIndex + 4);
-    }
-  }
+export function findTailSections(content, n, level) {
+  const atLevel = parseHeadings(content).filter(h => h.level === level);
+  if (atLevel.length === 0) return { frontmatter: "", start: 0, line: 1 };
+  const first = atLevel[Math.max(0, atLevel.length - n)];
+  return { frontmatter: content.slice(0, splitFrontmatter(content).bodyOffset), start: first.offset, line: first.line };
+}
 
-  // Find all headings at exactly the given level
-  const lines = body.split("\n");
-  const headingPositions = [];
-  let offset = 0;
-  for (const line of lines) {
-    if (parseHeadingLevel(line) === level) {
-      headingPositions.push(offset);
-    }
-    offset += line.length + 1;
-  }
-
-  if (headingPositions.length === 0) {
-    return content;
-  }
-
-  const startIdx = Math.max(0, headingPositions.length - n);
-  const sliceStart = headingPositions[startIdx];
-  const tail = body.slice(sliceStart);
-
-  return frontmatter + (frontmatter && !frontmatter.endsWith("\n") ? "\n" : "") + tail;
+/**
+ * Cap a vault_read selection at `cap` chars, keeping whole lines.
+ *
+ * @param {string} text - the selection; its first line is file line `firstLine`
+ * @param {{ firstLine: number, totalLines: number, cap: number }} position
+ * @returns {string} `text` when it fits; otherwise the lines that fit plus a marker
+ *   telling the caller which `lines` range to read next
+ */
+export function capReadOutput(text, { firstLine, totalLines, cap }) {
+  if (text.length <= cap) return text;
+  let kept = text.slice(0, text.lastIndexOf("\n", cap - 1) + 1);
+  // A single line longer than the cap is cut mid-line; reading continues at the next line.
+  if (kept === "") kept = text.slice(0, cap) + "\n";
+  const lastLine = firstLine + kept.split("\n").length - 2;
+  return `${kept}[truncated: lines ${firstLine}–${lastLine} of ${totalLines}; continue with lines: {start: ${lastLine + 1}}]`;
 }
 
 /**
@@ -610,59 +494,13 @@ export function buildBasenameMap(allFiles) {
   const basenameMap = new Map();
   const allFilesSet = new Set(allFiles);
   for (const filePath of allFiles) {
-    const basename = path.basename(filePath, ".md").toLowerCase();
+    const basename = path.posix.basename(filePath, ".md").toLowerCase();
     if (!basenameMap.has(basename)) {
       basenameMap.set(basename, []);
     }
     basenameMap.get(basename).push(filePath);
   }
   return { basenameMap, allFilesSet };
-}
-
-/**
- * Resolve a short or partial path to a full vault-relative path.
- *
- * Resolution order:
- * 1. Exact match (path exists in allFilesSet as-is)
- * 2. Exact match with .md appended
- * 3. Basename match (with optional folder scoping)
- *
- * @param {string} inputPath - user-provided path (short name or full path)
- * @param {Map<string, string[]>} basenameMap - from buildBasenameMap
- * @param {Set<string>} allFilesSet - all vault-relative paths
- * @param {string} [folderScope] - optional folder prefix to filter matches
- * @returns {string} resolved vault-relative path
- * @throws {Error} if path not found or ambiguous
- */
-export function resolveFuzzyPath(inputPath, basenameMap, allFilesSet, folderScope) {
-  // 1. Exact match
-  if (allFilesSet.has(inputPath)) return inputPath;
-
-  // 2. Exact match with .md
-  if (!inputPath.endsWith(".md")) {
-    const withExt = inputPath + ".md";
-    if (allFilesSet.has(withExt)) return withExt;
-  }
-
-  // 3. Basename match
-  const basename = path.basename(inputPath, ".md").toLowerCase();
-  let matches = basenameMap.get(basename) || [];
-
-  // Apply folder scope if provided
-  if (folderScope && matches.length > 1) {
-    const scoped = matches.filter(p => p.startsWith(folderScope + "/"));
-    if (scoped.length > 0) matches = scoped;
-  }
-
-  if (matches.length === 1) return matches[0];
-  if (matches.length === 0) {
-    throw new Error(`File not found: "${inputPath}". No matching file in vault.`);
-  }
-
-  const list = matches.map(p => `  - ${p}`).join("\n");
-  throw new Error(
-    `"${inputPath}" matches ${matches.length} files:\n${list}\nUse a more specific path or add folder param to narrow scope.`
-  );
 }
 
 /**
@@ -681,10 +519,10 @@ export function resolveFuzzyFolder(folder, allFiles) {
   // Collect all unique directory paths from the file list
   const dirs = new Set();
   for (const file of allFiles) {
-    let dir = path.dirname(file);
+    let dir = path.posix.dirname(file);
     while (dir && dir !== ".") {
       dirs.add(dir);
-      dir = path.dirname(dir);
+      dir = path.posix.dirname(dir);
     }
   }
 
@@ -729,47 +567,21 @@ export function resolveFuzzyFolder(folder, allFiles) {
  */
 export function computePeek(content, relativePath) {
   const sizeChars = content.length;
-  const lines = content.split("\n");
-  const sizeLines = lines.length;
+  const sizeLines = content.split("\n").length;
   const frontmatter = extractFrontmatter(content);
   const totalChunks = sizeChars === 0 ? 0 : Math.ceil(sizeChars / CHUNK_SIZE);
 
-  // Determine where frontmatter ends (line index)
-  let bodyStartLine = 0;
-  if (content.startsWith("---")) {
-    for (let i = 1; i < lines.length; i++) {
-      if (lines[i] === "---") {
-        bodyStartLine = i + 1;
-        break;
-      }
-    }
-  }
+  const parsed = parseHeadings(content);
+  const headings = parsed.map(h => {
+    const range = sectionRange(content, parsed, h);
+    return { heading: h.raw, level: h.level, lineNumber: h.line, charCount: range.sectionEnd - range.headingStart };
+  });
 
-  // Build heading outline with line numbers and char counts
-  const headings = [];
-  for (let i = bodyStartLine; i < lines.length; i++) {
-    const level = parseHeadingLevel(lines[i]);
-    if (level > 0) {
-      headings.push({ heading: lines[i], level, lineNumber: i + 1, charCount: 0 });
-    }
-  }
-
-  // Compute charCount for each heading: chars from this heading to next same-or-higher-level heading (or EOF)
-  for (let h = 0; h < headings.length; h++) {
-    const startLine = headings[h].lineNumber - 1; // 0-indexed
-    let endLine = lines.length;
-    for (let next = h + 1; next < headings.length; next++) {
-      if (headings[next].level <= headings[h].level) {
-        endLine = headings[next].lineNumber - 1;
-        break;
-      }
-    }
-    headings[h].charCount = lines.slice(startLine, endLine).join("\n").length;
-  }
-
-  // Preview: first ~10 non-empty lines after frontmatter, truncated to 200 chars each
-  const bodyLines = lines.slice(bodyStartLine);
-  const previewLines = bodyLines.filter(l => l.trim() !== "").slice(0, 10)
+  // Preview: first ~10 non-empty body lines, truncated to 200 chars each
+  const previewLines = splitFrontmatter(content).body.split("\n")
+    .map(l => l.replace(/\r$/, ""))
+    .filter(l => l.trim() !== "")
+    .slice(0, 10)
     .map(l => l.length > 200 ? l.slice(0, 200) + "..." : l);
   const preview = previewLines.join("\n");
 
@@ -803,10 +615,13 @@ export function formatPeek(peekData, { redirected = false, formatPath } = {}) {
   if (headings.length > 0) {
     parts.push("");
     parts.push("### Heading Outline");
-    for (const h of headings) {
+    for (const h of headings.slice(0, MAX_OUTLINE_HEADINGS)) {
       const indent = "  ".repeat(h.level - 1);
       const title = h.heading.replace(/^#+\s*/, "");
       parts.push(`${indent}${title} [${h.charCount} chars]`);
+    }
+    if (headings.length > MAX_OUTLINE_HEADINGS) {
+      parts.push(`… +${headings.length - MAX_OUTLINE_HEADINGS} more`);
     }
   }
 
@@ -831,74 +646,6 @@ export function formatPeek(peekData, { redirected = false, formatPath } = {}) {
   }
 
   return parts.join("\n");
-}
-
-/**
- * Update YAML frontmatter fields in a markdown file's content.
- * Parses existing frontmatter, merges changes, re-serializes.
- *
- * @param {string} content - full file content with frontmatter
- * @param {Object} fields - fields to update (null value = delete, non-null = set/create)
- * @returns {{ content: string, frontmatter: Object }} updated content and resulting frontmatter
- * @throws {Error} if no frontmatter, protected field deletion, invalid key, or empty tags
- */
-export function updateFrontmatter(content, fields) {
-  if (!content.startsWith("---")) {
-    throw new Error("No frontmatter found in file");
-  }
-  const endIndex = content.indexOf("\n---", 3);
-  if (endIndex === -1) {
-    throw new Error("No frontmatter found in file (unclosed)");
-  }
-
-  const yamlStr = content.slice(4, endIndex);
-  const body = content.slice(endIndex + 4);
-
-  let parsed;
-  try {
-    parsed = yaml.load(yamlStr, { schema: yaml.JSON_SCHEMA });
-  } catch (e) {
-    throw new Error(`Failed to parse frontmatter: ${e.message}`, { cause: e });
-  }
-  if (!parsed || typeof parsed !== "object") {
-    parsed = {};
-  }
-
-  const PROTECTED_FIELDS = ["type", "created", "tags"];
-  const KEY_REGEX = /^[a-zA-Z][a-zA-Z0-9_-]*$/;
-
-  for (const [key, value] of Object.entries(fields)) {
-    if (DANGEROUS_KEYS.has(key)) {
-      throw new Error(`Disallowed frontmatter key: "${key}"`);
-    }
-    if (!KEY_REGEX.test(key)) {
-      throw new Error(`Invalid frontmatter key: "${key}". Keys must start with a letter and contain only letters, digits, hyphens, or underscores.`);
-    }
-
-    if (value === null) {
-      if (PROTECTED_FIELDS.includes(key)) {
-        throw new Error(`Cannot remove required field: "${key}". Protected fields: ${PROTECTED_FIELDS.join(", ")}`);
-      }
-      delete parsed[key];
-    } else {
-      if (key === "tags") {
-        if (!Array.isArray(value) || value.filter(Boolean).length === 0) {
-          throw new Error("tags must be a non-empty array");
-        }
-      }
-      // Use the file's existing type (or the new type if being changed) for enum validation
-      const effectiveType = key === "type" ? undefined : (fields.type || parsed.type);
-      if (effectiveType) {
-        validateFieldEnum(key, value, String(effectiveType));
-      }
-      parsed[key] = value;
-    }
-  }
-
-  const newYaml = yaml.dump(parsed, { lineWidth: -1, noRefs: true, sortKeys: false, schema: yaml.JSON_SCHEMA });
-  const newContent = "---\n" + newYaml + "---" + body;
-
-  return { content: newContent, frontmatter: { ...parsed } };
 }
 
 /**

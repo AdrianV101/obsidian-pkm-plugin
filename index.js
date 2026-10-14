@@ -9,12 +9,15 @@ import crypto from "crypto";
 import os from "os";
 import path from "path";
 import { createRequire } from "module";
+import { pathToFileURL } from "url";
 import fs from "fs/promises";
 import { SemanticIndex } from "./embeddings.js";
+import { describeHealth } from "./semantic-health.js";
 import { ActivityLog } from "./activity.js";
 import { loadTemplates } from "./helpers.js";
 import { createHandlers } from "./handlers.js";
 import { createToolsList } from "./tools.js";
+import { normalizeVaultRoot } from "./vault-fs.js";
 
 // Read version from package.json
 const require = createRequire(import.meta.url);
@@ -22,7 +25,7 @@ const { version: PKG_VERSION } = require("./package.json");
 
 export async function startServer() {
   // Get vault path from environment
-  const VAULT_PATH = process.env.VAULT_PATH || (os.homedir() + "/Documents/PKM");
+  const VAULT_PATH = normalizeVaultRoot(process.env.VAULT_PATH || path.join(os.homedir(), "Documents", "PKM"));
   // Vault name for obsidian:// URI links — defaults to basename of VAULT_PATH.
   // Override when the on-disk folder name differs from the registered Obsidian vault name.
   const VAULT_NAME = process.env.VAULT_PKM_VAULT_NAME || path.basename(VAULT_PATH);
@@ -49,7 +52,7 @@ export async function startServer() {
 
   // List available tools
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
-    tools: createToolsList(templateDescriptions, Array.from(templateRegistry.keys()), !!semanticIndex?.isAvailable)
+    tools: createToolsList(templateDescriptions, Array.from(templateRegistry.keys()), semanticIndex !== null)
   }));
 
   // Handle tool calls
@@ -142,7 +145,8 @@ export async function startServer() {
 
     const transport = new StdioServerTransport();
     await server.connect(transport);
-    console.error(`PKM MCP Server running... (${templateRegistry.size} templates loaded${semanticIndex?.isAvailable ? ", semantic search enabled" : ""}, activity log ${activityLog ? "enabled" : "disabled"})`);
+    const semanticStatus = semanticIndex ? `, semantic search ${describeHealth(semanticIndex.health())}` : "";
+    console.error(`PKM MCP Server running... (${templateRegistry.size} templates loaded${semanticStatus}, activity log ${activityLog ? "enabled" : "disabled"})`);
   }
 
   let shuttingDown = false;
@@ -178,8 +182,20 @@ export async function startServer() {
   });
 }
 
+/**
+ * Whether the module at `metaUrl` is the script node was started with.
+ * @param {string} metaUrl - import.meta.url of the module
+ * @param {string|undefined} argv1 - process.argv[1]
+ * @param {{ windows?: boolean }} [options]
+ * @returns {boolean}
+ */
+export function isMainModule(metaUrl, argv1, { windows = process.platform === "win32" } = {}) {
+  if (!argv1) return false;
+  return pathToFileURL(argv1, { windows }).href === metaUrl;
+}
+
 // Auto-start when run directly (backward compat: existing users may have
 // "args": ["/path/to/index.js"] in their settings.json)
-if (process.argv[1] && import.meta.url === `file://${process.argv[1]}`) {
+if (isMainModule(import.meta.url, process.argv[1])) {
   startServer();
 }

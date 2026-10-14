@@ -2,6 +2,7 @@ import fs from "fs/promises";
 import os from "os";
 import path from "path";
 import { loadTemplates } from "./helpers.js";
+import { healthFromStats, describeHealth } from "./semantic-health.js";
 
 const SETTINGS_LABEL = "~/.claude/settings.json";
 // Same precedence as the server's key lookup in index.js.
@@ -143,6 +144,30 @@ export async function runDoctor() {
   } else {
     warn("VAULT_PKM_OPENAI_KEY not set (semantic search disabled)");
     warnings++;
+  }
+
+  // 5b. Semantic index health, as last reported by the MCP server
+  if (apiKey) {
+    let stats = null;
+    try {
+      stats = JSON.parse(await fs.readFile(path.join(vaultPath, ".obsidian", "semantic-stats.json"), "utf-8"));
+    } catch {
+      // missing or unreadable: reported below
+    }
+    const health = healthFromStats(stats);
+    if (!stats) {
+      warn("Semantic index has not reported yet (no .obsidian/semantic-stats.json); start the MCP server once");
+      warnings++;
+    } else if (!health) {
+      ok(`Semantic index: ${stats.indexed_files}/${stats.vault_files} notes indexed (health not reported by this server version)`);
+      passed++;
+    } else if (health.status === "disabled") {
+      warn(`Semantic index ${describeHealth(health)}`);
+      warnings++;
+    } else {
+      ok(`Semantic index ${describeHealth(health)} (${stats.indexed_files}/${stats.vault_files} notes indexed, last success ${health.lastSuccessAt ?? "never"})`);
+      passed++;
+    }
   }
 
   // 6. better-sqlite3

@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import fs from "fs/promises";
 import path from "path";
 import os from "os";
+import { EventEmitter } from "node:events";
 import {
   SemanticIndex,
   chunkNote,
@@ -11,7 +12,22 @@ import {
   getPreview,
   contentHash,
   callEmbeddingAPI,
+  classifyEmbeddingError,
+  EmbeddingError,
 } from "../embeddings.js";
+import {
+  DIMS,
+  QUOTA_BODY,
+  embeddingsResponse,
+  errorResponse,
+  installFakeOpenAI,
+  recordingSleep,
+  quotaResponse,
+  makeVault,
+  manyNotes,
+} from "./fake-openai.js";
+
+const { Response, Headers } = globalThis;
 
 // ---------------------------------------------------------------------------
 // chunkNote(content, filePath)
@@ -240,90 +256,134 @@ describe("contentHash", () => {
 });
 
 // ---------------------------------------------------------------------------
-// callEmbeddingAPI — error truncation
+// classifyEmbeddingError(status, bodyText, headers, now)
+// ---------------------------------------------------------------------------
+describe("classifyEmbeddingError", () => {
+  const kindCases = [
+    { name: "401", status: 401, body: "{\"error\":{\"code\":\"invalid_api_key\"}}", kind: "auth" },
+    { name: "403", status: 403, body: "", kind: "auth" },
+    { name: "429 insufficient_quota (live body)", status: 429, body: QUOTA_BODY, kind: "quota" },
+    { name: "429 rate limit", status: 429, body: "{\"error\":{\"code\":\"rate_limit_exceeded\"}}", kind: "rate_limit" },
+    { name: "500", status: 500, body: "", kind: "transient" },
+    { name: "503", status: 503, body: "busy", kind: "transient" },
+    { name: "network failure (status null)", status: null, body: "fetch failed", kind: "transient" },
+    { name: "400 context length", status: 400, body: "This model's maximum context length is 8192 tokens, however you requested 9000 tokens", kind: "too_large" },
+    { name: "400 tokens per request", status: 400, body: "Requested 310000 tokens, max 300000 tokens per request", kind: "too_large" },
+    { name: "400 other", status: 400, body: "'input' is invalid", kind: "other" },
+    { name: "404", status: 404, body: "Not found", kind: "other" },
+  ];
+  for (const c of kindCases) {
+    it(`classifies ${c.name} as ${c.kind}`, () => {
+      assert.equal(classifyEmbeddingError(c.status, c.body, new Headers()).kind, c.kind);
+    });
+  }
+
+  const now = Date.parse("2026-07-03T12:00:00Z");
+  const delayCases = [
+    { name: "Retry-After seconds", headers: { "retry-after": "2" }, ms: 2000 },
+    { name: "Retry-After HTTP-date", headers: { "retry-after": new Date(now + 5000).toUTCString() }, ms: 5000 },
+    { name: "Retry-After HTTP-date in the past", headers: { "retry-after": new Date(now - 60000).toUTCString() }, ms: 0 },
+    { name: "x-ratelimit-reset-* (longest wins)", headers: { "x-ratelimit-reset-requests": "1s", "x-ratelimit-reset-tokens": "6m0s" }, ms: 360000 },
+    { name: "x-ratelimit-reset-tokens in ms", headers: { "x-ratelimit-reset-tokens": "250ms" }, ms: 250 },
+    { name: "Retry-After preferred over reset headers", headers: { "retry-after": "3", "x-ratelimit-reset-tokens": "6m0s" }, ms: 3000 },
+    { name: "unparseable values", headers: { "retry-after": "soon", "x-ratelimit-reset-tokens": "later" }, ms: null },
+    { name: "no headers", headers: {}, ms: null },
+  ];
+  for (const c of delayCases) {
+    it(`rate_limit delay from ${c.name}`, () => {
+      const result = classifyEmbeddingError(429, "{}", new Headers(c.headers), now);
+      assert.equal(result.kind, "rate_limit");
+      assert.equal(result.retryAfterMs, c.ms);
+    });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// callEmbeddingAPI(texts, apiKey, { maxAttempts, sleep })
 // ---------------------------------------------------------------------------
 describe("callEmbeddingAPI", () => {
-  let originalFetch;
-
-  before(() => {
-    originalFetch = globalThis.fetch;
-  });
+  let fake;
 
   afterEach(() => {
-    globalThis.fetch = originalFetch;
-  });
-
-  it("truncates long error bodies to 200 chars", async () => {
-    const longError = "x".repeat(500);
-    globalThis.fetch = async () => ({
-      ok: false,
-      status: 500,
-      text: async () => longError,
-    });
-
-    try {
-      await callEmbeddingAPI(["test"], "test-key", 1);
-      assert.fail("should have thrown");
-    } catch (e) {
-      assert.ok(e.message.includes("OpenAI API error (500)"));
-      assert.ok(e.message.length <= 250, `Error message too long: ${e.message.length} chars`);
-    }
+    fake?.restore();
+    fake = null;
   });
 
   it("returns embeddings on success", async () => {
-    globalThis.fetch = async () => ({
-      ok: true,
-      json: async () => ({
-        data: [
-          { index: 1, embedding: [0.4, 0.5] },
-          { index: 0, embedding: [0.1, 0.2] },
-        ]
-      })
-    });
+    fake = installFakeOpenAI(() => Response.json({
+      data: [
+        { index: 1, embedding: [0.4, 0.5] },
+        { index: 0, embedding: [0.1, 0.2] },
+      ],
+    }));
     const result = await callEmbeddingAPI(["text1", "text2"], "test-key");
     assert.deepStrictEqual(result, [[0.1, 0.2], [0.4, 0.5]], "should sort by index");
   });
 
-  it("retries on 429 then succeeds", async () => {
-    let callCount = 0;
-    globalThis.fetch = async () => {
-      callCount++;
-      if (callCount === 1) {
-        return { ok: false, status: 429, text: async () => "rate limited" };
-      }
-      return {
-        ok: true,
-        json: async () => ({ data: [{ index: 0, embedding: [0.1] }] })
-      };
-    };
-    const result = await callEmbeddingAPI(["test"], "test-key", 2);
-    assert.strictEqual(callCount, 2, "should have called fetch twice");
-    assert.deepStrictEqual(result, [[0.1]]);
-  });
-
-  it("throws after max retries on 429", async () => {
-    globalThis.fetch = async () => ({
-      ok: false,
-      status: 429,
-      text: async () => "rate limited",
+  const retryable = [
+    { name: "rate_limit with Retry-After", fail: () => errorResponse(429, "{}", { "retry-after": "2" }), delays: [2000] },
+    { name: "rate_limit without reset headers", fail: () => errorResponse(429, "{}"), delays: [1000] },
+    { name: "transient 503", fail: () => errorResponse(503, "busy"), delays: [1000] },
+    { name: "network failure", fail: () => { throw new TypeError("fetch failed"); }, delays: [1000] },
+  ];
+  for (const c of retryable) {
+    it(`retries ${c.name} after the classified delay, then succeeds`, async () => {
+      fake = installFakeOpenAI((inputs, n) => (n === 1 ? c.fail() : embeddingsResponse(inputs)));
+      const { delays, sleep } = recordingSleep();
+      const result = await callEmbeddingAPI(["a"], "test-key", { sleep });
+      assert.equal(fake.calls.length, 2);
+      assert.deepEqual(delays, c.delays);
+      assert.equal(result.length, 1);
     });
+  }
+
+  it("gives up after 3 attempts with exponential backoff and throws the classified error", async () => {
+    fake = installFakeOpenAI(() => errorResponse(503, "busy"));
+    const { delays, sleep } = recordingSleep();
     await assert.rejects(
-      () => callEmbeddingAPI(["test"], "test-key", 1),
-      /OpenAI API error \(429\)/
+      () => callEmbeddingAPI(["a"], "test-key", { sleep }),
+      (err) => err instanceof EmbeddingError && err.kind === "transient" && err.status === 503
     );
+    assert.equal(fake.calls.length, 3);
+    assert.deepEqual(delays, [1000, 2000]);
   });
 
-  it("non-429 error throws immediately without retrying", async () => {
-    let callCount = 0;
-    globalThis.fetch = async () => {
-      callCount++;
-      return { ok: false, status: 500, text: async () => "server error" };
-    };
+  const fatal = [
+    { status: 401, body: "{\"error\":{\"code\":\"invalid_api_key\"}}", kind: "auth" },
+    { status: 429, body: QUOTA_BODY, kind: "quota" },
+    { status: 400, body: "This model's maximum context length is 8192 tokens", kind: "too_large" },
+    { status: 404, body: "Not found", kind: "other" },
+  ];
+  for (const c of fatal) {
+    it(`does not retry ${c.kind} (${c.status})`, async () => {
+      fake = installFakeOpenAI(() => errorResponse(c.status, c.body));
+      const { delays, sleep } = recordingSleep();
+      await assert.rejects(
+        () => callEmbeddingAPI(["a"], "test-key", { sleep }),
+        (err) => err instanceof EmbeddingError && err.kind === c.kind && err.status === c.status
+      );
+      assert.equal(fake.calls.length, 1);
+      assert.deepEqual(delays, []);
+    });
+  }
+
+  it("does not wait for a rate-limit reset longer than 30 s", async () => {
+    fake = installFakeOpenAI(() => errorResponse(429, "{}", { "retry-after": "120" }));
+    const { delays, sleep } = recordingSleep();
     await assert.rejects(
-      () => callEmbeddingAPI(["test"], "test-key", 3),
-      /OpenAI API error \(500\)/
+      () => callEmbeddingAPI(["a"], "test-key", { sleep }),
+      (err) => err.kind === "rate_limit" && err.retryAfterMs === 120000
     );
-    assert.strictEqual(callCount, 1, "should not retry on non-429 errors");
+    assert.equal(fake.calls.length, 1);
+    assert.deepEqual(delays, []);
+  });
+
+  it("error message carries the status and at most 200 chars of the body", async () => {
+    fake = installFakeOpenAI(() => errorResponse(404, "x".repeat(500)));
+    await assert.rejects(
+      () => callEmbeddingAPI(["a"], "test-key"),
+      (err) => err.message === `OpenAI API error (404): ${"x".repeat(200)}`
+    );
   });
 });
 
@@ -827,5 +887,883 @@ A note about project management and agile methodology.
     assert.equal(afterCount, 0);
 
     await idx.shutdown();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// SemanticIndex health: disabled state, probe, visible failures
+// ---------------------------------------------------------------------------
+describe("SemanticIndex health", () => {
+  let fake;
+  const opened = [];
+  const vaults = [];
+
+  async function vaultWith(files) {
+    const dir = await makeVault(files);
+    vaults.push(dir);
+    return dir;
+  }
+
+  async function openIndex(vaultPath) {
+    const idx = new SemanticIndex({
+      vaultPath,
+      openaiApiKey: "test-key",
+      dbPath: path.join(vaultPath, ".obsidian", "test-index.db"),
+      sleep: async () => {},
+    });
+    opened.push(idx);
+    await idx.initialize();
+    return idx;
+  }
+
+  async function readStats(vaultPath) {
+    return JSON.parse(await fs.readFile(path.join(vaultPath, ".obsidian", "semantic-stats.json"), "utf-8"));
+  }
+
+  afterEach(async () => {
+    for (const idx of opened.splice(0)) await idx.shutdown();
+    fake?.restore();
+    fake = null;
+    for (const dir of vaults.splice(0)) await fs.rm(dir, { recursive: true, force: true });
+  });
+
+  const disablingFailures = [
+    { kind: "quota", respond: () => quotaResponse(), reason: /^OpenAI quota exhausted\. Add credits; it re-enables automatically\.$/ },
+    { kind: "auth", respond: () => errorResponse(401, "{\"error\":{\"code\":\"invalid_api_key\"}}"), reason: /^OpenAI rejected the API key \(HTTP 401\)/ },
+  ];
+  for (const c of disablingFailures) {
+    it(`${c.kind} failure during sync disables the index, stops embedding, and persists status/reason/since`, async () => {
+      const vault = await vaultWith(manyNotes(25));
+      fake = installFakeOpenAI(() => c.respond());
+      const idx = await openIndex(vault);
+      const summary = await idx.whenSynced();
+
+      assert.ok(fake.calls.length >= 1 && fake.calls.length <= 10, `only the first batch may hit the API, got ${fake.calls.length}`);
+      assert.deepEqual(summary, { updated: 0, failed: 10, skipped: 15 });
+      const health = idx.health();
+      assert.equal(health.status, "disabled");
+      assert.match(health.reason, c.reason);
+      assert.ok(!Number.isNaN(Date.parse(health.since)));
+      assert.equal(idx.isAvailable, false);
+
+      const stats = await readStats(vault);
+      assert.equal(stats.status, "disabled");
+      assert.equal(stats.reason, health.reason);
+      assert.equal(stats.since, health.since);
+      assert.equal(stats.stale_files, 25);
+    });
+  }
+
+  it("probe() while disabled re-enables the index and syncs the stale notes", async () => {
+    const vault = await vaultWith(manyNotes(25));
+    fake = installFakeOpenAI(() => quotaResponse());
+    const idx = await openIndex(vault);
+    await idx.whenSynced();
+    assert.equal(idx.isAvailable, false);
+
+    fake.handler = (inputs) => embeddingsResponse(inputs);
+    assert.equal(await idx.probe(), true);
+    assert.equal(idx.isAvailable, true);
+    await idx.whenSynced();
+
+    assert.equal(idx.db.prepare("SELECT COUNT(*) AS n FROM files").get().n, 25);
+    const stats = await readStats(vault);
+    assert.equal(stats.status, "ok");
+    assert.equal(stats.reason, null);
+    assert.equal(stats.since, null);
+    assert.equal(stats.stale_files, 0);
+    assert.ok(!Number.isNaN(Date.parse(stats.last_success_at)));
+  });
+
+  it("a failed probe sends one request, keeps the index disabled and keeps the original since", async () => {
+    const vault = await vaultWith(manyNotes(3));
+    fake = installFakeOpenAI(() => quotaResponse());
+    const idx = await openIndex(vault);
+    await idx.whenSynced();
+    const { since } = idx.health();
+    const before = fake.calls.length;
+
+    const results = await Promise.all([idx.probe(), idx.probe()]);
+
+    assert.deepEqual(results, [false, false]);
+    assert.equal(fake.calls.length, before + 1, "concurrent probes share one request");
+    assert.equal(idx.health().status, "disabled");
+    assert.equal(idx.health().since, since);
+  });
+
+  it("the disabled state survives a restart: one probe, no other API calls, original since", async () => {
+    const vault = await vaultWith(manyNotes(25));
+    fake = installFakeOpenAI(() => quotaResponse());
+    const first = await openIndex(vault);
+    await first.whenSynced();
+    const { since } = first.health();
+    await first.shutdown();
+    const before = fake.calls.length;
+
+    const second = await openIndex(vault);
+    const summary = await second.whenSynced();
+
+    assert.equal(fake.calls.length, before + 1, "only the startup probe hits the API");
+    assert.deepEqual(summary, { updated: 0, failed: 0, skipped: 25 });
+    assert.equal(second.health().status, "disabled");
+    assert.equal(second.health().since, since);
+    assert.equal(second.health().staleFiles, 25);
+  });
+
+  it("a quota error on a search query disables the index and searchRaw reports it", async () => {
+    const vault = await vaultWith(manyNotes(2));
+    fake = installFakeOpenAI();
+    const idx = await openIndex(vault);
+    await idx.whenSynced();
+
+    fake.handler = () => quotaResponse();
+    const expected = /^Semantic search disabled since \d{4}-\d{2}-\d{2}: OpenAI quota exhausted\. Add credits; it re-enables automatically\.$/;
+    await assert.rejects(() => idx.searchRaw({ query: "anything" }), (err) => expected.test(err.message));
+    const callsAfterFirst = fake.calls.length;
+    await assert.rejects(() => idx.searchRaw({ query: "anything" }), (err) => expected.test(err.message));
+    assert.equal(fake.calls.length, callsAfterFirst, "a disabled index makes no query request");
+  });
+
+  it("reindexFile rejects with the EmbeddingError and the note counts as stale", async () => {
+    const vault = await vaultWith(manyNotes(2));
+    fake = installFakeOpenAI();
+    const idx = await openIndex(vault);
+    await idx.whenSynced();
+
+    await fs.writeFile(path.join(vault, "notes", "n00.md"), "---\ntype: note\n---\nChanged body.\n");
+    fake.handler = () => errorResponse(500, "server error");
+    await assert.rejects(
+      () => idx.reindexFile("notes/n00.md"),
+      (err) => err instanceof EmbeddingError && err.kind === "transient"
+    );
+    assert.equal(idx.health().staleFiles, 1);
+    assert.equal(idx.health().status, "ok", "transient failures do not disable the index");
+  });
+
+  it("startup sync summary and log report updated and failed notes", async (t) => {
+    const vault = await vaultWith({
+      "a.md": "Alpha body.",
+      "b.md": "Beta body.",
+      "c.md": "BROKEN body.",
+    });
+    fake = installFakeOpenAI((inputs) => (inputs.some(i => i.includes("BROKEN"))
+      ? errorResponse(404, "nope")
+      : embeddingsResponse(inputs)));
+    const logs = t.mock.method(console, "error", () => {});
+    const idx = await openIndex(vault);
+    const summary = await idx.whenSynced();
+
+    assert.deepEqual(summary, { updated: 2, failed: 1, skipped: 0 });
+    const lines = logs.mock.calls.map(call => String(call.arguments[0]));
+    assert.ok(lines.includes("Semantic index: sync complete (2 updated, 1 failed)"), lines.join("\n"));
+    assert.equal((await readStats(vault)).stale_files, 1);
+  });
+
+  it("stats record last_success_at and stale_files; empty notes are indexed with zero chunks", async () => {
+    const vault = await vaultWith({
+      "full.md": "Some body text.",
+      "empty.md": "---\ntype: note\n---\n",
+    });
+    fake = installFakeOpenAI();
+    const idx = await openIndex(vault);
+    await idx.whenSynced();
+
+    const stats = await readStats(vault);
+    assert.equal(stats.status, "ok");
+    assert.equal(stats.stale_files, 0);
+    assert.ok(!Number.isNaN(Date.parse(stats.last_success_at)));
+    assert.equal(idx.db.prepare("SELECT chunk_count FROM files WHERE path = ?").get("empty.md").chunk_count, 0);
+
+    await idx.shutdown();
+    const before = fake.calls.length;
+    const reopened = await openIndex(vault);
+    assert.deepEqual(await reopened.whenSynced(), { updated: 0, failed: 0, skipped: 0 });
+    assert.equal(fake.calls.length, before, "an empty note is not re-read as stale on restart");
+  });
+
+  it("search output gains a stale footer only when notes are stale", async () => {
+    const vault = await vaultWith(manyNotes(2));
+    fake = installFakeOpenAI();
+    const idx = await openIndex(vault);
+    await idx.whenSynced();
+    const footer = "*1 note has changed since last indexed; results may be stale.*";
+
+    assert.ok(!(await idx.search({ query: "note" })).includes("changed since last indexed"));
+
+    await fs.writeFile(path.join(vault, "notes", "n00.md"), "Changed body.");
+    fake.handler = () => errorResponse(500, "server error");
+    await assert.rejects(() => idx.reindexFile("notes/n00.md"));
+    fake.handler = (inputs) => embeddingsResponse(inputs);
+
+    assert.ok((await idx.search({ query: "note" })).endsWith(footer));
+  });
+});
+
+describe("SemanticIndex health: fix round", () => {
+  let fake;
+  const opened = [];
+  const vaults = [];
+
+  async function vaultWith(files) {
+    const dir = await makeVault(files);
+    vaults.push(dir);
+    return dir;
+  }
+
+  async function openIndex(vaultPath) {
+    const idx = new SemanticIndex({
+      vaultPath,
+      openaiApiKey: "test-key",
+      dbPath: path.join(vaultPath, ".obsidian", "test-index.db"),
+      sleep: async () => {},
+    });
+    opened.push(idx);
+    await idx.initialize();
+    return idx;
+  }
+
+  afterEach(async () => {
+    for (const idx of opened.splice(0)) await idx.shutdown();
+    fake?.restore();
+    fake = null;
+    for (const dir of vaults.splice(0)) await fs.rm(dir, { recursive: true, force: true });
+  });
+
+  it("shutdown during the first sync batch stops the sync: at most one batch is sent", async () => {
+    const vault = await vaultWith(manyNotes(25));
+    let release;
+    const gate = new Promise(r => { release = r; });
+    fake = installFakeOpenAI(async (inputs) => { await gate; return embeddingsResponse(inputs); });
+    const idx = await openIndex(vault);
+    while (fake.calls.length === 0) await new Promise(r => setTimeout(r, 5));
+    const closing = idx.shutdown();
+    release();
+    await closing;
+    assert.ok(fake.calls.length <= 10, `got ${fake.calls.length} requests`);
+  });
+
+  // Resolves to "closed" when shutdown() finishes, or "hung" if it is still waiting after a second.
+  async function shutdownPromptly(idx) {
+    let timer;
+    const hung = new Promise((r) => { timer = setTimeout(() => r("hung"), 1000); });
+    try {
+      return await Promise.race([idx.shutdown().then(() => "closed"), hung]);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  it("shutdown during an in-flight embeddings request aborts it instead of waiting for the response", async () => {
+    const vault = await vaultWith(manyNotes(1));
+    let inFlight;
+    const requested = new Promise((r) => { inFlight = r; });
+    // The fake never answers; only an abort of the request's signal ends it.
+    fake = installFakeOpenAI((_inputs, _n, signal) => new Promise((_resolve, reject) => {
+      inFlight();
+      signal?.addEventListener("abort", () => reject(signal.reason), { once: true });
+    }));
+    const idx = await openIndex(vault);
+    await requested;
+    assert.equal(await shutdownPromptly(idx), "closed");
+    assert.equal(fake.calls.length, 1);
+  });
+
+  it("shutdown during a retry backoff ends the wait at once and sends no further request", async () => {
+    const vault = await vaultWith(manyNotes(1));
+    fake = installFakeOpenAI(() => errorResponse(503, "busy"));
+    let waiting;
+    const inBackoff = new Promise((r) => { waiting = r; });
+    const idx = new SemanticIndex({
+      vaultPath: vault,
+      openaiApiKey: "test-key",
+      dbPath: path.join(vault, ".obsidian", "test-index.db"),
+      // A backoff that never elapses on its own; only an abort ends it.
+      sleep: (_ms, signal) => new Promise((resolve) => {
+        waiting();
+        signal?.addEventListener("abort", resolve, { once: true });
+      }),
+    });
+    opened.push(idx);
+    await idx.initialize();
+    await inBackoff;
+    assert.equal(await shutdownPromptly(idx), "closed");
+    assert.equal(fake.calls.length, 1);
+  });
+
+  it("initialize keeps the persisted stale_files and vault_files until the scan completes", async () => {
+    const vault = await vaultWith(manyNotes(3));
+    await fs.mkdir(path.join(vault, ".obsidian"), { recursive: true });
+    const statsPath = path.join(vault, ".obsidian", "semantic-stats.json");
+    await fs.writeFile(statsPath, JSON.stringify({
+      indexed_files: 0, vault_files: 3, status: "disabled", reason: "OpenAI quota exhausted. Add credits; it re-enables automatically.",
+      since: "2026-07-03T09:12:00.000Z", last_success_at: null, stale_files: 3, updated_at: "2026-07-03T09:12:00.000Z",
+    }));
+    let release;
+    const gate = new Promise(r => { release = r; });
+    fake = installFakeOpenAI(async () => { await gate; return quotaResponse(); });
+    await openIndex(vault);
+    const stats = JSON.parse(await fs.readFile(statsPath, "utf-8"));
+    assert.equal(stats.stale_files, 3);
+    assert.equal(stats.vault_files, 3);
+    release();
+  });
+
+  it("a rate limit longer than the retry cap stops the sync without disabling the index", async () => {
+    const vault = await vaultWith(manyNotes(25));
+    fake = installFakeOpenAI(() => errorResponse(429, "{}", { "x-ratelimit-reset-requests": "6h0m0s" }));
+    const idx = await openIndex(vault);
+    const summary = await idx.whenSynced();
+    assert.ok(fake.calls.length <= 10, `got ${fake.calls.length} requests`);
+    assert.equal(summary.updated, 0);
+    assert.ok(summary.skipped >= 15);
+    assert.equal(idx.health().status, "ok");
+    assert.equal(idx.health().staleFiles, 25);
+  });
+
+  it("a disabled index whose key later becomes invalid keeps its since and updates the reason", async () => {
+    const vault = await vaultWith(manyNotes(1));
+    fake = installFakeOpenAI(() => quotaResponse());
+    const idx = await openIndex(vault);
+    await idx.whenSynced();
+    const { since } = idx.health();
+    fake.handler = () => errorResponse(401, "{}");
+    assert.equal(await idx.probe(), false);
+    assert.equal(idx.health().since, since);
+    assert.match(idx.health().reason, /^OpenAI rejected the API key \(HTTP 401\)/);
+    const stats = JSON.parse(await fs.readFile(path.join(vault, ".obsidian", "semantic-stats.json"), "utf-8"));
+    assert.match(stats.reason, /^OpenAI rejected the API key/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// SemanticIndex freshness and consistency
+// ---------------------------------------------------------------------------
+describe("SemanticIndex freshness", () => {
+  let fake;
+  const opened = [];
+  const vaults = [];
+
+  /** Stand-in for fs.watch: records the listener so tests can deliver events. */
+  function fakeWatch() {
+    const watchers = [];
+    const watch = (_dir, _opts, listener) => {
+      const w = new EventEmitter();
+      w.listener = listener;
+      w.closed = false;
+      w.close = () => { w.closed = true; };
+      watchers.push(w);
+      return w;
+    };
+    return { watchers, watch, emit: (filename) => watchers.at(-1).listener("rename", filename) };
+  }
+
+  function deferred() {
+    let resolve;
+    const promise = new Promise(r => { resolve = r; });
+    return { promise, resolve };
+  }
+
+  async function vaultWith(files) {
+    const dir = await makeVault(files);
+    vaults.push(dir);
+    return dir;
+  }
+
+  async function openIndex(vaultPath, opts = {}) {
+    const idx = new SemanticIndex({
+      vaultPath,
+      openaiApiKey: "test-key",
+      dbPath: path.join(vaultPath, ".obsidian", "test-index.db"),
+      sleep: async () => {},
+      watch: fakeWatch().watch,
+      debounceMs: 0,
+      ...opts,
+    });
+    opened.push(idx);
+    await idx.initialize();
+    await idx.whenIdle();
+    return idx;
+  }
+
+  const indexedPaths = (idx) => idx.db.prepare("SELECT path FROM files ORDER BY path").all().map(r => r.path);
+  const requestsMentioning = (text) => fake.calls.filter(inputs => inputs.some(i => i.includes(text))).length;
+
+  afterEach(async () => {
+    for (const idx of opened.splice(0)) await idx.shutdown();
+    fake?.restore();
+    fake = null;
+    for (const dir of vaults.splice(0)) await fs.rm(dir, { recursive: true, force: true });
+  });
+
+  it("watcher events during the startup sync are queued, deduplicated, and processed after it", async () => {
+    const vault = await vaultWith({ "a.md": "Alpha body." });
+    const gate = deferred();
+    fake = installFakeOpenAI(async (inputs) => {
+      if (inputs.some(i => i.includes("Alpha"))) await gate.promise;
+      return embeddingsResponse(inputs);
+    });
+    const watcher = fakeWatch();
+    const idx = new SemanticIndex({
+      vaultPath: vault, openaiApiKey: "test-key", dbPath: path.join(vault, ".obsidian", "test-index.db"),
+      sleep: async () => {}, watch: watcher.watch, debounceMs: 0,
+    });
+    opened.push(idx);
+    await idx.initialize();
+    while (requestsMentioning("Alpha") === 0) await new Promise(r => setTimeout(r, 5));
+
+    await fs.writeFile(path.join(vault, "new.md"), "Newcomer body.");
+    for (let i = 0; i < 3; i++) watcher.emit("new.md");
+    await new Promise(r => setTimeout(r, 20));
+    assert.equal(requestsMentioning("Newcomer"), 0, "nothing is processed while the sync runs");
+
+    gate.resolve();
+    await idx.whenSynced();
+    await idx.whenIdle();
+    assert.equal(requestsMentioning("Newcomer"), 1, "three events, one reindex");
+    assert.deepEqual(indexedPaths(idx), ["a.md", "new.md"]);
+  });
+
+  it("events under dot-folders, such as the index's own DB files, are ignored", async () => {
+    const vault = await vaultWith({ "a.md": "Alpha body." });
+    fake = installFakeOpenAI();
+    const watcher = fakeWatch();
+    const idx = await openIndex(vault, { watch: watcher.watch });
+    const before = fake.calls.length;
+
+    watcher.emit(path.join(".obsidian", "test-index.db-wal"));
+    watcher.emit(path.join(".trash", "old.md"));
+    await idx.whenIdle();
+
+    assert.equal(fake.calls.length, before);
+    assert.deepEqual(indexedPaths(idx), ["a.md"]);
+  });
+
+  it("a folder renamed on disk loses its old paths and gains the new ones", async () => {
+    const vault = await vaultWith({ "projects/alpha/x.md": "X body.", "projects/alpha/y.md": "Y body.", "keep.md": "Keep." });
+    fake = installFakeOpenAI();
+    const watcher = fakeWatch();
+    const idx = await openIndex(vault, { watch: watcher.watch });
+
+    await fs.rename(path.join(vault, "projects", "alpha"), path.join(vault, "projects", "beta"));
+    watcher.emit(path.join("projects", "alpha"));
+    watcher.emit(path.join("projects", "beta"));
+    await idx.whenIdle();
+
+    assert.deepEqual(indexedPaths(idx), ["keep.md", "projects/beta/x.md", "projects/beta/y.md"]);
+  });
+
+  it("a watcher error closes it and restarts it with backoff, at most 5 times", async (t) => {
+    const vault = await vaultWith({ "a.md": "Alpha body." });
+    fake = installFakeOpenAI();
+    const watcher = fakeWatch();
+    const { delays, sleep } = recordingSleep();
+    const logs = t.mock.method(console, "error", () => {});
+    const idx = await openIndex(vault, { watch: watcher.watch, sleep });
+
+    for (let i = 0; i < 6; i++) {
+      watcher.watchers.at(-1).emit("error", new Error(`boom ${i}`));
+      await new Promise(r => setTimeout(r, 0));
+      await idx.whenIdle();
+    }
+
+    assert.equal(watcher.watchers.length, 6, "initial watcher plus 5 restarts");
+    assert.ok(watcher.watchers.every(w => w.closed));
+    assert.deepEqual(delays, [1000, 2000, 4000, 8000, 16000]);
+    const lines = logs.mock.calls.map(call => String(call.arguments[0]));
+    assert.equal(lines.filter(l => l.startsWith("File watcher: restarting")).length, 5);
+    assert.ok(lines.some(l => l.startsWith("File watcher: giving up after 5 restarts")));
+  });
+
+  it("notifyChanged reindexes the note after the debounce", async () => {
+    const vault = await vaultWith({ "a.md": "Alpha body." });
+    fake = installFakeOpenAI();
+    const idx = await openIndex(vault);
+
+    await fs.writeFile(path.join(vault, "a.md"), "Alpha rewritten.");
+    idx.notifyChanged("a.md");
+    await idx.whenIdle();
+
+    const row = idx.db.prepare("SELECT content_hash FROM files WHERE path = ?").get("a.md");
+    assert.equal(row.content_hash, contentHash("Alpha rewritten."));
+  });
+
+  it("notifyRemoved drops the note's rows without an API call", async () => {
+    const vault = await vaultWith({ "a.md": "Alpha body.", "b.md": "Beta body." });
+    fake = installFakeOpenAI();
+    const idx = await openIndex(vault);
+    const before = fake.calls.length;
+
+    await fs.rm(path.join(vault, "b.md"));
+    await idx.notifyRemoved("b.md");
+
+    assert.deepEqual(indexedPaths(idx), ["a.md"]);
+    assert.equal(idx.db.prepare("SELECT COUNT(*) AS n FROM chunks WHERE file_path = 'b.md'").get().n, 0);
+    assert.equal(fake.calls.length, before);
+  });
+
+  const moves = [
+    { name: "a note", files: { "a.md": "Alpha body.", "b.md": "Beta body." }, from: "b.md", to: "archive/b.md", expected: ["a.md", "archive/b.md"] },
+    { name: "a folder", files: { "a.md": "Alpha body.", "old/x.md": "X body.", "old/sub/y.md": "Y body." }, from: "old", to: "new", expected: ["a.md", "new/sub/y.md", "new/x.md"] },
+  ];
+  for (const c of moves) {
+    it(`notifyMoved carries ${c.name}'s rows to the new path without API calls`, async () => {
+      const vault = await vaultWith(c.files);
+      fake = installFakeOpenAI();
+      const idx = await openIndex(vault);
+      const before = fake.calls.length;
+
+      await fs.mkdir(path.dirname(path.join(vault, c.to)), { recursive: true });
+      await fs.rename(path.join(vault, c.from), path.join(vault, c.to));
+      idx.notifyMoved(c.from, c.to);
+      await idx.whenIdle();
+
+      assert.deepEqual(indexedPaths(idx), c.expected);
+      assert.equal(fake.calls.length, before);
+    });
+  }
+
+  it("reindexes of the same path run one at a time", async () => {
+    const vault = await vaultWith({ "x.md": "version zero" });
+    fake = installFakeOpenAI();
+    const idx = await openIndex(vault);
+    const gate = deferred();
+    fake.handler = async (inputs) => {
+      if (inputs.some(i => i.includes("version one"))) await gate.promise;
+      return embeddingsResponse(inputs);
+    };
+
+    await fs.writeFile(path.join(vault, "x.md"), "version one");
+    const first = idx.reindexFile("x.md");
+    while (requestsMentioning("version one") === 0) await new Promise(r => setTimeout(r, 5));
+    await fs.writeFile(path.join(vault, "x.md"), "version two");
+    const second = idx.reindexFile("x.md");
+    await new Promise(r => setTimeout(r, 20));
+    assert.equal(requestsMentioning("version two"), 0, "the second reindex waits for the first");
+
+    gate.resolve();
+    await Promise.all([first, second]);
+    assert.equal(requestsMentioning("version two"), 1);
+    const row = idx.db.prepare("SELECT content_hash FROM files WHERE path = ?").get("x.md");
+    assert.equal(row.content_hash, contentHash("version two"));
+  });
+
+  it("a late embedding result for old content never overwrites newer vectors (two server processes)", async () => {
+    const vault = await vaultWith({ "x.md": "version zero" });
+    fake = installFakeOpenAI();
+    const first = await openIndex(vault);
+    const second = await openIndex(vault);
+    const gate = deferred();
+    fake.handler = async (inputs) => {
+      if (inputs.some(i => i.includes("version one"))) await gate.promise;
+      return embeddingsResponse(inputs);
+    };
+
+    await fs.writeFile(path.join(vault, "x.md"), "version one");
+    const slow = first.reindexFile("x.md");
+    while (requestsMentioning("version one") === 0) await new Promise(r => setTimeout(r, 5));
+    await fs.writeFile(path.join(vault, "x.md"), "version two");
+    await second.reindexFile("x.md");
+    gate.resolve();
+    await slow;
+
+    const row = second.db.prepare("SELECT content_hash FROM files WHERE path = ?").get("x.md");
+    assert.equal(row.content_hash, contentHash("version two"));
+    const previews = second.db.prepare("SELECT content_preview FROM chunks WHERE file_path = ?").all("x.md");
+    assert.deepEqual(previews.map(p => p.content_preview), ["version two"]);
+    assert.equal(first.health().staleFiles, 0, "the discarding process sees the note as current");
+  });
+
+  it("unchanged content with a new mtime updates mtime_ms only and makes no API call", async () => {
+    const vault = await vaultWith({ "a.md": "Alpha body." });
+    fake = installFakeOpenAI();
+    const idx = await openIndex(vault);
+    const before = fake.calls.length;
+
+    const touched = new Date("2026-10-01T10:00:00Z");
+    await fs.utimes(path.join(vault, "a.md"), touched, touched);
+    await idx.reindexFile("a.md");
+
+    assert.equal(fake.calls.length, before);
+    assert.equal(idx.db.prepare("SELECT mtime_ms FROM files WHERE path = 'a.md'").get().mtime_ms, touched.getTime());
+    await idx.shutdown();
+    const reopened = await openIndex(vault);
+    assert.deepEqual(await reopened.whenSynced(), { updated: 0, failed: 0, skipped: 0 }, "the touched note is not re-read on restart");
+  });
+
+  const folderSearches = [
+    { name: "by widening k", opts: {} },
+    { name: "by an exhaustive folder scan once k reaches the KNN cap", opts: { maxKnnK: 8 } },
+  ];
+  for (const c of folderSearches) {
+    it(`folder-scoped search finds the folder's notes when 50+ other chunks rank higher (${c.name})`, async () => {
+      const files = { "target/t1.md": "TARGET one.", "target/t2.md": "TARGET two." };
+      for (let i = 0; i < 60; i++) files[`other/o${i}.md`] = `OTHER note ${i}.`;
+      const vault = await vaultWith(files);
+      const embed = (text) => {
+        const vec = new Array(DIMS).fill(0);
+        if (text.includes("TARGET")) vec[1] = 1;
+        else if (text.includes("OTHER")) { vec[0] = 1; vec[2] = (text.length % 7) / 100; }
+        else vec[0] = 1;
+        return vec;
+      };
+      fake = installFakeOpenAI((inputs) => embeddingsResponse(inputs, embed));
+      const idx = await openIndex(vault, c.opts);
+
+      const results = await idx.searchRaw({ query: "query", folder: "target", limit: 2 });
+
+      assert.deepEqual(results.map(r => r.path).sort(), ["target/t1.md", "target/t2.md"]);
+    });
+  }
+
+  it("an instance initialised again after shutdown syncs and reports the new sync", async () => {
+    const vault = await vaultWith({ "a.md": "Alpha body." });
+    fake = installFakeOpenAI();
+    const idx = await openIndex(vault);
+    await idx.shutdown();
+
+    await fs.writeFile(path.join(vault, "b.md"), "Beta body.");
+    await idx.initialize();
+    const summary = await idx.whenSynced();
+    await idx.whenIdle();
+
+    assert.deepEqual(summary, { updated: 1, failed: 0, skipped: 0 });
+    assert.deepEqual(indexedPaths(idx), ["a.md", "b.md"]);
+  });
+
+  it("shutdown before initialize finishes leaves neither the database nor a watcher open", async () => {
+    const vault = await vaultWith({ "a.md": "Alpha body." });
+    fake = installFakeOpenAI();
+    const watcher = fakeWatch();
+    const idx = new SemanticIndex({
+      vaultPath: vault, openaiApiKey: "test-key", dbPath: path.join(vault, ".obsidian", "test-index.db"),
+      sleep: async () => {}, watch: watcher.watch, debounceMs: 0,
+    });
+    opened.push(idx);
+
+    const init = idx.initialize();
+    const stopped = idx.shutdown();
+    await Promise.all([init, stopped]);
+
+    assert.equal(idx.db, null);
+    assert.equal(watcher.watchers.length, 0, "no watcher was started");
+    assert.equal(fake.calls.length, 0);
+  });
+
+  it("a too_large batch is split in half until it fits", async () => {
+    const section = (name) => `## ${name}\n\n` + `${name} words `.repeat(450);
+    const vault = await vaultWith({ "long.md": [section("One"), section("Two"), section("Three")].join("\n\n") });
+    fake = installFakeOpenAI((inputs) => (inputs.length > 1
+      ? errorResponse(400, "This model's maximum context length is 8192 tokens")
+      : embeddingsResponse(inputs)));
+    const idx = await openIndex(vault);
+
+    assert.deepEqual(fake.calls.map(inputs => inputs.length), [3, 2, 1, 1, 1]);
+    assert.equal(idx.db.prepare("SELECT chunk_count FROM files WHERE path = 'long.md'").get().chunk_count, 3);
+    assert.equal(idx.db.prepare("SELECT COUNT(*) AS n FROM vec_chunks").get().n, 3);
+  });
+
+  it("an oversize chunk is embedded as two halves and stored as one vector", async () => {
+    const vault = await vaultWith({ "big.md": "word ".repeat(1200) });
+    fake = installFakeOpenAI((inputs) => (inputs[0].length > 4000
+      ? errorResponse(400, "This model's maximum context length is 8192 tokens")
+      : embeddingsResponse(inputs)));
+    const idx = await openIndex(vault);
+
+    const [whole, firstHalf, secondHalf] = fake.calls.map(inputs => inputs[0]);
+    assert.equal(fake.calls.length, 3);
+    assert.equal(firstHalf + secondHalf, whole);
+    assert.equal(idx.db.prepare("SELECT COUNT(*) AS n FROM chunks WHERE file_path = 'big.md'").get().n, 1);
+    assert.equal(idx.db.prepare("SELECT COUNT(*) AS n FROM vec_chunks").get().n, 1);
+  });
+
+  it("too_large on an input too short to split is reported after a bounded number of requests", async () => {
+    const vault = await vaultWith({ "a.md": "Alpha body." });
+    fake = installFakeOpenAI();
+    const idx = await openIndex(vault);
+    fake.handler = () => errorResponse(400, "This model's maximum context length is 8192 tokens");
+
+    await fs.writeFile(path.join(vault, "a.md"), "word ".repeat(1200));
+    const before = fake.calls.length;
+    await assert.rejects(() => idx.reindexFile("a.md"), (err) => err.kind === "too_large");
+    assert.ok(fake.calls.length - before <= 10, `requests: ${fake.calls.length - before}`);
+  });
+
+  it("shutdown during a folder reconcile sends no request after the current batch", async () => {
+    const vault = await vaultWith({ "a.md": "Alpha body." });
+    fake = installFakeOpenAI();
+    const watcher = fakeWatch();
+    const idx = await openIndex(vault, { watch: watcher.watch });
+    const before = fake.calls.length;
+    for (let i = 0; i < 25; i++) {
+      await fs.mkdir(path.join(vault, "drop"), { recursive: true });
+      await fs.writeFile(path.join(vault, "drop", `n${i}.md`), `Dropped ${i}.`);
+    }
+    const gate = deferred();
+    fake.handler = async (inputs) => {
+      await gate.promise;
+      return embeddingsResponse(inputs);
+    };
+
+    watcher.emit("drop");
+    while (fake.calls.length - before < 10) await new Promise(r => setTimeout(r, 5));
+    const stopping = idx.shutdown();
+    gate.resolve();
+    await stopping;
+
+    assert.equal(fake.calls.length - before, 10, "only the batch that was already running is sent");
+  });
+
+  it("a note whose mtime moved but whose content did not is neither updated nor stale at startup", async () => {
+    const vault = await vaultWith({ "a.md": "Alpha body.", "b.md": "Beta body." });
+    fake = installFakeOpenAI();
+    const idx = await openIndex(vault);
+    await idx.shutdown();
+    const touched = new Date("2026-10-01T10:00:00Z");
+    await fs.utimes(path.join(vault, "a.md"), touched, touched);
+    const before = fake.calls.length;
+
+    const reopened = await openIndex(vault);
+
+    assert.deepEqual(await reopened.whenSynced(), { updated: 0, failed: 0, skipped: 0 });
+    assert.equal(fake.calls.length, before);
+    assert.equal(reopened.health().staleFiles, 0);
+    assert.equal(reopened.db.prepare("SELECT mtime_ms FROM files WHERE path = 'a.md'").get().mtime_ms, touched.getTime());
+  });
+
+  it("while disabled, a note with only a new mtime is not counted as stale", async () => {
+    const vault = await vaultWith({ "a.md": "Alpha body.", "b.md": "Beta body." });
+    fake = installFakeOpenAI();
+    const idx = await openIndex(vault);
+    await idx.shutdown();
+    const statsPath = path.join(vault, ".obsidian", "semantic-stats.json");
+    const stats = JSON.parse(await fs.readFile(statsPath, "utf-8"));
+    await fs.writeFile(statsPath, JSON.stringify({ ...stats, status: "disabled", reason: "quota", since: "2026-10-01T00:00:00Z" }));
+    const touched = new Date("2026-10-02T10:00:00Z");
+    await fs.utimes(path.join(vault, "b.md"), touched, touched);
+    fake.handler = () => quotaResponse();
+
+    const reopened = await openIndex(vault);
+
+    assert.equal(reopened.health().status, "disabled");
+    assert.equal(reopened.health().staleFiles, 0);
+  });
+
+  it("a watcher restart that fails to start keeps backing off and ends with the give-up line", async (t) => {
+    const vault = await vaultWith({ "a.md": "Alpha body." });
+    fake = installFakeOpenAI();
+    const base = fakeWatch();
+    let starts = 0;
+    const watch = (...args) => {
+      starts++;
+      if (starts > 1) throw new Error("EMFILE: too many open files, watch");
+      return base.watch(...args);
+    };
+    const { delays, sleep } = recordingSleep();
+    const logs = t.mock.method(console, "error", () => {});
+    await openIndex(vault, { watch, sleep });
+
+    base.watchers[0].emit("error", new Error("boom"));
+    for (let i = 0; i < 10; i++) await new Promise(r => setTimeout(r, 0));
+
+    assert.deepEqual(delays, [1000, 2000, 4000, 8000, 16000]);
+    const lines = logs.mock.calls.map(call => String(call.arguments[0]));
+    assert.ok(lines.some(l => l.startsWith("File watcher: giving up after 5 restarts")));
+  });
+
+  it("a watcher restart pending at shutdown does not replace the watcher of a re-initialised instance", async () => {
+    const vault = await vaultWith({ "a.md": "Alpha body." });
+    fake = installFakeOpenAI();
+    const watcher = fakeWatch();
+    const gate = deferred();
+    let hold = false;
+    const sleep = async () => { if (hold) await gate.promise; };
+    const idx = await openIndex(vault, { watch: watcher.watch, sleep });
+
+    hold = true;
+    watcher.watchers[0].emit("error", new Error("boom"));
+    await idx.shutdown();
+    hold = false;
+    await idx.initialize();
+    await idx.whenIdle();
+    gate.resolve();
+    for (let i = 0; i < 5; i++) await new Promise(r => setTimeout(r, 0));
+
+    assert.equal(watcher.watchers.length, 2, "the stale restart started no third watcher");
+    assert.equal(idx.watcher, watcher.watchers[1]);
+    assert.equal(watcher.watchers[1].closed, false);
+  });
+
+  const splitPads = ["", "a"];
+  for (const pad of splitPads) {
+    it(`an oversize input is never split inside a surrogate pair (pad ${JSON.stringify(pad)})`, async () => {
+      const body = pad + "\u{1F600}".repeat(2500);
+      const vault = await vaultWith({ "emoji.md": body });
+      const lone = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
+      fake = installFakeOpenAI((inputs) => (inputs[0].length > 4000
+        ? errorResponse(400, "This model's maximum context length is 8192 tokens")
+        : embeddingsResponse(inputs)));
+      const idx = await openIndex(vault);
+
+      assert.equal(fake.calls.length, 3);
+      assert.ok(fake.calls.every(inputs => !lone.test(inputs[0])), "no request carries a lone surrogate");
+      assert.equal(idx.db.prepare("SELECT COUNT(*) AS n FROM chunks WHERE file_path = 'emoji.md'").get().n, 1);
+    });
+  }
+
+  it("folder-scoped search of a folder with fewer notes than the limit scores the folder directly", async () => {
+    const files = { "target/t1.md": "TARGET one.", "target/t2.md": "TARGET two." };
+    for (let i = 0; i < 60; i++) files[`other/o${i}.md`] = `OTHER note ${i}.`;
+    const vault = await vaultWith(files);
+    const embed = (text) => {
+      const vec = new Array(DIMS).fill(0);
+      if (text.includes("TARGET")) vec[1] = 1;
+      else vec[0] = 1;
+      return vec;
+    };
+    fake = installFakeOpenAI((inputs) => embeddingsResponse(inputs, embed));
+    const idx = await openIndex(vault);
+    let knnQueries = 0;
+    const knn = idx._knn.bind(idx);
+    idx._knn = (...args) => { knnQueries++; return knn(...args); };
+
+    const results = await idx.searchRaw({ query: "query", folder: "target", limit: 5 });
+
+    assert.deepEqual(results.map(r => r.path).sort(), ["target/t1.md", "target/t2.md"]);
+    assert.equal(knnQueries, 0, "no KNN widening for a folder smaller than the limit");
+  });
+
+  it("a folder reconcile that stops because the index is disabled leaves the remaining notes stale", async () => {
+    const vault = await vaultWith({ "a.md": "Alpha body." });
+    fake = installFakeOpenAI();
+    const idx = await openIndex(vault);
+    await idx.shutdown();
+    const statsPath = path.join(vault, ".obsidian", "semantic-stats.json");
+    const stats = JSON.parse(await fs.readFile(statsPath, "utf-8"));
+    await fs.writeFile(statsPath, JSON.stringify({ ...stats, status: "disabled", reason: "quota", since: "2026-10-01T00:00:00Z" }));
+    const watcher = fakeWatch();
+    const disabled = await openIndex(vault, { watch: watcher.watch });
+    for (let i = 0; i < 3; i++) {
+      await fs.mkdir(path.join(vault, "drop"), { recursive: true });
+      await fs.writeFile(path.join(vault, "drop", `n${i}.md`), `Dropped ${i}.`);
+    }
+    const before = fake.calls.length;
+
+    watcher.emit("drop");
+    await disabled.whenIdle();
+
+    assert.equal(fake.calls.length, before);
+    assert.equal(disabled.health().staleFiles, 3);
+  });
+
+  it("a symlinked note is not indexed as a note of its own", async (t) => {
+    if (process.platform === "win32") return t.skip("symlinks need privileges on Windows");
+    const vault = await vaultWith({ "real.md": "Real body." });
+    fake = installFakeOpenAI();
+    const idx = await openIndex(vault);
+    await fs.symlink("real.md", path.join(vault, "link.md"));
+
+    await idx.reindexFile("link.md");
+
+    assert.deepEqual(indexedPaths(idx), ["real.md"]);
   });
 });

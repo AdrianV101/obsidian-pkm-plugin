@@ -190,6 +190,10 @@ describe("plugin manifest contracts", () => {
         await fs.mkdir(pluginRoot);
         await fs.mkdir(vault);
         await fs.cp(path.join(ROOT, "hooks"), path.join(pluginRoot, "hooks"), { recursive: true });
+        // Dependency-free modules the hooks import from the plugin root.
+        for (const file of ["markdown.js", "semantic-health.js"]) {
+          await fs.copyFile(path.join(ROOT, file), path.join(pluginRoot, file));
+        }
 
         const hooks = await readJson("hooks/hooks.json");
         const command = hookCommands(hooks.hooks.SessionStart)[0]
@@ -199,6 +203,8 @@ describe("plugin manifest contracts", () => {
         const result = spawnSync("sh", ["-c", command], {
           input: JSON.stringify({ cwd: tmp, session_id: "manifest-test", transcript_path: path.join(tmp, "t.jsonl") }),
           encoding: "utf-8",
+          // A home without .claude/settings.json, so the hook never reads the real one.
+          env: { ...process.env, HOME: tmp, USERPROFILE: tmp },
         });
         assert.equal(result.status, 0, result.stderr);
         assert.doesNotMatch(result.stderr, /Cannot find module/);

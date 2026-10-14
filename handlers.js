@@ -1,19 +1,15 @@
 import fs from "fs/promises";
 import path from "path";
 import {
-  resolvePath as resolvePathBase,
   matchesFilters,
   formatMetadata,
-  countOccurrences,
+  occurrenceLines,
   substituteTemplateVariables,
   validateFrontmatterStrict,
   extractInlineTags,
   matchesTagPattern,
-  findSectionRange,
-  listHeadings,
-  extractTailSections,
-  buildBasenameMap,
-  resolveFuzzyPath,
+  findTailSections,
+  capReadOutput,
   resolveFuzzyFolder,
   computePeek,
   formatPeek,
@@ -24,13 +20,129 @@ import {
   AUTO_REDIRECT_THRESHOLD,
   FORCE_HARD_CAP,
   CHUNK_SIZE,
+  toTagList,
 } from "./helpers.js";
-import { exploreNeighborhood, formatNeighborhood, findFilesLinkingTo, rewriteWikilinks, extractWikilinks, resolveLink, buildIncomingIndex } from "./graph.js";
+import {
+  exploreNeighborhood,
+  formatNeighborhood,
+  findFilesLinkingTo,
+  rewriteWikilinks,
+  extractWikilinks,
+  buildIncomingIndex,
+  createLinkResolver,
+  collectLinkedPaths,
+  resolutionPaths,
+  DEFAULT_MAX_NODES,
+} from "./graph.js";
 import { getAllMarkdownFiles, extractFrontmatter } from "./utils.js";
+import { formatDisabledMessage, formatStaleFooter } from "./semantic-health.js";
+import { EmbeddingError } from "./embeddings.js";
+
+import { mutateFile, writeNew, withNoteLock, normalizeVaultRoot, resolveSafe, resolveLexical, hasDotSegment, assertWritableReal, FileIndex, toVaultRel } from "./vault-fs.js";
+import { findSection, matchHeadings, parseHeadings, splitFrontmatter } from "./markdown.js";
+
+const NO_SEMANTIC_KEY = "VAULT_PKM_OPENAI_KEY not set";
 
 function positiveInt(value, fallback) {
   const n = Math.floor(Number(value));
   return Number.isFinite(n) && n >= 1 ? n : fallback;
+}
+
+/**
+ * Insert `args.content` into a note per vault_append's heading/position rules, using
+ * the note's own line ending so a CRLF note stays CRLF.
+ * @param {string} existing
+ * @param {{ path: string, content: string, heading?: string, position?: string }} args
+ * @returns {string}
+ */
+function applyAppend(existing, args) {
+  const eol = existing.includes("\r\n") ? "\r\n" : "\n";
+  const content = args.content.replace(/\r?\n/g, eol);
+  if (args.position) {
+    if (!args.heading) {
+      throw new Error("'heading' is required when 'position' is specified");
+    }
+    const range = findSection(existing, args.heading);
+    if (args.position === "before_heading") {
+      return existing.slice(0, range.headingStart) + content + eol + existing.slice(range.headingStart);
+    }
+    if (args.position === "after_heading") {
+      return existing.slice(0, range.afterHeading) + content + eol + existing.slice(range.afterHeading);
+    }
+    if (args.position === "end_of_section") {
+      const before = existing.slice(0, range.sectionEnd);
+      const separator = before.length > 0 && !before.endsWith("\n") ? eol : "";
+      return before + separator + content + eol + existing.slice(range.sectionEnd);
+    }
+    throw new Error(`Unknown position: ${args.position}`);
+  }
+  // Without a position, an unknown heading falls back to appending at the end
+  if (args.heading && matchHeadings(parseHeadings(existing), args.heading).length > 0) {
+    const range = findSection(existing, args.heading);
+    return existing.slice(0, range.afterHeading) + content + eol + existing.slice(range.afterHeading);
+  }
+  return existing + eol + content;
+}
+
+const MAX_LISTED_LINES = 10;
+
+function formatLineList(lines) {
+  const shown = lines.slice(0, MAX_LISTED_LINES).join(", ");
+  return lines.length > MAX_LISTED_LINES ? `${shown}, +${lines.length - MAX_LISTED_LINES} more` : shown;
+}
+
+/**
+ * Rewrite a low-level fs error so its message names the vault-relative path instead of
+ * an absolute path or temp file name. Other errors pass through.
+ * @param {any} e
+ * @param {string} rel vault-relative path of the note being written
+ * @returns {any}
+ */
+function relError(e, rel) {
+  const message = {
+    ENOENT: `Cannot write ${rel}: its folder does not exist.`,
+    ENAMETOOLONG: `Cannot write ${rel}: the file name is too long.`,
+    EACCES: `Cannot write ${rel}: permission denied.`,
+    EPERM: `Cannot write ${rel}: permission denied.`,
+    EROFS: `Cannot write ${rel}: the file system is read-only.`,
+  }[e?.code];
+  if (!message) return e;
+  // mutateFile's own EACCES message already names only the note.
+  if (e.code === "EACCES" && /read-only/.test(e.message)) return e;
+  return Object.assign(new Error(message, { cause: e }), { code: e.code });
+}
+
+const escapeRegExp = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+/**
+ * Rewrite absolute paths inside the vault in an error's message as vault-relative ones:
+ * filesystem errors name the absolute path (e.g. "EACCES: permission denied, open '/…/vault/a.md'").
+ * The error object itself is kept, so its type and code still reach the caller.
+ * @param {any} e
+ * @param {string[]} roots the vault root as configured and as resolved through symlinks
+ * @returns {any}
+ */
+function withVaultRelativeMessage(e, roots) {
+  if (!(e instanceof Error)) return e;
+  let message = e.message;
+  // Longest first: one root can contain the other (/var/… and /private/var/… on macOS).
+  for (const root of [...new Set(roots)].sort((a, b) => b.length - a.length)) {
+    // The root, optionally followed by a separator and the rest of the path up to a quote or line end.
+    const pattern = new RegExp(`${escapeRegExp(root)}(?:[\\\\/]([^'"\\n]*))?(?=['"\\s]|$)`, "gm");
+    message = message.replace(pattern, (_, rest) => (rest ? toVaultRel(rest) : "") || ".");
+  }
+  // DOMException exposes message as a prototype getter, so it is shadowed rather than assigned.
+  if (message !== e.message) Object.defineProperty(e, "message", { value: message, writable: true, configurable: true });
+  return e;
+}
+
+async function isDirectory(absPath) {
+  try {
+    return (await fs.stat(absPath)).isDirectory();
+  } catch (e) {
+    if (e.code === "ENOENT" || e.code === "ENOTDIR") return false;
+    throw e;
+  }
 }
 
 /**
@@ -44,59 +156,104 @@ function positiveInt(value, fallback) {
  * @param {string} [ctx.vaultName] - vault name for obsidian:// links (defaults to basename of vaultPath)
  * @returns {Promise<Map<string, Function>>} tool name to handler function
  */
-export async function createHandlers({ vaultPath, templateRegistry, semanticIndex, activityLog, sessionId, vaultName }) {
-  const resolvePath = (relativePath) => resolvePathBase(relativePath, vaultPath);
+export async function createHandlers({ vaultPath: rawVaultPath, templateRegistry, semanticIndex, activityLog, sessionId, vaultName }) {
+  const vaultPath = normalizeVaultRoot(rawVaultPath);
+  const safe = (relativePath) => resolveSafe(relativePath, vaultPath);
+  const writableNote = (relativePath) => assertWritableReal(relativePath, vaultPath, "note");
+  const writableFolder = (relativePath) => assertWritableReal(relativePath, vaultPath, "folder");
   const resolvedVaultName = vaultName || path.basename(vaultPath);
   const linkFor = (relativePath) => obsidianLink(relativePath, resolvedVaultName);
 
-  // Build basename map for fuzzy path resolution (read-only tools)
-  const allFiles = await getAllMarkdownFiles(vaultPath);
-  const { basenameMap, allFilesSet } = buildBasenameMap(allFiles);
+  const fileIndex = await FileIndex.build(vaultPath);
 
-  /** Resolve a file path with fuzzy fallback (for read-only tools). */
-  const resolveFile = (inputPath) => {
-    const resolved = resolveFuzzyPath(inputPath, basenameMap, allFilesSet);
-    return resolvePath(resolved);
+  /**
+   * A write tool's path argument as a normalised vault-relative path. An absolute path inside
+   * the vault names that note and one outside it is refused as an escape; toVaultRel alone would
+   * strip the leading "/" and file it under a copy of the absolute path's folders.
+   */
+  const entryRel = (p) => toVaultRel(path.relative(vaultPath, resolveLexical(p, vaultPath)));
+
+  /**
+   * The spelling the file or folder has on disk when it differs from `rel` only by Unicode
+   * normalisation or case; otherwise `rel` as typed (normalised). The link resolver, the file
+   * index and the semantic index all hold on-disk spellings, so trash and move canonicalise
+   * their source with this before any lookup. Symlinks resolve to a different name, so trash
+   * and move (which act on the link itself) keep the typed path.
+   */
+  const sameNameOnDisk = async (rel) => {
+    const typed = entryRel(rel);
+    try {
+      const real = await fs.realpath(path.join(vaultPath, typed));
+      const realRoot = await fs.realpath(vaultPath);
+      const onDisk = toVaultRel(path.relative(realRoot, real));
+      const fold = (s) => s.normalize("NFC").toLowerCase();
+      return fold(onDisk) === fold(typed) ? onDisk : typed;
+    } catch {
+      return typed;
+    }
   };
 
-  /** Resolve a folder path with fuzzy fallback. */
-  const resolveFolder = (folder) => {
-    // Security check first — reject traversal attempts immediately
-    const exactResolved = resolvePath(folder);
+  /** The note's on-disk spelling, which is what the semantic index stores (Unicode form, case). */
+  const onDiskPath = async (rel) => {
+    try {
+      return await fileIndex.resolveFuzzy(rel);
+    } catch {
+      return toVaultRel(rel);
+    }
+  };
 
-    // Check if this is a known directory (any file has it as a prefix)
-    const isKnownDir = Array.from(allFilesSet).some(f => f.startsWith(folder + "/") || f.startsWith(folder + path.sep));
-    if (isKnownDir) return exactResolved;
+  /**
+   * Resolve a read-tool note path. The input is containment-checked as typed, so a
+   * symlink out of the vault is refused as an escape instead of reported missing.
+   */
+  async function resolveNote(inputPath) {
+    await safe(inputPath);
+    const rel = await fileIndex.resolveFuzzy(inputPath);
+    return { rel, abs: await safe(rel) };
+  }
 
-    // Not a known directory — try fuzzy resolution
-    const resolvedFolder = resolveFuzzyFolder(folder, Array.from(allFilesSet));
-    return resolvePath(resolvedFolder);
+  /** Resolve a folder path: a known or on-disk folder as typed, else a fuzzy match. */
+  const resolveFolder = async (folder) => {
+    const exactResolved = await safe(folder);
+    const rel = toVaultRel(folder);
+    const files = fileIndex.list();
+    if (files.some(f => f.startsWith(rel + "/"))) return exactResolved;
+    // Folders created since the index was built are accepted by exact name (dot-folders stay hidden).
+    if (!rel.split("/").some(s => s.startsWith(".")) && await isDirectory(exactResolved)) return exactResolved;
+    return safe(resolveFuzzyFolder(folder, files));
   };
 
   const SESSION_ID_DISPLAY_LEN = 8;
 
-  function addToBasenameMap(relativePath) {
-    const bn = path.basename(relativePath, ".md").toLowerCase();
-    if (!basenameMap.has(bn)) basenameMap.set(bn, []);
-    basenameMap.get(bn).push(relativePath);
-    allFilesSet.add(relativePath);
+  /**
+   * Why semantic features can't run right now, or null when they can.
+   * A disabled index gets one probe request first, so it re-enables as soon as the API works again.
+   */
+  async function semanticUnavailableReason() {
+    if (semanticIndex?.isAvailable) return null;
+    if (semanticIndex?.health?.().status === "disabled") {
+      await semanticIndex.probe();
+      return semanticIndex.isAvailable ? null : formatDisabledMessage(semanticIndex.health());
+    }
+    return NO_SEMANTIC_KEY;
   }
 
-  function removeFromBasenameMap(relativePath) {
-    allFilesSet.delete(relativePath);
-    const bn = path.basename(relativePath, ".md").toLowerCase();
-    const entries = basenameMap.get(bn);
-    if (entries) {
-      const idx = entries.indexOf(relativePath);
-      if (idx !== -1) entries.splice(idx, 1);
-      if (entries.length === 0) basenameMap.delete(bn);
-    }
+  async function requireSemantic(feature) {
+    const reason = await semanticUnavailableReason();
+    if (reason === NO_SEMANTIC_KEY) throw new Error(`${feature} not available (${NO_SEMANTIC_KEY})`);
+    if (reason) throw new Error(reason);
+  }
+
+  /** Fresh note listing plus the link resolver built from it (graph tools never use the startup snapshot). */
+  async function freshGraph() {
+    const allFiles = await fileIndex.listFresh();
+    return { allFiles, resolver: createLinkResolver(allFiles) };
   }
 
   // ── File I/O ────────────────────────────────────────────────────────
 
   async function handleRead(args) {
-    const filePath = resolveFile(args.path);
+    const { abs: filePath } = await resolveNote(args.path);
     let content;
     try {
       content = await fs.readFile(filePath, "utf-8");
@@ -121,14 +278,14 @@ export async function createHandlers({ vaultPath, templateRegistry, semanticInde
     const hasExplicitMode = args.heading !== undefined || args.tail !== undefined ||
       args.tail_sections !== undefined || args.chunk !== undefined || args.lines !== undefined;
     if (!hasExplicitMode && !args.force && content.length > AUTO_REDIRECT_THRESHOLD) {
-      const relativePath = path.relative(vaultPath, filePath);
+      const relativePath = toVaultRel(path.relative(vaultPath, filePath));
       const peekData = computePeek(content, relativePath);
       return { content: [{ type: "text", text: formatPeek(peekData, { redirected: true, formatPath: linkFor }) }] };
     }
 
     // Force hard cap
     if (args.force && content.length > FORCE_HARD_CAP) {
-      const relativePath = path.relative(vaultPath, filePath);
+      const relativePath = toVaultRel(path.relative(vaultPath, filePath));
       const peekData = computePeek(content, relativePath);
       const text = formatPeek(peekData, { redirected: true, formatPath: linkFor }) +
         `\n\n**Hard cap reached.** File is ${content.length.toLocaleString()} chars, exceeding the ~400k char limit even with force=true. Use heading, chunk, or lines params to read portions.`;
@@ -136,36 +293,24 @@ export async function createHandlers({ vaultPath, templateRegistry, semanticInde
     }
 
     let text = content;
+    // Every explicit mode is capped like a full read: the auto-redirect threshold, or the hard cap with force
+    const cap = args.force ? FORCE_HARD_CAP : AUTO_REDIRECT_THRESHOLD;
+    const totalLines = content.split("\n").length;
+    const capFrom = (selection, firstLine) => capReadOutput(selection, { firstLine, totalLines, cap });
 
     if (args.heading) {
-      const range = findSectionRange(content, args.heading);
-      if (!range) {
-        const available = listHeadings(content);
-        const list = available.length > 0
-          ? `Available headings:\n${available.join("\n")}`
-          : "No headings found in file";
-        throw new Error(`Heading not found: ${args.heading}\n${list}`);
-      }
-      text = content.slice(range.headingStart, range.sectionEnd);
+      const range = findSection(content, args.heading);
+      text = capFrom(content.slice(range.headingStart, range.sectionEnd), range.heading.line);
     } else if (args.tail) {
-      // Extract frontmatter and prepend it
-      let frontmatter = "";
-      let body = content;
-      if (content.startsWith("---")) {
-        const endIndex = content.indexOf("\n---", 3);
-        if (endIndex !== -1) {
-          frontmatter = content.slice(0, endIndex + 4);
-          body = content.slice(endIndex + 4);
-        }
-      }
-      const lines = body.split("\n");
-      const tailCount = positiveInt(args.tail, 20);
-      const tailLines = lines.slice(-tailCount);
-      text = frontmatter + (frontmatter && !frontmatter.endsWith("\n") ? "\n" : "") + tailLines.join("\n");
+      // Frontmatter is always prepended
+      const { bodyOffset } = splitFrontmatter(content);
+      const tailLines = content.slice(bodyOffset).split("\n").slice(-positiveInt(args.tail, 20));
+      text = content.slice(0, bodyOffset) + capFrom(tailLines.join("\n"), totalLines - tailLines.length + 1);
     } else if (args.tail_sections) {
-      const level = positiveInt(args.section_level, 2);
-      text = extractTailSections(content, positiveInt(args.tail_sections, 3), level);
+      const { frontmatter, start, line } = findTailSections(content, positiveInt(args.tail_sections, 3), positiveInt(args.section_level, 2));
+      text = frontmatter + capFrom(content.slice(start), line);
     } else if (args.chunk !== undefined) {
+      // A chunk is at most CHUNK_SIZE chars, which never exceeds the cap
       const chunk = positiveInt(args.chunk, 0);
       const totalChunks = Math.ceil(content.length / CHUNK_SIZE);
       if (chunk < 1 || chunk > totalChunks) {
@@ -185,14 +330,14 @@ export async function createHandlers({ vaultPath, templateRegistry, semanticInde
         throw new Error(`Invalid line range: ${start}-${end}. File has ${allLines.length} lines.`);
       }
       const clampedEnd = Math.min(end, allLines.length);
-      text = `[Lines ${start}-${clampedEnd} of ${allLines.length}]\n\n` + allLines.slice(start - 1, clampedEnd).join("\n");
+      text = `[Lines ${start}-${clampedEnd} of ${allLines.length}]\n\n` + capFrom(allLines.slice(start - 1, clampedEnd).join("\n"), start);
     }
 
     return { content: [{ type: "text", text }] };
   }
 
   async function handlePeek(args) {
-    const filePath = resolveFile(args.path);
+    const { abs: filePath } = await resolveNote(args.path);
     let content;
     try {
       content = await fs.readFile(filePath, "utf-8");
@@ -200,13 +345,14 @@ export async function createHandlers({ vaultPath, templateRegistry, semanticInde
       if (e.code === "ENOENT") throw new Error(`File not found: ${args.path}`, { cause: e });
       throw e;
     }
-    const relativePath = path.relative(vaultPath, filePath);
+    const relativePath = toVaultRel(path.relative(vaultPath, filePath));
     const peekData = computePeek(content, relativePath);
     return { content: [{ type: "text", text: formatPeek(peekData, { formatPath: linkFor }) }] };
   }
 
   async function handleWrite(args) {
-    const { template: templateName, path: outputPath, variables = {}, frontmatter = {}, createDirs = true } = args;
+    const { template: templateName, variables = {}, frontmatter = {}, createDirs = true } = args;
+    const outputPath = entryRel(args.path);
 
     const templateInfo = templateRegistry.get(templateName);
     if (!templateInfo) {
@@ -214,9 +360,10 @@ export async function createHandlers({ vaultPath, templateRegistry, semanticInde
       throw new Error(`Template "${templateName}" not found. Available templates: ${available || "(none)"}`);
     }
 
-    const filePath = resolvePath(outputPath);
+    const filePath = await safe(outputPath);
+    await writableNote(outputPath);
 
-    const title = path.basename(outputPath, ".md");
+    const title = path.posix.basename(outputPath, ".md");
     const substituted = substituteTemplateVariables(templateInfo.content, {
       title,
       custom: variables,
@@ -232,18 +379,17 @@ export async function createHandlers({ vaultPath, templateRegistry, semanticInde
       await fs.mkdir(path.dirname(filePath), { recursive: true });
     }
 
-    // Atomic create — wx flag fails if file already exists (no TOCTOU race)
     try {
-      await fs.writeFile(filePath, substituted, { encoding: "utf-8", flag: "wx" });
+      await writeNew(filePath, substituted);
     } catch (e) {
       if (e.code === "EEXIST") {
         throw new Error(`File already exists: ${outputPath}. Use vault_edit or vault_append to modify existing files.`, { cause: e });
       }
-      throw e;
+      throw relError(e, outputPath);
     }
 
-    // Update basename map with the new file
-    addToBasenameMap(outputPath);
+    fileIndex.add(outputPath);
+    semanticIndex?.notifyChanged?.(await onDiskPath(outputPath));
 
     const fm = validation.frontmatter;
     const createdStr = fm.created instanceof Date
@@ -261,94 +407,66 @@ export async function createHandlers({ vaultPath, templateRegistry, semanticInde
     if (!args.content) {
       throw new Error("content must be a non-empty string");
     }
-    const filePath = resolvePath(args.path);
-    let existing;
+    const rel = entryRel(args.path);
+    const filePath = await safe(rel);
+    await writableNote(rel);
     try {
-      existing = await fs.readFile(filePath, "utf-8");
+      await mutateFile(filePath, (existing) => applyAppend(existing, args));
     } catch (e) {
       if (e.code === "ENOENT") {
-        throw new Error(`File not found: ${args.path}. Use vault_write to create new files.`, { cause: e });
+        throw new Error(`File not found: ${rel}. Use vault_write to create new files.`, { cause: e });
       }
-      throw e;
+      throw relError(e, rel);
     }
-
-    let newContent;
-    if (args.position) {
-      if (!args.heading) {
-        throw new Error("'heading' is required when 'position' is specified");
-      }
-      const range = findSectionRange(existing, args.heading);
-      if (!range) {
-        throw new Error(`Heading not found in ${args.path}: ${args.heading}`);
-      }
-
-      if (args.position === "before_heading") {
-        newContent = existing.slice(0, range.headingStart) + args.content + "\n" + existing.slice(range.headingStart);
-      } else if (args.position === "after_heading") {
-        newContent = existing.slice(0, range.afterHeading) + args.content + "\n" + existing.slice(range.afterHeading);
-      } else if (args.position === "end_of_section") {
-        const before = existing.slice(0, range.sectionEnd);
-        const after = existing.slice(range.sectionEnd);
-        const separator = before.length > 0 && !before.endsWith("\n") ? "\n" : "";
-        newContent = before + separator + args.content + "\n" + after;
-      } else {
-        throw new Error(`Unknown position: ${args.position}`);
-      }
-    } else if (args.heading) {
-      const range = findSectionRange(existing, args.heading);
-      if (range) {
-        newContent = existing.slice(0, range.afterHeading) + args.content + "\n" + existing.slice(range.afterHeading);
-      } else {
-        newContent = existing + "\n" + args.content;
-      }
-    } else {
-      newContent = existing + "\n" + args.content;
-    }
-
-    await fs.writeFile(filePath, newContent, "utf-8");
-    return { content: [{ type: "text", text: `Appended to ${linkFor(args.path)}${args.position ? ` (${args.position})` : ""}` }] };
+    semanticIndex?.notifyChanged?.(await onDiskPath(rel));
+    return { content: [{ type: "text", text: `Appended to ${linkFor(rel)}${args.position ? ` (${args.position})` : ""}` }] };
   }
 
   async function handleEdit(args) {
     if (!args.old_string) {
       throw new Error("old_string must be a non-empty string");
     }
-    const filePath = resolvePath(args.path);
-    let content;
+    const rel = entryRel(args.path);
+    const filePath = await safe(rel);
+    await writableNote(rel);
+    let matchLines = [];
     try {
-      content = await fs.readFile(filePath, "utf-8");
+      await mutateFile(filePath, (content) => {
+        matchLines = occurrenceLines(content, args.old_string);
+        if (matchLines.length !== 1) return content;
+        return content.replace(args.old_string, () => args.new_string);
+      });
     } catch (e) {
       if (e.code === "ENOENT") {
-        throw new Error(`File not found: ${args.path}`, { cause: e });
+        throw new Error(`File not found: ${rel}`, { cause: e });
       }
-      throw e;
+      throw relError(e, rel);
     }
-    const count = countOccurrences(content, args.old_string);
 
+    const count = matchLines.length;
     if (count === 0) {
       return {
-        content: [{ type: "text", text: `No match found for the specified old_string in ${args.path}` }],
+        content: [{ type: "text", text: `No match found for the specified old_string in ${rel}` }],
         isError: true
       };
     }
 
     if (count > 1) {
       return {
-        content: [{ type: "text", text: `Found ${count} matches for old_string in ${args.path}. Please provide a more specific string that matches exactly once.` }],
+        content: [{ type: "text", text: `Found ${count} matches for old_string in ${rel} (lines ${formatLineList(matchLines)}). Please provide a more specific string that matches exactly once.` }],
         isError: true
       };
     }
 
-    const newContent = content.replace(args.old_string, () => args.new_string);
-    await fs.writeFile(filePath, newContent, "utf-8");
-    return { content: [{ type: "text", text: `Successfully edited ${linkFor(args.path)}` }] };
+    semanticIndex?.notifyChanged?.(await onDiskPath(rel));
+    return { content: [{ type: "text", text: `Successfully edited ${linkFor(rel)}` }] };
   }
 
   // ── Search & Discovery ──────────────────────────────────────────────
 
   async function handleSearch(args) {
-    const searchDir = args.folder ? resolveFolder(args.folder) : vaultPath;
-    const folderPrefix = args.folder ? path.relative(vaultPath, searchDir) : "";
+    const searchDir = args.folder ? await resolveFolder(args.folder) : vaultPath;
+    const folderPrefix = args.folder ? toVaultRel(path.relative(vaultPath, searchDir)) : "";
     const files = await getAllMarkdownFiles(searchDir);
     const results = [];
     const query = args.query.toLowerCase();
@@ -372,7 +490,7 @@ export async function createHandlers({ vaultPath, templateRegistry, semanticInde
           .slice(0, 3);
 
         results.push({
-          path: folderPrefix ? path.join(folderPrefix, file) : file,
+          path: folderPrefix ? path.posix.join(folderPrefix, file) : file,
           matches: matchingLines.map(m => `L${m.num}: ${m.line.trim().slice(0, 100)}`)
         });
       }
@@ -412,8 +530,8 @@ export async function createHandlers({ vaultPath, templateRegistry, semanticInde
 
   async function handleList(args) {
     const inputPath = args.path || "";
-    const listPath = inputPath ? resolveFolder(inputPath) : vaultPath;
-    const relativePath = inputPath ? path.relative(vaultPath, listPath) : "";
+    const listPath = inputPath ? await resolveFolder(inputPath) : vaultPath;
+    const relativePath = inputPath ? toVaultRel(path.relative(vaultPath, listPath)) : "";
     let entries;
     try {
       entries = await fs.readdir(listPath, { withFileTypes: true });
@@ -426,12 +544,12 @@ export async function createHandlers({ vaultPath, templateRegistry, semanticInde
     for (const entry of entries) {
       if (entry.name.startsWith(".")) continue;
 
-      const itemPath = path.join(relativePath, entry.name);
+      const itemPath = path.posix.join(relativePath, entry.name);
       if (entry.isDirectory()) {
         items.push(`[dir] ${itemPath}/`);
         if (args.recursive) {
           const subItems = await getAllMarkdownFiles(path.join(listPath, entry.name));
-          items.push(...subItems.map(f => `  ${linkFor(path.join(itemPath, f))}`));
+          items.push(...subItems.map(f => `  ${linkFor(path.posix.join(itemPath, f))}`));
         }
       } else if (!args.pattern || globMatch(args.pattern, entry.name)) {
         items.push(linkFor(itemPath));
@@ -442,8 +560,8 @@ export async function createHandlers({ vaultPath, templateRegistry, semanticInde
   }
 
   async function handleRecent(args) {
-    const searchDir = args.folder ? resolveFolder(args.folder) : vaultPath;
-    const folderPrefix = args.folder ? path.relative(vaultPath, searchDir) : "";
+    const searchDir = args.folder ? await resolveFolder(args.folder) : vaultPath;
+    const folderPrefix = args.folder ? toVaultRel(path.relative(vaultPath, searchDir)) : "";
     const files = await getAllMarkdownFiles(searchDir);
     const limit = positiveInt(args.limit, 10);
 
@@ -451,7 +569,7 @@ export async function createHandlers({ vaultPath, templateRegistry, semanticInde
       files.map(async (file) => {
         try {
           const stat = await fs.stat(path.join(searchDir, file));
-          return { path: folderPrefix ? path.join(folderPrefix, file) : file, mtime: stat.mtime };
+          return { path: folderPrefix ? path.posix.join(folderPrefix, file) : file, mtime: stat.mtime };
         } catch (e) {
           if (e.code === "ENOENT") return null;
           throw e;
@@ -460,7 +578,7 @@ export async function createHandlers({ vaultPath, templateRegistry, semanticInde
     )).filter(Boolean);
 
     const sorted = withStats
-      .sort((a, b) => b.mtime - a.mtime)
+      .sort((a, b) => b.mtime.getTime() - a.mtime.getTime())
       .slice(0, limit);
 
     return {
@@ -474,8 +592,7 @@ export async function createHandlers({ vaultPath, templateRegistry, semanticInde
   // ── Graph & Connections ─────────────────────────────────────────────
 
   async function handleLinks(args) {
-    const resolvedVaultRelative = resolveFuzzyPath(args.path, basenameMap, allFilesSet);
-    const filePath = resolvePath(resolvedVaultRelative);
+    const { rel: resolvedVaultRelative, abs: filePath } = await resolveNote(args.path);
     let content;
     try {
       content = await fs.readFile(filePath, "utf-8");
@@ -491,8 +608,8 @@ export async function createHandlers({ vaultPath, templateRegistry, semanticInde
     }
 
     if (args.direction !== "outgoing") {
-      const allFilesList = Array.from(allFilesSet);
-      const linkingFiles = await findFilesLinkingTo(resolvedVaultRelative, vaultPath, allFilesList, basenameMap, allFilesSet);
+      const { allFiles, resolver } = await freshGraph();
+      const linkingFiles = await findFilesLinkingTo(resolvedVaultRelative, vaultPath, allFiles, resolver);
       result.incoming = linkingFiles.map(({ file }) => file);
     }
 
@@ -508,15 +625,20 @@ export async function createHandlers({ vaultPath, templateRegistry, semanticInde
   }
 
   async function handleNeighborhood(args) {
-    const resolvedPath = resolveFuzzyPath(args.path, basenameMap, allFilesSet);
+    const { rel: resolvedPath, abs: resolvedAbs } = await resolveNote(args.path);
     const depth = Math.min(positiveInt(args.depth, 2), 5);
     const direction = args.direction || "both";
+    const maxNodes = positiveInt(args.max_nodes, DEFAULT_MAX_NODES);
 
+    const { allFiles, resolver } = await freshGraph();
     const result = await exploreNeighborhood({
       startPath: resolvedPath,
       vaultPath,
+      allFiles,
+      resolver,
       depth,
       direction,
+      maxNodes,
     });
 
     let text = formatNeighborhood(result, {
@@ -527,31 +649,31 @@ export async function createHandlers({ vaultPath, templateRegistry, semanticInde
     });
 
     // --- Semantic expansion (Tier 3) ---
-    if (args.include_semantic && !semanticIndex?.isAvailable) {
-      text += "\n(Semantic expansion skipped: VAULT_PKM_OPENAI_KEY not set)\n";
-    } else if (args.include_semantic && semanticIndex?.isAvailable) {
-      const filePath = resolvePath(resolvedPath);
-      const noteContent = await fs.readFile(filePath, "utf-8");
-      let body = noteContent;
-      if (body.startsWith("---")) {
-        const endIdx = body.indexOf("\n---", 3);
-        if (endIdx !== -1) body = body.slice(endIdx + 4).trim();
-      }
+    const semanticSkipReason = args.include_semantic ? await semanticUnavailableReason() : null;
+    if (semanticSkipReason) {
+      text += `\n(Semantic expansion skipped: ${semanticSkipReason})\n`;
+    } else if (args.include_semantic) {
+      const noteContent = await fs.readFile(resolvedAbs, "utf-8");
+      const body = splitFrontmatter(noteContent).body.trim();
 
       if (body) {
         const semanticLimit = args.semantic_limit || 5;
-        const semanticResults = await semanticIndex.searchRaw({
-          query: body.slice(0, 8000),
-          limit: semanticLimit * 2,
-          excludeFiles: new Set([resolvedPath])
-        });
-
-        const graphPaths = new Set();
-        for (const [, nodes] of result.depthGroups) {
-          for (const node of nodes) graphPaths.add(node.path);
+        let semanticResults = [];
+        try {
+          semanticResults = await semanticIndex.searchRaw({
+            query: body.slice(0, 8000),
+            limit: semanticLimit * 2,
+            excludeFiles: new Set([resolvedPath])
+          });
+        } catch (e) {
+          // The embeddings request failed (or quota ran out during this very call): keep the graph
+          // output and say why semantics are missing.
+          if (!(e instanceof EmbeddingError) && semanticIndex.health?.().status !== "disabled") throw e;
+          text += `\n(Semantic expansion skipped: ${e.message})\n`;
         }
 
-        const unlinked = semanticResults.filter(r => !graphPaths.has(r.path)).slice(0, semanticLimit);
+        // Every linked node counts, including those beyond max_nodes
+        const unlinked = semanticResults.filter(r => !result.discovered.has(r.path)).slice(0, semanticLimit);
 
         if (unlinked.length > 0) {
           text += `\n**Semantically related (unlinked)** (${unlinked.length} node${unlinked.length === 1 ? "" : "s"})\n`;
@@ -562,7 +684,8 @@ export async function createHandlers({ vaultPath, templateRegistry, semanticInde
               const fm = extractFrontmatter(fc);
               const meta = [];
               if (fm?.type) meta.push(`type: ${fm.type}`);
-              if (fm?.tags?.length) meta.push(`tags: ${fm.tags.join(", ")}`);
+              const fmTags = toTagList(fm?.tags);
+              if (fmTags.length) meta.push(`tags: ${fmTags.join(", ")}`);
               if (meta.length > 0) line += `\n  ${meta.join(" | ")}`;
             } catch (e) { if (e.code !== "ENOENT") throw e; }
             text += line + "\n";
@@ -575,7 +698,7 @@ export async function createHandlers({ vaultPath, templateRegistry, semanticInde
   }
 
   async function handleQuery(args) {
-    const searchDir = args.folder ? resolveFolder(args.folder) : vaultPath;
+    const searchDir = args.folder ? await resolveFolder(args.folder) : vaultPath;
     const files = await getAllMarkdownFiles(searchDir);
     const limit = positiveInt(args.limit, 50);
     const results = [];
@@ -604,9 +727,7 @@ export async function createHandlers({ vaultPath, templateRegistry, semanticInde
 
       if (matchesFilters(metadata, filters)) {
         const { summary, tagLine } = formatMetadata(metadata);
-        const relativePath = args.folder
-          ? path.join(args.folder, file)
-          : file;
+        const relativePath = toVaultRel(path.relative(vaultPath, path.join(searchDir, file)));
         results.push({ path: relativePath, summary, tagLine, metadata });
       }
     }
@@ -644,7 +765,7 @@ export async function createHandlers({ vaultPath, templateRegistry, semanticInde
   }
 
   async function handleTags(args) {
-    const searchDir = args.folder ? resolveFolder(args.folder) : vaultPath;
+    const searchDir = args.folder ? await resolveFolder(args.folder) : vaultPath;
     const files = await getAllMarkdownFiles(searchDir);
     const tagCounts = new Map();
     let notesWithTags = 0;
@@ -662,8 +783,8 @@ export async function createHandlers({ vaultPath, templateRegistry, semanticInde
       const fileTags = new Set();
 
       const metadata = extractFrontmatter(content);
-      if (metadata && Array.isArray(metadata.tags)) {
-        for (const tag of metadata.tags) {
+      if (metadata) {
+        for (const tag of toTagList(metadata.tags)) {
           if (tag) fileTags.add(String(tag).toLowerCase());
         }
       }
@@ -758,17 +879,17 @@ export async function createHandlers({ vaultPath, templateRegistry, semanticInde
   }
 
   async function handleSemanticSearch(args) {
-    if (!semanticIndex?.isAvailable) {
-      throw new Error("Semantic search not available (VAULT_PKM_OPENAI_KEY not set)");
-    }
+    await requireSemantic("Semantic search");
 
-    const resolvedFolder = args.folder ? path.relative(vaultPath, resolveFolder(args.folder)) : undefined;
+    const resolvedFolder = args.folder ? toVaultRel(path.relative(vaultPath, await resolveFolder(args.folder))) : undefined;
 
     // --- Anchor blending (Tier 3) ---
     if (args.anchor) {
+      // Containment first, so an escaping anchor reports an escape rather than "Anchor note not found" from the catch below.
+      await safe(args.anchor);
       let resolvedAnchor;
       try {
-        resolvedAnchor = resolveFuzzyPath(args.anchor, basenameMap, allFilesSet);
+        ({ rel: resolvedAnchor } = await resolveNote(args.anchor));
       } catch (e) {
         throw new Error(`Anchor note not found: ${args.anchor}. Provide a valid vault-relative path.`, { cause: e });
       }
@@ -781,9 +902,12 @@ export async function createHandlers({ vaultPath, templateRegistry, semanticInde
         excludeFiles: new Set([resolvedAnchor])
       });
 
+      const { allFiles, resolver } = await freshGraph();
       const neighborhood = await exploreNeighborhood({
         startPath: resolvedAnchor,
         vaultPath,
+        allFiles,
+        resolver,
         depth: 3,
         direction: "both",
       });
@@ -793,9 +917,10 @@ export async function createHandlers({ vaultPath, templateRegistry, semanticInde
         throw new Error(`graph_weight must be a number between 0 and 1, got: ${args.graph_weight}`);
       }
       const trimmed = blendWithGraph(rawResults, neighborhood, graphWeight, targetLimit);
+      const staleFooter = formatStaleFooter(semanticIndex.health?.().staleFiles ?? 0);
 
       if (trimmed.length === 0) {
-        return { content: [{ type: "text", text: "No semantically related notes found." }] };
+        return { content: [{ type: "text", text: `No semantically related notes found.${staleFooter}` }] };
       }
 
       const formatted = trimmed.map(r => {
@@ -804,7 +929,7 @@ export async function createHandlers({ vaultPath, templateRegistry, semanticInde
       }).join("\n\n");
 
       return {
-        content: [{ type: "text", text: `Found ${trimmed.length} result${trimmed.length === 1 ? "" : "s"} (anchored to ${linkFor(args.anchor)}):\n\n${formatted}` }]
+        content: [{ type: "text", text: `Found ${trimmed.length} result${trimmed.length === 1 ? "" : "s"} (anchored to ${linkFor(args.anchor)}):\n\n${formatted}${staleFooter}` }]
       };
     }
 
@@ -820,35 +945,28 @@ export async function createHandlers({ vaultPath, templateRegistry, semanticInde
   }
 
   async function handleSuggestLinks(args) {
-    if (!semanticIndex?.isAvailable) {
-      throw new Error("Link suggestions not available (VAULT_PKM_OPENAI_KEY not set)");
-    }
+    await requireSemantic("Link suggestions");
 
-    const resolvedFolder = args.folder ? path.relative(vaultPath, resolveFolder(args.folder)) : undefined;
+    const resolvedFolder = args.folder ? toVaultRel(path.relative(vaultPath, await resolveFolder(args.folder))) : undefined;
 
     let inputText = args.content;
     const sourcePath = args.path;
     if (!inputText && !sourcePath) {
       throw new Error("Either 'content' or 'path' must be provided");
     }
+    const source = sourcePath ? await resolveNote(sourcePath) : null;
     if (!inputText) {
-      const filePath = resolveFile(sourcePath);
-      inputText = await fs.readFile(filePath, "utf-8");
+      inputText = await fs.readFile(source.abs, "utf-8");
     }
 
-    let body = inputText;
-    if (body.startsWith("---")) {
-      const endIdx = body.indexOf("\n---", 3);
-      if (endIdx !== -1) body = body.slice(endIdx + 4).trim();
-    }
+    const body = splitFrontmatter(inputText).body.trim();
     if (!body) throw new Error("No content to analyze");
 
-    const linkedNames = new Set(
-      extractWikilinks(inputText).map(t => path.basename(t, ".md").toLowerCase())
-    );
+    const { allFiles, resolver } = await freshGraph();
+    const linkedPaths = collectLinkedPaths(inputText, resolver);
 
     const excludeFiles = new Set();
-    if (sourcePath) excludeFiles.add(sourcePath);
+    if (source) excludeFiles.add(source.rel);
 
     const overfetch = args.graph_context ? 5 : 3;
     const results = await semanticIndex.searchRaw({
@@ -863,8 +981,7 @@ export async function createHandlers({ vaultPath, templateRegistry, semanticInde
     const suggestions = [];
     for (const r of results) {
       if (suggestions.length >= candidateLimit) break;
-      const basename = path.basename(r.path, ".md").toLowerCase();
-      if (linkedNames.has(basename)) continue;
+      if (linkedPaths.has(r.path)) continue;
       suggestions.push(r);
     }
 
@@ -873,10 +990,11 @@ export async function createHandlers({ vaultPath, templateRegistry, semanticInde
       throw new Error("graph_context requires 'path' parameter (cannot build graph neighborhood from raw content)");
     }
     if (args.graph_context && sourcePath) {
-      const resolvedSource = resolveFuzzyPath(sourcePath, basenameMap, allFilesSet);
       const neighborhood = await exploreNeighborhood({
-        startPath: resolvedSource,
+        startPath: source.rel,
         vaultPath,
+        allFiles,
+        resolver,
         depth: 2,
         direction: "both",
       });
@@ -914,23 +1032,28 @@ export async function createHandlers({ vaultPath, templateRegistry, semanticInde
   // ── Organization & Maintenance ──────────────────────────────────────
 
   async function handleTrash(args) {
-    const resolvedRelative = args.path;
-    const filePath = resolvePath(resolvedRelative);
+    const resolvedRelative = await sameNameOnDisk(args.path);
+    const filePath = await safe(resolvedRelative);
 
-    // Verify file exists
+    let stat;
     try {
-      await fs.access(filePath);
+      stat = await fs.stat(filePath);
     } catch (e) {
       if (e.code === "ENOENT") throw new Error(`ENOENT: File not found: ${resolvedRelative}`, { cause: e });
       throw e;
     }
+    // Dot-folder directories fall through to the write rule; other folders get the folder message.
+    if (stat.isDirectory() && !hasDotSegment(resolvedRelative)) {
+      throw new Error(`Cannot trash a folder: ${resolvedRelative}. vault_trash only trashes individual notes; trash the notes inside it one by one.`);
+    }
+    await writableNote(resolvedRelative);
 
     // Find incoming links for warning output
-    const allFilesList = Array.from(allFilesSet);
-    const linkingFiles = await findFilesLinkingTo(resolvedRelative, vaultPath, allFilesList, basenameMap, allFilesSet);
+    const { allFiles, resolver } = await freshGraph();
+    const linkingFiles = await findFilesLinkingTo(resolvedRelative, vaultPath, allFiles, resolver);
 
     // Determine trash destination: .trash/<original-relative-path>
-    let trashRelative = path.join(".trash", resolvedRelative);
+    let trashRelative = path.posix.join(".trash", toVaultRel(resolvedRelative));
     let trashAbsolute = path.join(vaultPath, trashRelative);
 
     // Handle collision: append timestamp suffix
@@ -940,7 +1063,7 @@ export async function createHandlers({ vaultPath, templateRegistry, semanticInde
       const ext = path.extname(resolvedRelative);
       const base = resolvedRelative.slice(0, -ext.length);
       const timestamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
-      trashRelative = path.join(".trash", `${base}.${timestamp}${ext}`);
+      trashRelative = path.posix.join(".trash", toVaultRel(`${base}.${timestamp}${ext}`));
       trashAbsolute = path.join(vaultPath, trashRelative);
     } catch (e) {
       if (e.code !== "ENOENT") throw e;
@@ -949,10 +1072,10 @@ export async function createHandlers({ vaultPath, templateRegistry, semanticInde
 
     // Create trash directory and move file
     await fs.mkdir(path.dirname(trashAbsolute), { recursive: true });
-    await fs.rename(filePath, trashAbsolute);
+    await withNoteLock(filePath, () => fs.rename(filePath, trashAbsolute));
 
-    // Update in-memory basename map
-    removeFromBasenameMap(resolvedRelative);
+    fileIndex.remove(resolvedRelative);
+    await semanticIndex?.notifyRemoved?.(resolvedRelative);
 
     // Build output
     let text = `Trashed ${resolvedRelative} → ${linkFor(trashRelative)}`;
@@ -968,60 +1091,96 @@ export async function createHandlers({ vaultPath, templateRegistry, semanticInde
 
   async function handleMove(args) {
     // Both source and destination require exact paths (destructive operation)
-    const oldRelative = args.old_path;
-    const oldAbsolute = resolvePath(oldRelative);
-    const newRelative = args.new_path;
-    const newAbsolute = resolvePath(newRelative);
+    const oldRelative = await sameNameOnDisk(args.old_path);
+    const oldAbsolute = await safe(oldRelative);
+    const newRelative = entryRel(args.new_path);
+    const newAbsolute = await safe(newRelative);
 
-    // Verify source exists
+    let sourceStat;
     try {
-      await fs.access(oldAbsolute);
+      sourceStat = await fs.stat(oldAbsolute);
+    } catch (e) {
+      if (e.code === "ENOENT") throw new Error(`ENOENT: File not found: ${oldRelative}`, { cause: e });
+      throw e;
+    }
+    const assertMovable = sourceStat.isDirectory() ? writableFolder : writableNote;
+    await assertMovable(oldRelative);
+    await assertMovable(newRelative);
+
+    // On a case-insensitive filesystem "Note.md" -> "note.md" stats the source itself.
+    // Only a case variant of the same entry may proceed; any other existing destination is refused.
+    let destStat = null;
+    try {
+      destStat = await fs.stat(newAbsolute);
+    } catch (e) {
+      if (e.code !== "ENOENT") throw e;
+    }
+    const caseOnlyRename = destStat !== null &&
+      destStat.ino === sourceStat.ino && destStat.dev === sourceStat.dev &&
+      oldRelative !== newRelative && oldRelative.toLowerCase() === newRelative.toLowerCase();
+    if (destStat && !caseOnlyRename) {
+      throw new Error(`Destination already exists: ${newRelative}. Use vault_edit or vault_trash + vault_write instead.`);
+    }
+
+    // Links are judged against the vault as it was before the move
+    const isNote = !sourceStat.isDirectory();
+    const updateLinks = args.update_links !== false && isNote;
+    const { allFiles: filesBefore, resolver } = await freshGraph();
+    const linkingFiles = updateLinks
+      ? await findFilesLinkingTo(oldRelative, vaultPath, filesBefore, resolver)
+      : [];
+
+    // New link text: bare basename when it will resolve uniquely to the moved note, else the full path
+    const filesAfter = filesBefore.filter(f => f !== oldRelative).concat(newRelative);
+    const newBasename = path.posix.basename(newRelative, ".md");
+    const afterResolution = createLinkResolver(filesAfter).resolve(newBasename);
+    const basenameUnique = afterResolution.status === "resolved" && afterResolution.path === newRelative;
+    const newLinkTarget = basenameUnique ? newBasename : newRelative.replace(/\.md$/, "");
+
+    // Create destination directory and move file
+    await fs.mkdir(path.dirname(newAbsolute), { recursive: true });
+    const renameNote = async () => {
+      if (!caseOnlyRename) return fs.rename(oldAbsolute, newAbsolute);
+      // Some case-insensitive filesystems ignore a direct case-only rename; go through a temp name.
+      const tempAbsolute = path.join(path.dirname(oldAbsolute), `.${path.basename(oldAbsolute)}.${process.pid}.${Date.now()}.case-rename`);
+      await fs.rename(oldAbsolute, tempAbsolute);
+      try {
+        await fs.rename(tempAbsolute, newAbsolute);
+      } catch (e) {
+        await fs.rename(tempAbsolute, oldAbsolute);
+        throw e;
+      }
+    };
+    // Under the note's lock, an in-flight append finishes first and a later one finds the old path gone.
+    try {
+      if (sourceStat.isDirectory()) await renameNote();
+      else await withNoteLock(oldAbsolute, renameNote);
     } catch (e) {
       if (e.code === "ENOENT") throw new Error(`ENOENT: File not found: ${oldRelative}`, { cause: e });
       throw e;
     }
 
-    // Verify destination does NOT exist
-    try {
-      await fs.access(newAbsolute);
-      throw new Error(`Destination already exists: ${newRelative}. Use vault_edit or vault_trash + vault_write instead.`);
-    } catch (e) {
-      if (e.code !== "ENOENT") throw e;
-    }
+    fileIndex.rename(oldRelative, newRelative);
+    semanticIndex?.notifyMoved?.(oldRelative, newRelative);
 
-    // Find files linking to the source (before move)
-    const allFilesList = Array.from(allFilesSet);
-    const linkingFiles = args.update_links !== false
-      ? await findFilesLinkingTo(oldRelative, vaultPath, allFilesList, basenameMap, allFilesSet)
-      : [];
-
-    // Create destination directory and move file
-    await fs.mkdir(path.dirname(newAbsolute), { recursive: true });
-    await fs.rename(oldAbsolute, newAbsolute);
-
-    // Update basename map: remove old, add new
-    removeFromBasenameMap(oldRelative);
-    addToBasenameMap(newRelative);
-
-    // Determine new link target — use full path if basename is now ambiguous
-    const newBasename = path.basename(newRelative, ".md").toLowerCase();
-    const newEntries = basenameMap.get(newBasename);
-    const isAmbiguous = newEntries && newEntries.length > 1;
-    const newLinkTarget = isAmbiguous
-      ? newRelative.replace(/\.md$/, "")
-      : path.basename(newRelative, ".md");
-
-    // Determine old link target — pass full path so both [[basename]] and [[folder/name]] links match
-    const oldLinkTarget = oldRelative.replace(/\.md$/, "");
-
-    // Rewrite wikilinks in referring files
+    // Rewrite wikilinks in referring files, and in the moved note itself for its self-links
     let updatedCount = 0;
-    if (args.update_links !== false) {
-      for (const { file, content } of linkingFiles) {
-        const updated = rewriteWikilinks(content, oldLinkTarget, newLinkTarget);
-        if (updated !== content) {
-          await fs.writeFile(path.join(vaultPath, file), updated, "utf-8");
+    const failedRewrites = [];
+    if (updateLinks) {
+      // Each rewrite is recomputed from the file's current content, not the scan-time copy.
+      const toRewrite = [...linkingFiles.map(({ file }) => file), newRelative];
+      for (const file of new Set(toRewrite)) {
+        let result;
+        try {
+          result = await mutateFile(path.join(vaultPath, file), (content) => rewriteWikilinks(content, { resolver, movedFrom: oldRelative, newTarget: newLinkTarget }));
+        } catch (e) {
+          if (e.code === "ENOENT") continue;
+          failedRewrites.push(file);
+          continue;
+        }
+        if (result.after !== result.before) {
           updatedCount++;
+          semanticIndex?.notifyChanged?.(toVaultRel(file));
         }
       }
     }
@@ -1031,117 +1190,143 @@ export async function createHandlers({ vaultPath, templateRegistry, semanticInde
     if (updatedCount > 0) {
       text += `\nUpdated wikilinks in ${updatedCount} file${updatedCount === 1 ? "" : "s"}`;
     }
-    if (isAmbiguous) {
-      text += `\n\n**Note:** Basename "${path.basename(newRelative, ".md")}" is ambiguous (${newEntries.length} files). Links were rewritten using full paths.`;
+    if (failedRewrites.length > 0) {
+      text += `\nCould not update links in ${failedRewrites.length} file${failedRewrites.length === 1 ? "" : "s"} (changing on disk, read-only or locked); fix by hand: ${failedRewrites.join(", ")}`;
+    }
+    if (isNote && !basenameUnique) {
+      const sameName = filesAfter.filter(f => path.posix.basename(f, ".md").toLowerCase() === newBasename.toLowerCase()).length;
+      text += `\n\n**Note:** Basename "${newBasename}" is ambiguous (${sameName} files). Links were rewritten using full paths.`;
     }
 
     return { content: [{ type: "text", text }] };
   }
 
   async function handleUpdateFrontmatter(args) {
-    const filePath = resolvePath(args.path);
-    let content;
+    const rel = entryRel(args.path);
+    const filePath = await safe(rel);
+    await writableNote(rel);
+    let frontmatter;
     try {
-      content = await fs.readFile(filePath, "utf-8");
+      await mutateFile(filePath, (content) => {
+        const updated = updateFrontmatter(content, args.fields || {});
+        frontmatter = updated.frontmatter;
+        return updated.content;
+      });
     } catch (e) {
       if (e.code === "ENOENT") {
-        throw new Error(`File not found: ${args.path}`, { cause: e });
+        throw new Error(`File not found: ${rel}`, { cause: e });
       }
-      throw e;
+      throw relError(e, rel);
     }
-    const { content: newContent, frontmatter } = updateFrontmatter(content, args.fields || {});
-    await fs.writeFile(filePath, newContent, "utf-8");
 
+    semanticIndex?.notifyChanged?.(await onDiskPath(rel));
     const lines = Object.entries(frontmatter).map(([k, v]) => {
       const display = Array.isArray(v) ? `[${v.join(", ")}]` : String(v);
       return `${k}: ${display}`;
     });
     return {
-      content: [{ type: "text", text: `Updated frontmatter in ${linkFor(args.path)}:\n${lines.join("\n")}` }]
+      content: [{ type: "text", text: `Updated frontmatter in ${linkFor(rel)}:\n${lines.join("\n")}` }]
     };
   }
 
   async function handleAddLinks(args) {
-    const { path: filePath, links, section = "## Related", create_section = true } = args;
+    const { links, section = "## Related", create_section = true } = args;
+    const filePath = entryRel(args.path);
 
     if (!links || links.length === 0) {
       throw new Error("At least one link is required");
     }
 
     // Exact path only — destructive operation
-    const absPath = resolvePath(filePath);
-    let content;
+    const absPath = await safe(filePath);
+    await writableNote(filePath);
+    const { allFiles, resolver } = await freshGraph();
+    const noteSet = new Set(allFiles);
+    // A target is a vault path. Like a link, it matches regardless of case and Unicode form,
+    // and the note is then named by its on-disk spelling.
+    const fold = (p) => p.normalize("NFC").toLowerCase();
+    const resolveTarget = (target) => {
+      const rel = toVaultRel(target);
+      const withExt = rel.endsWith(".md") ? rel : rel + ".md";
+      if (noteSet.has(withExt)) return withExt;
+      const resolution = resolver.resolve(withExt);
+      return resolution.status === "resolved" && fold(resolution.path) === fold(withExt) ? resolution.path : null;
+    };
+
+    let added = [];
+    let skipped = [];
     try {
-      content = await fs.readFile(absPath, "utf-8");
+      await mutateFile(absPath, (original) => {
+        added = [];
+        skipped = [];
+        let content = original;
+
+        // Deduplicate against the notes the existing links resolve to (ambiguous links count for each candidate)
+        const alreadyLinked = collectLinkedPaths(content, resolver);
+
+        for (const { target, annotation = "" } of links) {
+          const targetPath = resolveTarget(target);
+
+          if (targetPath === null) {
+            skipped.push({ target, reason: "not found" });
+            continue;
+          }
+
+          if (alreadyLinked.has(targetPath)) {
+            skipped.push({ target, reason: "already linked" });
+            continue;
+          }
+
+          // Bare basename only when it resolves back to this exact note
+          const basename = path.posix.basename(targetPath, ".md");
+          const byBasename = resolver.resolve(basename);
+          const displayName = byBasename.status === "resolved" && byBasename.path === targetPath
+            ? basename
+            : targetPath.replace(/\.md$/, "");
+          const entry = annotation
+            ? `- [[${displayName}]] — ${annotation}`
+            : `- [[${displayName}]]`;
+          added.push(entry);
+          alreadyLinked.add(targetPath);
+        }
+
+        if (added.length === 0) return original;
+
+        // The note's own line ending, so a CRLF note stays CRLF.
+        const eol = original.includes("\r\n") ? "\r\n" : "\n";
+        if (matchHeadings(parseHeadings(content), section).length === 0) {
+          if (!create_section) {
+            throw new Error(`Section "${section}" not found in ${filePath}. Set create_section: true to create it.`);
+          }
+          const sectionBlock = (content.endsWith("\n") ? eol : eol + eol) + section + eol;
+          content = content + sectionBlock;
+          if (matchHeadings(parseHeadings(content), section).length === 0) {
+            throw new Error(`Failed to create section "${section}" in ${filePath}. Ensure the section parameter is a valid markdown heading (e.g., "## Related").`);
+          }
+        }
+        const range = findSection(content, section);
+
+        const insertText = added.join(eol) + eol;
+        return content.slice(0, range.sectionEnd) + insertText + content.slice(range.sectionEnd);
+      });
     } catch (e) {
       if (e.code === "ENOENT") {
         throw new Error(`File not found: ${filePath}. Use vault_write to create new files.`, { cause: e });
       }
-      throw e;
+      throw relError(e, filePath);
     }
 
-    // Extract existing wikilinks for deduplication (case-insensitive basename)
-    const existingLinks = extractWikilinks(content).map(
-      l => path.basename(l.split("#")[0].split("^")[0].trim(), ".md").toLowerCase()
-    );
-
-    const added = [];
-    const skipped = [];
-
-    for (const { target, annotation = "" } of links) {
-      const targetWithExt = target.endsWith(".md") ? target : target + ".md";
-      const targetBasename = path.basename(target, ".md").toLowerCase();
-
-      if (!allFilesSet.has(targetWithExt)) {
-        skipped.push({ target, reason: "not found" });
-        continue;
-      }
-
-      if (existingLinks.includes(targetBasename)) {
-        skipped.push({ target, reason: "already linked" });
-        continue;
-      }
-
-      // Use full path for disambiguation when basename is not unique
-      const basenameKey = targetBasename;
-      const candidates = basenameMap.get(basenameKey) || [];
-      const displayName = candidates.length > 1
-        ? targetWithExt.replace(/\.md$/, "")
-        : path.basename(target, ".md");
-      const entry = annotation
-        ? `- [[${displayName}]] — ${annotation}`
-        : `- [[${displayName}]]`;
-      added.push(entry);
-      existingLinks.push(targetBasename);
-    }
-
+    if (added.length > 0) semanticIndex?.notifyChanged?.(await onDiskPath(filePath));
     if (added.length === 0 && skipped.length > 0) {
-      const skipSummary = skipped.map(s => `${path.basename(s.target, ".md")} (${s.reason})`).join(", ");
+      const skipSummary = skipped.map(s => `${path.posix.basename(toVaultRel(s.target), ".md")} (${s.reason})`).join(", ");
       return {
         content: [{ type: "text", text: `No links added to ${filePath}.\nSkipped ${skipped.length}: ${skipSummary}` }]
       };
     }
 
-    let range = findSectionRange(content, section);
-    if (!range) {
-      if (!create_section) {
-        throw new Error(`Section "${section}" not found in ${filePath}. Set create_section: true to create it.`);
-      }
-      const sectionBlock = (content.endsWith("\n") ? "\n" : "\n\n") + section + "\n";
-      content = content + sectionBlock;
-      range = findSectionRange(content, section);
-      if (!range) {
-        throw new Error(`Failed to create section "${section}" in ${filePath}. Ensure the section parameter is a valid markdown heading (e.g., "## Related").`);
-      }
-    }
-
-    const insertText = added.join("\n") + "\n";
-    content = content.slice(0, range.sectionEnd) + insertText + content.slice(range.sectionEnd);
-    await fs.writeFile(absPath, content, "utf-8");
-
     let summary = `Added ${added.length} link${added.length === 1 ? "" : "s"} to ${linkFor(filePath)} (${section}):\n${added.join("\n")}`;
     if (skipped.length > 0) {
-      const skipSummary = skipped.map(s => `${path.basename(s.target, ".md")} (${s.reason})`).join(", ");
+      const skipSummary = skipped.map(s => `${path.posix.basename(toVaultRel(s.target), ".md")} (${s.reason})`).join(", ");
       summary += `\nSkipped ${skipped.length}: ${skipSummary}`;
     }
     return { content: [{ type: "text", text: summary }] };
@@ -1149,14 +1334,14 @@ export async function createHandlers({ vaultPath, templateRegistry, semanticInde
 
   async function handleLinkHealth(args) {
     const { checks = ["orphans", "broken", "weak", "ambiguous"], limit = 20 } = args;
-    const allFilesList = Array.from(allFilesSet);
+    const { allFiles: allFilesList, resolver } = await freshGraph();
 
     // Scope to folder if specified
     let scopedFiles;
     if (args.folder) {
-      const resolvedFolder = resolveFolder(args.folder);
-      const relFolder = path.relative(vaultPath, resolvedFolder);
-      scopedFiles = allFilesList.filter(f => f.startsWith(relFolder + "/") || f.startsWith(relFolder + path.sep));
+      const resolvedFolder = await resolveFolder(args.folder);
+      const relFolder = toVaultRel(path.relative(vaultPath, resolvedFolder));
+      scopedFiles = allFilesList.filter(f => f.startsWith(relFolder + "/"));
     } else {
       scopedFiles = allFilesList;
     }
@@ -1175,10 +1360,10 @@ export async function createHandlers({ vaultPath, templateRegistry, semanticInde
         throw e;
       }
       const outgoing = extractWikilinks(content);
-      const resolved = outgoing.map(link => ({
-        raw: link,
-        ...resolveLink(link, basenameMap, allFilesSet)
-      }));
+      const resolved = outgoing.map(link => {
+        const resolution = resolver.resolve(link);
+        return { raw: link, paths: resolutionPaths(resolution), ambiguous: resolution.status === "ambiguous" };
+      });
       const fm = extractFrontmatter(content);
       fileData.set(file, { resolved, frontmatter: fm });
     }
@@ -1186,7 +1371,7 @@ export async function createHandlers({ vaultPath, templateRegistry, semanticInde
     // Build incoming index once — O(M) instead of per-file findFilesLinkingTo O(N*M)
     const needsIncoming = checks.includes("orphans") || checks.includes("weak");
     const incomingIndex = needsIncoming
-      ? await buildIncomingIndex(vaultPath, allFilesList, basenameMap, allFilesSet)
+      ? await buildIncomingIndex(vaultPath, allFilesList, resolver)
       : null;
 
     if (checks.includes("orphans")) {
@@ -1212,7 +1397,7 @@ export async function createHandlers({ vaultPath, templateRegistry, semanticInde
         if (!data) continue;
         for (const r of data.resolved) {
           if (r.paths.length === 0) {
-            // Skip non-markdown targets (images, PDFs, etc.) — they aren't in allFilesSet by design
+            // Skip non-markdown targets (images, PDFs, etc.) — they aren't notes by design
             const raw = r.raw;
             const dotIdx = raw.lastIndexOf(".");
             if (dotIdx !== -1) {
@@ -1269,7 +1454,7 @@ export async function createHandlers({ vaultPath, templateRegistry, semanticInde
     return { content: [{ type: "text", text: `${header}\n\n${sections.join("\n\n")}` }] };
   }
 
-  return new Map([
+  const handlers = new Map([
     ["vault_read", handleRead],
     ["vault_write", handleWrite],
     ["vault_append", handleAppend],
@@ -1291,4 +1476,15 @@ export async function createHandlers({ vaultPath, templateRegistry, semanticInde
     ["vault_add_links", handleAddLinks],
     ["vault_link_health", handleLinkHealth],
   ]);
+  const roots = [vaultPath, await fs.realpath(vaultPath).catch(() => vaultPath)];
+  for (const [name, handler] of handlers) {
+    handlers.set(name, async (args) => {
+      try {
+        return await handler(args);
+      } catch (e) {
+        throw withVaultRelativeMessage(e, roots);
+      }
+    });
+  }
+  return handlers;
 }
