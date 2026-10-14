@@ -11,7 +11,18 @@ import {
   getPreview,
   contentHash,
   callEmbeddingAPI,
+  classifyEmbeddingError,
+  EmbeddingError,
 } from "../embeddings.js";
+import {
+  QUOTA_BODY,
+  embeddingsResponse,
+  errorResponse,
+  installFakeOpenAI,
+  recordingSleep,
+} from "./fake-openai.js";
+
+const { Response, Headers } = globalThis;
 
 // ---------------------------------------------------------------------------
 // chunkNote(content, filePath)
@@ -240,90 +251,134 @@ describe("contentHash", () => {
 });
 
 // ---------------------------------------------------------------------------
-// callEmbeddingAPI — error truncation
+// classifyEmbeddingError(status, bodyText, headers, now)
+// ---------------------------------------------------------------------------
+describe("classifyEmbeddingError", () => {
+  const kindCases = [
+    { name: "401", status: 401, body: "{\"error\":{\"code\":\"invalid_api_key\"}}", kind: "auth" },
+    { name: "403", status: 403, body: "", kind: "auth" },
+    { name: "429 insufficient_quota (live body)", status: 429, body: QUOTA_BODY, kind: "quota" },
+    { name: "429 rate limit", status: 429, body: "{\"error\":{\"code\":\"rate_limit_exceeded\"}}", kind: "rate_limit" },
+    { name: "500", status: 500, body: "", kind: "transient" },
+    { name: "503", status: 503, body: "busy", kind: "transient" },
+    { name: "network failure (status null)", status: null, body: "fetch failed", kind: "transient" },
+    { name: "400 context length", status: 400, body: "This model's maximum context length is 8192 tokens, however you requested 9000 tokens", kind: "too_large" },
+    { name: "400 tokens per request", status: 400, body: "Requested 310000 tokens, max 300000 tokens per request", kind: "too_large" },
+    { name: "400 other", status: 400, body: "'input' is invalid", kind: "other" },
+    { name: "404", status: 404, body: "Not found", kind: "other" },
+  ];
+  for (const c of kindCases) {
+    it(`classifies ${c.name} as ${c.kind}`, () => {
+      assert.equal(classifyEmbeddingError(c.status, c.body, new Headers()).kind, c.kind);
+    });
+  }
+
+  const now = Date.parse("2026-07-03T12:00:00Z");
+  const delayCases = [
+    { name: "Retry-After seconds", headers: { "retry-after": "2" }, ms: 2000 },
+    { name: "Retry-After HTTP-date", headers: { "retry-after": new Date(now + 5000).toUTCString() }, ms: 5000 },
+    { name: "Retry-After HTTP-date in the past", headers: { "retry-after": new Date(now - 60000).toUTCString() }, ms: 0 },
+    { name: "x-ratelimit-reset-* (longest wins)", headers: { "x-ratelimit-reset-requests": "1s", "x-ratelimit-reset-tokens": "6m0s" }, ms: 360000 },
+    { name: "x-ratelimit-reset-tokens in ms", headers: { "x-ratelimit-reset-tokens": "250ms" }, ms: 250 },
+    { name: "Retry-After preferred over reset headers", headers: { "retry-after": "3", "x-ratelimit-reset-tokens": "6m0s" }, ms: 3000 },
+    { name: "unparseable values", headers: { "retry-after": "soon", "x-ratelimit-reset-tokens": "later" }, ms: null },
+    { name: "no headers", headers: {}, ms: null },
+  ];
+  for (const c of delayCases) {
+    it(`rate_limit delay from ${c.name}`, () => {
+      const result = classifyEmbeddingError(429, "{}", new Headers(c.headers), now);
+      assert.equal(result.kind, "rate_limit");
+      assert.equal(result.retryAfterMs, c.ms);
+    });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// callEmbeddingAPI(texts, apiKey, { maxAttempts, sleep })
 // ---------------------------------------------------------------------------
 describe("callEmbeddingAPI", () => {
-  let originalFetch;
-
-  before(() => {
-    originalFetch = globalThis.fetch;
-  });
+  let fake;
 
   afterEach(() => {
-    globalThis.fetch = originalFetch;
-  });
-
-  it("truncates long error bodies to 200 chars", async () => {
-    const longError = "x".repeat(500);
-    globalThis.fetch = async () => ({
-      ok: false,
-      status: 500,
-      text: async () => longError,
-    });
-
-    try {
-      await callEmbeddingAPI(["test"], "test-key", 1);
-      assert.fail("should have thrown");
-    } catch (e) {
-      assert.ok(e.message.includes("OpenAI API error (500)"));
-      assert.ok(e.message.length <= 250, `Error message too long: ${e.message.length} chars`);
-    }
+    fake?.restore();
+    fake = null;
   });
 
   it("returns embeddings on success", async () => {
-    globalThis.fetch = async () => ({
-      ok: true,
-      json: async () => ({
-        data: [
-          { index: 1, embedding: [0.4, 0.5] },
-          { index: 0, embedding: [0.1, 0.2] },
-        ]
-      })
-    });
+    fake = installFakeOpenAI(() => Response.json({
+      data: [
+        { index: 1, embedding: [0.4, 0.5] },
+        { index: 0, embedding: [0.1, 0.2] },
+      ],
+    }));
     const result = await callEmbeddingAPI(["text1", "text2"], "test-key");
     assert.deepStrictEqual(result, [[0.1, 0.2], [0.4, 0.5]], "should sort by index");
   });
 
-  it("retries on 429 then succeeds", async () => {
-    let callCount = 0;
-    globalThis.fetch = async () => {
-      callCount++;
-      if (callCount === 1) {
-        return { ok: false, status: 429, text: async () => "rate limited" };
-      }
-      return {
-        ok: true,
-        json: async () => ({ data: [{ index: 0, embedding: [0.1] }] })
-      };
-    };
-    const result = await callEmbeddingAPI(["test"], "test-key", 2);
-    assert.strictEqual(callCount, 2, "should have called fetch twice");
-    assert.deepStrictEqual(result, [[0.1]]);
-  });
-
-  it("throws after max retries on 429", async () => {
-    globalThis.fetch = async () => ({
-      ok: false,
-      status: 429,
-      text: async () => "rate limited",
+  const retryable = [
+    { name: "rate_limit with Retry-After", fail: () => errorResponse(429, "{}", { "retry-after": "2" }), delays: [2000] },
+    { name: "rate_limit without reset headers", fail: () => errorResponse(429, "{}"), delays: [1000] },
+    { name: "transient 503", fail: () => errorResponse(503, "busy"), delays: [1000] },
+    { name: "network failure", fail: () => { throw new TypeError("fetch failed"); }, delays: [1000] },
+  ];
+  for (const c of retryable) {
+    it(`retries ${c.name} after the classified delay, then succeeds`, async () => {
+      fake = installFakeOpenAI((inputs, n) => (n === 1 ? c.fail() : embeddingsResponse(inputs)));
+      const { delays, sleep } = recordingSleep();
+      const result = await callEmbeddingAPI(["a"], "test-key", { sleep });
+      assert.equal(fake.calls.length, 2);
+      assert.deepEqual(delays, c.delays);
+      assert.equal(result.length, 1);
     });
+  }
+
+  it("gives up after 3 attempts with exponential backoff and throws the classified error", async () => {
+    fake = installFakeOpenAI(() => errorResponse(503, "busy"));
+    const { delays, sleep } = recordingSleep();
     await assert.rejects(
-      () => callEmbeddingAPI(["test"], "test-key", 1),
-      /OpenAI API error \(429\)/
+      () => callEmbeddingAPI(["a"], "test-key", { sleep }),
+      (err) => err instanceof EmbeddingError && err.kind === "transient" && err.status === 503
     );
+    assert.equal(fake.calls.length, 3);
+    assert.deepEqual(delays, [1000, 2000]);
   });
 
-  it("non-429 error throws immediately without retrying", async () => {
-    let callCount = 0;
-    globalThis.fetch = async () => {
-      callCount++;
-      return { ok: false, status: 500, text: async () => "server error" };
-    };
+  const fatal = [
+    { status: 401, body: "{\"error\":{\"code\":\"invalid_api_key\"}}", kind: "auth" },
+    { status: 429, body: QUOTA_BODY, kind: "quota" },
+    { status: 400, body: "This model's maximum context length is 8192 tokens", kind: "too_large" },
+    { status: 404, body: "Not found", kind: "other" },
+  ];
+  for (const c of fatal) {
+    it(`does not retry ${c.kind} (${c.status})`, async () => {
+      fake = installFakeOpenAI(() => errorResponse(c.status, c.body));
+      const { delays, sleep } = recordingSleep();
+      await assert.rejects(
+        () => callEmbeddingAPI(["a"], "test-key", { sleep }),
+        (err) => err instanceof EmbeddingError && err.kind === c.kind && err.status === c.status
+      );
+      assert.equal(fake.calls.length, 1);
+      assert.deepEqual(delays, []);
+    });
+  }
+
+  it("does not wait for a rate-limit reset longer than 30 s", async () => {
+    fake = installFakeOpenAI(() => errorResponse(429, "{}", { "retry-after": "120" }));
+    const { delays, sleep } = recordingSleep();
     await assert.rejects(
-      () => callEmbeddingAPI(["test"], "test-key", 3),
-      /OpenAI API error \(500\)/
+      () => callEmbeddingAPI(["a"], "test-key", { sleep }),
+      (err) => err.kind === "rate_limit" && err.retryAfterMs === 120000
     );
-    assert.strictEqual(callCount, 1, "should not retry on non-429 errors");
+    assert.equal(fake.calls.length, 1);
+    assert.deepEqual(delays, []);
+  });
+
+  it("error message carries the status and at most 200 chars of the body", async () => {
+    fake = installFakeOpenAI(() => errorResponse(404, "x".repeat(500)));
+    await assert.rejects(
+      () => callEmbeddingAPI(["a"], "test-key"),
+      (err) => err.message === `OpenAI API error (404): ${"x".repeat(200)}`
+    );
   });
 });
 

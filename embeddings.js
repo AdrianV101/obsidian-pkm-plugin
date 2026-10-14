@@ -18,6 +18,82 @@ const MAX_CHARS_PER_CHUNK = 8000; // ~2000 tokens
 const BATCH_SIZE = 128;
 const REINDEX_BATCH_SIZE = 10; // files per batch during startup sync
 const DEBOUNCE_MS = 2000;
+const MAX_ATTEMPTS = 3;
+// A rate-limit reset further away than this is not waited for: the call fails and the
+// note stays stale until the next sync or write notification.
+const MAX_RETRY_WAIT_MS = 30000;
+const RETRYABLE_KINDS = new Set(["rate_limit", "transient"]);
+const TOO_LARGE_RE = /maximum context length|context_length_exceeded|max_tokens_per_request|\bmax(?:imum)?\s+\d+\s+tokens\b|too many tokens/i;
+
+const defaultSleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
+/** An OpenAI embeddings failure, classified so callers can decide to retry, disable or split. */
+export class EmbeddingError extends Error {
+  /**
+   * @param {string} message
+   * @param {Object} opts
+   * @param {"auth"|"quota"|"rate_limit"|"transient"|"too_large"|"other"} opts.kind
+   * @param {number|null} [opts.retryAfterMs]
+   * @param {number|null} [opts.status] - HTTP status, null for network failures
+   * @param {unknown} [opts.cause]
+   */
+  constructor(message, { kind, retryAfterMs = null, status = null, cause }) {
+    super(message, cause === undefined ? undefined : { cause });
+    this.name = "EmbeddingError";
+    this.kind = kind;
+    this.retryAfterMs = retryAfterMs;
+    this.status = status;
+  }
+}
+
+function parseDurationMs(value) {
+  if (value === null || value === undefined) return null;
+  const s = String(value).trim();
+  if (!/^(\d+(\.\d+)?(ms|h|m|s))+$/.test(s)) return null;
+  const unitMs = { ms: 1, s: 1000, m: 60000, h: 3600000 };
+  let total = 0;
+  for (const [, num, unit] of s.matchAll(/(\d+(?:\.\d+)?)(ms|h|m|s)/g)) {
+    total += Number(num) * unitMs[unit];
+  }
+  return Math.round(total);
+}
+
+function parseRetryAfterMs(headers, now) {
+  const get = (name) => headers?.get?.(name) ?? null;
+  const retryAfter = get("retry-after");
+  if (retryAfter !== null && retryAfter.trim() !== "") {
+    const s = retryAfter.trim();
+    if (/^\d+(\.\d+)?$/.test(s)) return Math.round(Number(s) * 1000);
+    const at = Date.parse(s);
+    if (!Number.isNaN(at)) return Math.max(0, at - now);
+  }
+  const resets = ["x-ratelimit-reset-requests", "x-ratelimit-reset-tokens"]
+    .map(name => parseDurationMs(get(name)))
+    .filter(ms => ms !== null);
+  return resets.length > 0 ? Math.max(...resets) : null;
+}
+
+/**
+ * Classify a failed embeddings request.
+ * @param {number|null} status - HTTP status; null for a network failure or timeout
+ * @param {string|null} bodyText - response body (or the network error message)
+ * @param {{ get(name: string): string|null }|null|undefined} headers - response headers
+ * @param {number} [now] - clock for HTTP-date Retry-After values
+ * @returns {{ kind: "auth"|"quota"|"rate_limit"|"transient"|"too_large"|"other", retryAfterMs: number|null }}
+ */
+export function classifyEmbeddingError(status, bodyText, headers, now = Date.now()) {
+  const body = bodyText ?? "";
+  if (status === 401 || status === 403) return { kind: "auth", retryAfterMs: null };
+  if (status === 429) {
+    if (/insufficient_quota/.test(body)) return { kind: "quota", retryAfterMs: null };
+    return { kind: "rate_limit", retryAfterMs: parseRetryAfterMs(headers, now) };
+  }
+  if (status === null || status === undefined || status >= 500) {
+    return { kind: "transient", retryAfterMs: parseRetryAfterMs(headers, now) };
+  }
+  if (status === 400 && TOO_LARGE_RE.test(body)) return { kind: "too_large", retryAfterMs: null };
+  return { kind: "other", retryAfterMs: null };
+}
 
 /**
  * Semantic similarity search over vault notes using OpenAI embeddings.
@@ -612,34 +688,51 @@ function getPreview(text) {
   return preview.length < cleaned.length ? preview + "..." : preview;
 }
 
-async function getEmbeddings(texts, apiKey) {
+async function getEmbeddings(texts, apiKey, opts = {}) {
   const allEmbeddings = [];
 
   for (let i = 0; i < texts.length; i += BATCH_SIZE) {
     const batch = texts.slice(i, i + BATCH_SIZE);
-    const embeddings = await callEmbeddingAPI(batch, apiKey);
+    const embeddings = await callEmbeddingAPI(batch, apiKey, opts);
     allEmbeddings.push(...embeddings);
   }
 
   return allEmbeddings;
 }
 
-async function callEmbeddingAPI(texts, apiKey, retries = 3) {
-  for (let attempt = 0; attempt < retries; attempt++) {
-    const response = await fetch("https://api.openai.com/v1/embeddings", {
-      method: "POST",
-      headers: {
-        "Authorization": `Bearer ${apiKey}`,
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({
-        model: EMBEDDING_MODEL,
-        input: texts
-      }),
-      signal: AbortSignal.timeout(30000)
-    });
+/**
+ * POST one batch to the OpenAI embeddings API. Retries rate_limit and transient
+ * failures (honouring Retry-After / x-ratelimit-reset-*), throws EmbeddingError otherwise.
+ * @param {string[]} texts
+ * @param {string} apiKey
+ * @param {Object} [opts]
+ * @param {number} [opts.maxAttempts=3]
+ * @param {(ms: number) => Promise<void>} [opts.sleep]
+ * @returns {Promise<number[][]>} embeddings in input order
+ */
+async function callEmbeddingAPI(texts, apiKey, { maxAttempts = MAX_ATTEMPTS, sleep = defaultSleep } = {}) {
+  for (let attempt = 1; ; attempt++) {
+    let error;
+    let response = null;
+    try {
+      response = await fetch("https://api.openai.com/v1/embeddings", {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${apiKey}`,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          model: EMBEDDING_MODEL,
+          input: texts
+        }),
+        signal: AbortSignal.timeout(30000)
+      });
+    } catch (e) {
+      const { kind, retryAfterMs } = classifyEmbeddingError(null, e.message, null);
+      error = new EmbeddingError(`OpenAI API request failed: ${e.message}`, { kind, retryAfterMs, cause: e });
+    }
 
-    if (response.ok) {
+    if (response?.ok) {
       const data = await response.json();
       // Sort by index to maintain order
       return data.data
@@ -647,16 +740,19 @@ async function callEmbeddingAPI(texts, apiKey, retries = 3) {
         .map(d => d.embedding);
     }
 
-    if (response.status === 429 && attempt < retries - 1) {
-      // Rate limited — exponential backoff
-      const delay = Math.pow(2, attempt) * 1000;
-      console.error(`Rate limited, retrying in ${delay}ms...`);
-      await new Promise(resolve => setTimeout(resolve, delay));
-      continue;
+    if (response) {
+      const errBody = await response.text();
+      const { kind, retryAfterMs } = classifyEmbeddingError(response.status, errBody, response.headers);
+      error = new EmbeddingError(`OpenAI API error (${response.status}): ${errBody.slice(0, 200)}`, {
+        kind, retryAfterMs, status: response.status,
+      });
     }
 
-    const errBody = await response.text();
-    throw new Error(`OpenAI API error (${response.status}): ${errBody.slice(0, 200)}`);
+    if (!RETRYABLE_KINDS.has(error.kind) || attempt >= maxAttempts) throw error;
+    const delay = error.retryAfterMs ?? 1000 * 2 ** (attempt - 1);
+    if (delay > MAX_RETRY_WAIT_MS) throw error;
+    console.error(`OpenAI ${error.kind} error, retrying in ${delay}ms (attempt ${attempt + 1}/${maxAttempts})...`);
+    await sleep(delay);
   }
 }
 
