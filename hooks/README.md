@@ -44,7 +44,7 @@ If you're running from a local clone instead of the plugin, add this to `~/.clau
         "hooks": [
           {
             "type": "command",
-            "command": "VAULT_PATH=\"/path/to/your/vault\" node /path/to/obsidian-pkm-plugin/hooks/session-start.js",
+            "command": "VAULT_PATH=\"/path/to/your/vault\" node \"/path/to/obsidian-pkm-plugin/hooks/session-start.js\"",
             "timeout": 15,
             "statusMessage": "Loading PKM project context..."
           }
@@ -58,7 +58,7 @@ If you're running from a local clone instead of the plugin, add this to `~/.clau
           {
             "type": "command",
             "if": "Bash(gh pr create *)",
-            "command": "node /path/to/obsidian-pkm-plugin/hooks/capture-reminder.js",
+            "command": "node \"/path/to/obsidian-pkm-plugin/hooks/capture-reminder.js\"",
             "timeout": 10
           }
         ]
