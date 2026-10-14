@@ -283,3 +283,65 @@ describe("session-start.js", () => {
     );
   });
 });
+
+describe("session-start.js context budget and semantic health", () => {
+  let tmpDir, vaultPath, cwdDir;
+
+  beforeEach(async () => {
+    tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "pkm-ss-health-"));
+    vaultPath = path.join(tmpDir, "vault");
+    const projectDir = path.join(vaultPath, "01-Projects", "MyApp");
+    await fs.mkdir(path.join(projectDir, "tasks"), { recursive: true });
+    await fs.mkdir(path.join(projectDir, "development"), { recursive: true });
+    await fs.writeFile(path.join(projectDir, "_index.md"), "---\ntype: project\n---\n# MyApp\n\n## Overview\nINDEXBODY\n");
+    await fs.writeFile(path.join(projectDir, "development", "devlog.md"), "## Sessions\n### 2026-10-08 10:00\nDEVLOGBODY\n");
+    await fs.writeFile(path.join(projectDir, "tasks", "t.md"), "---\ntype: task\nstatus: active\npriority: high\n---\n# Ship it\n");
+    cwdDir = path.join(tmpDir, "MyApp");
+    await fs.mkdir(cwdDir, { recursive: true });
+    await fs.writeFile(path.join(cwdDir, "CLAUDE.md"), "# PKM: 01-Projects/MyApp\n\n## PKM Integration\n\nConfigured.\n");
+  });
+
+  afterEach(async () => {
+    await fs.rm(tmpDir, { recursive: true, force: true });
+  });
+
+  async function run(input) {
+    const { stdout } = await runScript([SCRIPT], { ...process.env, VAULT_PATH: vaultPath, HOME: tmpDir }, JSON.stringify(input));
+    return JSON.parse(stdout);
+  }
+
+  it("passes the hook input's source through: \"compact\" loads only the project path and task titles", async () => {
+    const result = await run({ cwd: cwdDir, source: "compact" });
+    const context = result.hookSpecificOutput.additionalContext;
+    assert.ok(context.startsWith("## PKM Project Context: MyApp (compact)\nProject: 01-Projects/MyApp"), context);
+    assert.ok(context.includes("- Ship it"));
+    assert.ok(!context.includes("INDEXBODY") && !context.includes("DEVLOGBODY"));
+    assert.ok(result.systemMessage.startsWith("Obsidian PKM: Loaded MyApp (compact, 1 task)"), result.systemMessage);
+  });
+
+  const statsCases = [
+    {
+      name: "ok",
+      stats: { indexed_files: 50, vault_files: 50, status: "ok", reason: null, since: null, last_success_at: "2026-10-13T08:00:00.000Z", stale_files: 0 },
+      summary: "| semantic: ok",
+    },
+    {
+      name: "syncing with stale notes",
+      stats: { indexed_files: 40, vault_files: 50, status: "syncing", reason: null, since: null, last_success_at: "2026-10-13T08:00:00.000Z", stale_files: 10 },
+      summary: "| semantic: syncing, 10 notes stale",
+    },
+    {
+      name: "disabled",
+      stats: { indexed_files: 735, vault_files: 2469, status: "disabled", reason: "OpenAI quota exhausted. Add credits; it re-enables automatically.", since: "2026-07-03T09:12:00.000Z", last_success_at: "2026-07-02T22:00:00.000Z", stale_files: 1734 },
+      summary: "| semantic: disabled since 2026-07-03 (OpenAI quota exhausted. Add credits; it re-enables automatically.), 1734 notes stale",
+    },
+  ];
+  for (const c of statsCases) {
+    it(`summary line shows semantic health: ${c.name}`, async () => {
+      await fs.mkdir(path.join(vaultPath, ".obsidian"), { recursive: true });
+      await fs.writeFile(path.join(vaultPath, ".obsidian", "semantic-stats.json"), JSON.stringify(c.stats));
+      const result = await run({ cwd: cwdDir });
+      assert.ok(result.systemMessage.endsWith(c.summary), result.systemMessage);
+    });
+  }
+});

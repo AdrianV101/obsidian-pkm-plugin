@@ -190,6 +190,10 @@ describe("plugin manifest contracts", () => {
         await fs.mkdir(pluginRoot);
         await fs.mkdir(vault);
         await fs.cp(path.join(ROOT, "hooks"), path.join(pluginRoot, "hooks"), { recursive: true });
+        // Dependency-free modules the hooks import from the plugin root.
+        for (const file of ["markdown.js", "semantic-health.js"]) {
+          await fs.copyFile(path.join(ROOT, file), path.join(pluginRoot, file));
+        }
 
         const hooks = await readJson("hooks/hooks.json");
         const command = hookCommands(hooks.hooks.SessionStart)[0]

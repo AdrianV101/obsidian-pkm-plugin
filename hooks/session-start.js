@@ -2,6 +2,7 @@
 
 import { resolveProject } from "./resolve-project.js";
 import { loadProjectContext } from "./load-context.js";
+import { healthFromStats, describeHealth } from "../semantic-health.js";
 import fs from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
@@ -40,7 +41,7 @@ async function main() {
     process.exit(0);
   }
 
-  const { cwd } = input;
+  const { cwd, source } = input;
 
   if (!cwd || typeof cwd !== "string") {
     const output = {
@@ -108,7 +109,7 @@ async function main() {
   if (!hasPkmSection) {
     let context = "";
     try {
-      ({ context } = await loadProjectContext(VAULT_PATH, projectPath));
+      ({ context } = await loadProjectContext(VAULT_PATH, projectPath, { source }));
     } catch (e) {
       console.error(`PKM session-start: failed to load project context: ${e.message}`);
       // context stays "" — still show the nudge
@@ -130,7 +131,7 @@ async function main() {
 
   let context, meta;
   try {
-    ({ context, meta } = await loadProjectContext(VAULT_PATH, projectPath));
+    ({ context, meta } = await loadProjectContext(VAULT_PATH, projectPath, { source }));
   } catch (e) {
     const output = {
       hookSpecificOutput: {
@@ -144,12 +145,16 @@ async function main() {
 
   const projectName = path.basename(projectPath);
   const loaded = [];
-  if (meta.index) loaded.push("index");
-  if (meta.devlog) loaded.push("devlog");
-  if (meta.tasks > 0) loaded.push(`${meta.tasks} task${meta.tasks !== 1 ? "s" : ""}`);
   const missing = [];
-  if (!meta.index) missing.push("index");
-  if (!meta.devlog) missing.push("devlog");
+  if (meta.source === "compact") {
+    loaded.push("compact");
+  } else {
+    if (meta.index) loaded.push("index");
+    if (meta.devlog) loaded.push("devlog");
+    if (!meta.index) missing.push("index");
+    if (!meta.devlog) missing.push("devlog");
+  }
+  if (meta.tasks > 0) loaded.push(`${meta.tasks} task${meta.tasks !== 1 ? "s" : ""}`);
   if (meta.tasks === 0) missing.push("tasks");
 
   let msg = `Obsidian PKM: Loaded ${projectName}`;
@@ -158,7 +163,11 @@ async function main() {
   msg += ` \u2014 ${context.length.toLocaleString()} chars`;
 
   const stats = await getSemanticStats(VAULT_PATH);
-  if (stats) {
+  const health = healthFromStats(stats);
+  if (health) {
+    msg += ` | semantic: ${describeHealth(health)}`;
+  } else if (stats) {
+    // Stats written by a server version that does not report health yet.
     if (stats.vault_files > 0 && stats.indexed_files < stats.vault_files) {
       msg += ` | semantic: ${stats.indexed_files}/${stats.vault_files} notes`;
     } else {
