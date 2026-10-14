@@ -264,6 +264,50 @@ describe("vault_move races and write errors", () => {
       });
     }
 
+    // An absolute path inside the vault names that note; one outside is an escape, never a vault-relative path.
+    const ABS_CASES = [
+      ["vault_write", (root) => ({ template: "t", path: path.join(root, "notes", "new.md") }), "notes/new.md"],
+      ["vault_append", (root) => ({ path: path.join(root, "notes", "a.md"), content: "more" }), "notes/a.md"],
+      ["vault_edit", (root) => ({ path: path.join(root, "notes", "a.md"), old_string: "body a", new_string: "edited" }), "notes/a.md"],
+      ["vault_update_frontmatter", (root) => ({ path: path.join(root, "notes", "a.md"), fields: { status: "active" } }), "notes/a.md"],
+      ["vault_add_links", (root) => ({ path: path.join(root, "notes", "a.md"), links: [{ target: "notes/b.md" }] }), "notes/a.md"],
+      ["vault_move", (root) => ({ old_path: path.join(root, "notes", "a.md"), new_path: path.join(root, "moved", "a.md") }), "moved/a.md"],
+      ["vault_trash", (root) => ({ path: path.join(root, "notes", "a.md") }), ".trash/notes/a.md"],
+    ];
+    for (const [tool, makeArgs, rel] of ABS_CASES) {
+      it(`${tool} given an absolute path inside the vault acts on that note`, async () => {
+        const v = await makeVault({ "notes/a.md": note("A", "body a"), "notes/b.md": note("B") });
+        try {
+          const templateRegistry = new Map([["t", { content: TITLE_TEMPLATE }]]);
+          const h = await createHandlers({ vaultPath: v.root, templateRegistry, semanticIndex: null, activityLog: null, sessionId: "abs" });
+          const text = (await h.get(tool)(makeArgs(v.root))).content[0].text;
+          assert.ok(text.includes(rel), text);
+          await fs.access(path.join(v.root, ...rel.split("/")));
+          const top = (await fs.readdir(v.root)).filter((e) => !["notes", "moved", ".trash"].includes(e));
+          assert.deepEqual(top, [], "no copy of the absolute path's folders inside the vault");
+        } finally {
+          await v.cleanup();
+        }
+      });
+    }
+
+    it("vault_write and vault_move refuse an absolute path outside the vault", async () => {
+      const v = await makeVault({ "notes/a.md": note("A") });
+      const outside = await fs.mkdtemp(path.join(os.tmpdir(), "writes-outside-"));
+      try {
+        const templateRegistry = new Map([["t", { content: TITLE_TEMPLATE }]]);
+        const h = await createHandlers({ vaultPath: v.root, templateRegistry, semanticIndex: null, activityLog: null, sessionId: "abs-out" });
+        await assert.rejects(h.get("vault_write")({ template: "t", path: path.join(outside, "x.md") }), /escapes vault/);
+        await assert.rejects(h.get("vault_move")({ old_path: "notes/a.md", new_path: path.join(outside, "a.md") }), /escapes vault/);
+        assert.deepEqual(await fs.readdir(outside), []);
+        assert.deepEqual((await fs.readdir(v.root)).sort(), ["notes"]);
+        await fs.access(path.join(v.root, "notes", "a.md"));
+      } finally {
+        await v.cleanup();
+        await fs.rm(outside, { recursive: true, force: true });
+      }
+    });
+
     it("vault_write given a backslash path titles the note by its file name", async () => {
       const v = await makeVault({});
       try {

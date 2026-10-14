@@ -38,7 +38,7 @@ import { getAllMarkdownFiles, extractFrontmatter } from "./utils.js";
 import { formatDisabledMessage, formatStaleFooter } from "./semantic-health.js";
 import { EmbeddingError } from "./embeddings.js";
 
-import { mutateFile, writeNew, withNoteLock, normalizeVaultRoot, resolveSafe, hasDotSegment, assertWritableReal, FileIndex, toVaultRel } from "./vault-fs.js";
+import { mutateFile, writeNew, withNoteLock, normalizeVaultRoot, resolveSafe, resolveLexical, hasDotSegment, assertWritableReal, FileIndex, toVaultRel } from "./vault-fs.js";
 import { findSection, matchHeadings, parseHeadings, splitFrontmatter } from "./markdown.js";
 
 const NO_SEMANTIC_KEY = "VAULT_PKM_OPENAI_KEY not set";
@@ -166,6 +166,13 @@ export async function createHandlers({ vaultPath: rawVaultPath, templateRegistry
   const fileIndex = await FileIndex.build(vaultPath);
 
   /**
+   * A write tool's path argument as a normalised vault-relative path. An absolute path inside
+   * the vault names that note and one outside it is refused as an escape; toVaultRel alone would
+   * strip the leading "/" and file it under a copy of the absolute path's folders.
+   */
+  const entryRel = (p) => toVaultRel(path.relative(vaultPath, resolveLexical(p, vaultPath)));
+
+  /**
    * The spelling the file or folder has on disk when it differs from `rel` only by Unicode
    * normalisation or case; otherwise `rel` as typed (normalised). The link resolver, the file
    * index and the semantic index all hold on-disk spellings, so trash and move canonicalise
@@ -173,7 +180,7 @@ export async function createHandlers({ vaultPath: rawVaultPath, templateRegistry
    * and move (which act on the link itself) keep the typed path.
    */
   const sameNameOnDisk = async (rel) => {
-    const typed = toVaultRel(rel);
+    const typed = entryRel(rel);
     try {
       const real = await fs.realpath(path.join(vaultPath, typed));
       const realRoot = await fs.realpath(vaultPath);
@@ -344,7 +351,7 @@ export async function createHandlers({ vaultPath: rawVaultPath, templateRegistry
 
   async function handleWrite(args) {
     const { template: templateName, variables = {}, frontmatter = {}, createDirs = true } = args;
-    const outputPath = toVaultRel(args.path);
+    const outputPath = entryRel(args.path);
 
     const templateInfo = templateRegistry.get(templateName);
     if (!templateInfo) {
@@ -399,7 +406,7 @@ export async function createHandlers({ vaultPath: rawVaultPath, templateRegistry
     if (!args.content) {
       throw new Error("content must be a non-empty string");
     }
-    const rel = toVaultRel(args.path);
+    const rel = entryRel(args.path);
     const filePath = await safe(rel);
     await writableNote(rel);
     try {
@@ -418,7 +425,7 @@ export async function createHandlers({ vaultPath: rawVaultPath, templateRegistry
     if (!args.old_string) {
       throw new Error("old_string must be a non-empty string");
     }
-    const rel = toVaultRel(args.path);
+    const rel = entryRel(args.path);
     const filePath = await safe(rel);
     await writableNote(rel);
     let matchLines = [];
@@ -1085,7 +1092,7 @@ export async function createHandlers({ vaultPath: rawVaultPath, templateRegistry
     // Both source and destination require exact paths (destructive operation)
     const oldRelative = await sameNameOnDisk(args.old_path);
     const oldAbsolute = await safe(oldRelative);
-    const newRelative = toVaultRel(args.new_path);
+    const newRelative = entryRel(args.new_path);
     const newAbsolute = await safe(newRelative);
 
     let sourceStat;
@@ -1194,7 +1201,7 @@ export async function createHandlers({ vaultPath: rawVaultPath, templateRegistry
   }
 
   async function handleUpdateFrontmatter(args) {
-    const rel = toVaultRel(args.path);
+    const rel = entryRel(args.path);
     const filePath = await safe(rel);
     await writableNote(rel);
     let frontmatter;
@@ -1223,7 +1230,7 @@ export async function createHandlers({ vaultPath: rawVaultPath, templateRegistry
 
   async function handleAddLinks(args) {
     const { links, section = "## Related", create_section = true } = args;
-    const filePath = toVaultRel(args.path);
+    const filePath = entryRel(args.path);
 
     if (!links || links.length === 0) {
       throw new Error("At least one link is required");
