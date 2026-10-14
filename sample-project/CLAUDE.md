@@ -37,7 +37,7 @@ The plugin provides 3 specialized agents (visible in `/agents`). Delegate to the
 | Agent | When to Delegate | Mode |
 |---|---|---|
 | `vault-explorer` | Before creating notes on a topic, when researching existing knowledge | Foreground |
-| `pkm-capture` | After git commits (automatic via hook), after significant work blocks, before session ends | Background |
+| `pkm-capture` | When a PR is opened (automatic via hook after `gh pr create`), after significant work blocks, before session ends | Background |
 | `link-auditor` | After creating/modifying multiple vault notes, periodic health checks | Background |
 
 ## Documentation Rules

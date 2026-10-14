@@ -1,6 +1,50 @@
 import fs from "fs/promises";
 import os from "os";
+import path from "path";
 import { loadTemplates } from "./helpers.js";
+
+const SETTINGS_LABEL = "~/.claude/settings.json";
+// Same precedence as the server's key lookup in index.js.
+const KEY_NAMES = ["VAULT_PKM_OPENAI_KEY", "OBSIDIAN_PKM_OPENAI_KEY", "OPENAI_API_KEY"];
+
+const isNonEmptyString = (v) => typeof v === "string" && v !== "";
+// An unexpanded "${VAR}" placeholder means the variable was never set.
+const isUsableKey = (v) => isNonEmptyString(v) && !v.startsWith("${");
+
+/**
+ * Read the `env` block of Claude Code's user settings. Claude Code applies it to
+ * the MCP server, but a terminal running `obsidian-pkm doctor` never sees it.
+ * @param {string} homeDir
+ * @returns {Promise<{ env: Record<string, unknown>, error: string|null }>}
+ */
+async function readSettingsEnv(homeDir) {
+  try {
+    const settings = JSON.parse(await fs.readFile(path.join(homeDir, ".claude", "settings.json"), "utf-8"));
+    const env = settings && typeof settings.env === "object" && settings.env !== null ? settings.env : {};
+    return { env, error: null };
+  } catch (e) {
+    if (e.code === "ENOENT") return { env: {}, error: null };
+    // JSON.parse messages can embed a snippet of the file, which may hold an API key.
+    return { env: {}, error: e instanceof SyntaxError ? "not valid JSON" : e.message };
+  }
+}
+
+/**
+ * Look a variable up in the process environment, then in the settings.json env block.
+ * @param {string} name
+ * @param {Record<string, unknown>} settingsEnv
+ * @param {(v: unknown) => boolean} isUsable
+ * @returns {{ value: string, source: string, shadowsDifferent: boolean } | null}
+ *   shadowsDifferent: the environment won while settings.json holds another usable value for the same name
+ */
+function lookup(name, settingsEnv, isUsable) {
+  if (isUsable(process.env[name])) {
+    const shadowsDifferent = isUsable(settingsEnv[name]) && String(settingsEnv[name]) !== String(process.env[name]);
+    return { value: String(process.env[name]), source: "environment", shadowsDifferent };
+  }
+  if (isUsable(settingsEnv[name])) return { value: String(settingsEnv[name]), source: SETTINGS_LABEL, shadowsDifferent: false };
+  return null;
+}
 
 export async function runDoctor() {
   let passed = 0;
@@ -20,13 +64,24 @@ export async function runDoctor() {
     failed++;
   }
 
+  const settings = await readSettingsEnv(os.homedir());
+  if (settings.error) {
+    warn(`Could not read ${SETTINGS_LABEL}: ${settings.error}`);
+    warnings++;
+  }
+
   // 2. VAULT_PATH set
-  const vaultPath = process.env.VAULT_PATH || (os.homedir() + "/Documents/PKM");
-  if (process.env.VAULT_PATH) {
-    ok(`VAULT_PATH: ${vaultPath}`);
+  const vaultSetting = lookup("VAULT_PATH", settings.env, isNonEmptyString);
+  const vaultPath = vaultSetting ? vaultSetting.value : (os.homedir() + "/Documents/PKM");
+  if (vaultSetting) {
+    ok(`VAULT_PATH: ${vaultPath} (from ${vaultSetting.source})`);
     passed++;
+    if (vaultSetting.shadowsDifferent) {
+      warn(`VAULT_PATH differs between the environment and ${SETTINGS_LABEL}; using the environment value`);
+      warnings++;
+    }
   } else {
-    warn(`VAULT_PATH not set, using default: ${vaultPath}`);
+    warn(`VAULT_PATH not set in the environment or ${SETTINGS_LABEL}, using default: ${vaultPath}`);
     warnings++;
   }
 
@@ -65,13 +120,23 @@ export async function runDoctor() {
   }
 
   // 5. OpenAI key
-  const apiKey = process.env.VAULT_PKM_OPENAI_KEY
-    || process.env.OBSIDIAN_PKM_OPENAI_KEY
-    || process.env.OPENAI_API_KEY;
-  if (apiKey && !apiKey.startsWith("${")) {
-    ok("VAULT_PKM_OPENAI_KEY set (semantic search enabled)");
+  let apiKey = null;
+  let keyName = null;
+  for (const name of KEY_NAMES) {
+    apiKey = lookup(name, settings.env, isUsableKey);
+    if (apiKey) {
+      keyName = name;
+      break;
+    }
+  }
+  if (apiKey) {
+    ok(`VAULT_PKM_OPENAI_KEY set (from ${apiKey.source}${keyName === KEY_NAMES[0] ? "" : ` as ${keyName}`}; semantic search enabled)`);
     passed++;
-    if (!process.env.VAULT_PKM_OPENAI_KEY && process.env.OBSIDIAN_PKM_OPENAI_KEY) {
+    if (apiKey.shadowsDifferent) {
+      warn(`${keyName} differs between the environment and ${SETTINGS_LABEL}; using the environment value`);
+      warnings++;
+    }
+    if (keyName === "OBSIDIAN_PKM_OPENAI_KEY") {
       warn("OBSIDIAN_PKM_OPENAI_KEY is deprecated — rename to VAULT_PKM_OPENAI_KEY");
       warnings++;
     }

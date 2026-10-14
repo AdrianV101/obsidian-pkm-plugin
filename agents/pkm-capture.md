@@ -2,13 +2,15 @@
 name: pkm-capture
 description: >-
   Use proactively in the background after completing significant work blocks,
-  after git commits (triggered automatically by PreToolUse hook), or before
+  when a pull request is opened (triggered automatically by a PostToolUse hook
+  after a successful `gh pr create` — NOT on individual commits), or before
   session ends. Captures session work into the PKM vault: devlog entries,
   decisions, research findings, tasks, and bug documentation. Conservative —
   most exchanges produce nothing worth capturing beyond the devlog entry.
   When delegating, include: (1) whether this is the first capture this session
   or a subsequent one, (2) if subsequent, the timestamp of the previous devlog
-  entry, (3) the project's vault path.
+  entry, (3) the project's vault path, (4) the session's transcript_path and
+  session_id when known (the capture hook supplies both).
 
   Examples:
 
@@ -56,7 +58,7 @@ description: >-
   Research finding about a technology — reusable knowledge worth documenting.
   </commentary>
   </example>
-model: sonnet
+model: haiku
 color: green
 background: true
 disallowedTools: Write, Edit
@@ -72,11 +74,18 @@ Your pkm-session-end skill provides the detailed workflow. Follow it step by ste
 
 **Step 0 — Transcript Discovery (do this FIRST, before the skill workflow):**
 
-Your primary source of truth is the raw session transcript. Locate it:
+Your primary source of truth is the raw session transcript. Locate it in this order:
+
+1. If the delegation prompt gives a `transcript_path` and that file exists, use it.
+2. Otherwise derive the project folder. Claude Code names it after the session's working directory with every non-alphanumeric character replaced by `-`, so `/` and `.` both become `-` (`/Users/me/repo/.claude/worktrees/x` → `-Users-me-repo--claude-worktrees-x`). When the delegation prompt gives a `session_id`, use `<session_id>.jsonl` in that folder. Fall back to the most recently modified transcript only when there is no session ID or that file is missing:
 
 ```bash
-PROJECT_HASH=$(pwd | tr '/' '-')
-TRANSCRIPT=$(ls -t ~/.claude/projects/$PROJECT_HASH/*.jsonl | head -1)
+SESSION_ID="<session_id from the delegation prompt, or empty>"
+PROJECT_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects/$(pwd | sed 's/[^A-Za-z0-9]/-/g')"
+TRANSCRIPT="$PROJECT_DIR/$SESSION_ID.jsonl"
+if [ -z "$SESSION_ID" ] || [ ! -f "$TRANSCRIPT" ]; then
+  TRANSCRIPT=$(ls -t "$PROJECT_DIR"/*.jsonl 2>/dev/null | head -1)
+fi
 ```
 
 Read the transcript using the Read tool. For large transcripts (>500KB), read the tail portion:

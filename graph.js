@@ -311,6 +311,7 @@ export async function exploreNeighborhood({
  * @param {string} options.startPath
  * @param {number} options.depth
  * @param {string} options.direction
+ * @param {(p: string) => string} [options.formatPath] - renders a vault-relative path for display (default: identity)
  * @returns {string}
  */
 export function formatNeighborhood(result, { startPath, depth, direction, formatPath }) {

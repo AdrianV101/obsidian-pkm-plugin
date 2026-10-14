@@ -5,18 +5,19 @@
         "matcher": "startup|clear|compact",
         "hooks": [{
           "type": "command",
-          "command": "VAULT_PATH=${VAULT_PATH} node ${CLAUDE_PLUGIN_ROOT}/hooks/session-start.js",
+          "command": "VAULT_PATH=\"${VAULT_PATH}\" node \"${CLAUDE_PLUGIN_ROOT}/hooks/session-start.js\"",
           "timeout": 15
         }]
       }
     ],
-    "PreToolUse": [
+    "PostToolUse": [
       {
         "matcher": "Bash",
         "hooks": [{
           "type": "command",
-          "if": "Bash(git commit*)",
-          "command": "${CLAUDE_PLUGIN_ROOT}/hooks/pre-commit-reminder.sh"
+          "if": "Bash(gh pr create *)",
+          "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/capture-reminder.js\"",
+          "timeout": 10
         }]
       }
     ]

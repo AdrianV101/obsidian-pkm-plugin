@@ -28,8 +28,9 @@
   "scripts": {
     "start": "node cli.js",
     "test": "node --test tests/*.test.js",
-    "lint": "eslint *.js tests/",
-    "prepublishOnly": "npm test && npm run lint"
+    "lint": "eslint *.js hooks/ scripts/ tests/",
+    "typecheck": "tsc --noEmit -p jsconfig.json",
+    "prepublishOnly": "npm test && npm run lint && npm run typecheck"
   },
   "repository": {
     "type": "git",
@@ -68,6 +69,8 @@
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
-    "eslint": "^10.0.0"
+    "@types/node": "^20.19.43",
+    "eslint": "^10.0.0",
+    "typescript": "^5.9.3"
   }
 }

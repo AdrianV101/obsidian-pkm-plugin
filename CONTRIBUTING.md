@@ -12,7 +12,7 @@ Be respectful, constructive, and inclusive. We follow the [Contributor Covenant]
 
 ## Development Setup
 
-**Prerequisites:** Node.js >= 20 and C++ build tools (needed by `better-sqlite3`). See the README [Prerequisites](README.md#prerequisites) section for platform-specific instructions.
+**Prerequisites:** Node.js >= 20 (22 or 24 recommended). `better-sqlite3` normally installs a prebuilt binary; if npm has to compile it, you need C++ build tools: `xcode-select --install` on macOS, `sudo apt install build-essential python3` on Debian/Ubuntu, or Visual Studio Build Tools with the "Desktop development with C++" workload on Windows.
 
 1. Clone the repo and install dependencies:
    ```bash
@@ -38,24 +38,28 @@ Be respectful, constructive, and inclusive. We follow the [Contributor Covenant]
    ```
    Tests use temp directories and don't require `VAULT_PATH` or a real vault.
 
-5. Run the linter:
+5. Run the linter and the type checker:
    ```bash
-   npm run lint
+   npm run lint        # ESLint over *.js, hooks/, scripts/, tests/
+   npm run typecheck   # tsc over the JSDoc types (jsconfig.json)
    ```
 
 ## Architecture Overview
 
 ```
-index.js        - MCP server setup, tool definitions, request routing
+index.js        - MCP server setup, request routing
+tools.js        - MCP tool definitions (names, descriptions, input schemas)
 handlers.js     - Tool handler implementations (all 20 handlers)
 helpers.js      - Pure helper functions (path resolution, filtering, templates, fuzzy matching, peek/redirect)
 graph.js        - Wikilink resolution and BFS graph traversal
 embeddings.js   - Semantic search (OpenAI embeddings, SQLite + sqlite-vec)
 activity.js     - Activity logging (session tracking, SQLite)
 utils.js        - Shared utilities (frontmatter parsing, file listing)
-cli.js          - CLI entry point (routes `init` subcommand or starts server)
+cli.js          - CLI entry point (routes `init` / `doctor` subcommands or starts server)
 init.js         - Vault scaffolding wizard (templates, PARA folders)
-hooks/          - Claude Code hooks (session context loading, project resolution)
+doctor.js       - `obsidian-pkm doctor` setup diagnostics
+hooks/          - Claude Code hooks (session context loading, project resolution, PR capture reminder)
+scripts/        - Release tooling (publish-time tag/version check)
 templates/      - Obsidian note templates (copy to vault's 05-Templates/)
 sample-project/ - Sample CLAUDE.md for integrating PKM into your repos
 ```
@@ -72,11 +76,11 @@ Run `npm run lint` before submitting. The project uses ESLint with a flat config
 
 ## Making Changes
 
-1. Fork the repo and create a feature branch from `master`
+1. Fork the repo and create a feature branch from `next` (the integration branch; `master` only receives release merges)
 2. Make your changes
 3. Add or update tests for new functionality
-4. Run `npm test && npm run lint` and ensure both pass
-5. Submit a pull request with a clear description of the change
+4. Run `npm test && npm run lint && npm run typecheck` and ensure all three pass
+5. Open a pull request against `next` with a clear description of the change
 
 A PR template is provided at `.github/PULL_REQUEST_TEMPLATE.md` to help structure your submission.
 
@@ -108,15 +112,15 @@ Keep the subject line under 72 characters. Add a body for non-trivial changes ex
 
 ## Adding a New Tool
 
-Each MCP tool requires changes in three files:
+Each MCP tool requires changes in three files (`tools.js`, `handlers.js`, `tests/handlers.test.js`):
 
-1. **Define the tool schema** in `index.js` inside the `ListToolsRequestSchema` handler. Add a tool object with `name`, `description`, and `inputSchema` (JSON Schema for parameters).
+1. **Define the tool schema** in `tools.js` inside `createToolsList()`. Add a tool object with `name`, `description`, and `inputSchema` (JSON Schema for parameters); tools that need the semantic index go in the `hasSemanticIndex` block.
 
 2. **Implement the handler** in `handlers.js` inside the `createHandlers()` closure. Write an `async function handleYourTool(args)` that returns `{ content: [{ type: "text", text: "..." }] }`. Use `resolvePath(args.path)` for path security, `positiveInt(args.limit, 10)` for numeric params, and the standard ENOENT catch pattern for file reads.
 
-3. **Register it** in the handler `Map` at the bottom of `createHandlers()` (~line 1250): `handlers.set("vault_your_tool", handleYourTool);`
+3. **Register it** in the `Map` returned at the end of `createHandlers()`: add `["vault_your_tool", handleYourTool]`. `tests/manifest.test.js` fails if the names in `tools.js` and this map differ.
 
-4. **Add tests** in `tests/handlers.test.js`. Tests use `createHandlers(tmpDir)` to build handlers against a temp vault with real files. Test both the happy path and error cases (missing files, invalid params).
+4. **Add tests** in `tests/handlers.test.js`. Tests call `createHandlers({ vaultPath: tmpDir, templateRegistry, semanticIndex: null, activityLog: null, sessionId })` to build handlers against a temp vault with real files. Test both the happy path and error cases (missing files, invalid params).
 
 Look at a simple handler like `handleList` or `handleRecent` for the pattern.
 

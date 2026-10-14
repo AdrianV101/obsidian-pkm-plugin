@@ -42,7 +42,7 @@ function positiveInt(value, fallback) {
  * @param {Object|null} ctx.activityLog - ActivityLog instance
  * @param {string} ctx.sessionId - current session UUID
  * @param {string} [ctx.vaultName] - vault name for obsidian:// links (defaults to basename of vaultPath)
- * @returns {Map<string, function>} tool name to handler function
+ * @returns {Promise<Map<string, Function>>} tool name to handler function
  */
 export async function createHandlers({ vaultPath, templateRegistry, semanticIndex, activityLog, sessionId, vaultName }) {
   const resolvePath = (relativePath) => resolvePathBase(relativePath, vaultPath);
