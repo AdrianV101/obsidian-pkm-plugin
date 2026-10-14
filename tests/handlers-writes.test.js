@@ -188,6 +188,77 @@ describe("vault_move races and write errors", () => {
     }
   });
 
+  // Low-level filesystem errors name absolute paths; tools must report them vault-relative.
+  const FS_ERRORS = [
+    ["vault_read of an unreadable note (EACCES)", "vault_read", { path: "notes/locked.md" }, /notes\/locked\.md/, { posixOnly: true }],
+    ["vault_append under a file (ENOTDIR)", "vault_append", { path: "notes/a.md/child.md", content: "x" }, /notes\/a\.md\/child\.md/],
+    ["vault_write under a file (mkdir EEXIST)", "vault_write", { template: "t", path: "notes/a.md/child.md" }, /notes\/a\.md/],
+    ["vault_move of a folder into itself (EINVAL)", "vault_move", { old_path: "folder", new_path: "folder/sub" }, /folder\/sub/],
+    ["vault_move of a note under a file (ENOTDIR)", "vault_move", { old_path: "folder/x.md", new_path: "notes/a.md/x.md" }, /notes\/a\.md/],
+  ];
+  for (const [label, tool, args, names, { posixOnly = false } = {}] of FS_ERRORS) {
+    it(`${label} reports vault-relative paths, never the vault's absolute or real path`, { skip: posixOnly && IS_WIN && "POSIX permission bits" }, async (t) => {
+      const v = await makeVault({ "notes/a.md": note("A"), "notes/locked.md": note("L"), "folder/x.md": note("X") });
+      const real = await fs.realpath(v.root);
+      try {
+        await fs.chmod(path.join(v.root, "notes", "locked.md"), 0o000);
+        try {
+          await fs.readFile(path.join(v.root, "notes", "locked.md"));
+          if (posixOnly) return t.skip("running with permission to read any file");
+        } catch { /* expected */ }
+        const templateRegistry = new Map([["t", { content: "---\ntype: note\ncreated: 2026-01-01\ntags:\n  - x\n---\n# {{title}}\n" }]]);
+        const h = await createHandlers({ vaultPath: v.root, templateRegistry, semanticIndex: null, activityLog: null, sessionId: "rel" });
+        await assert.rejects(() => h.get(tool)(args), (err) => {
+          assert.equal(leaksPath(err.message, v.root) || leaksPath(err.message, real), false, err.message);
+          assert.match(err.message, names);
+          return true;
+        });
+      } finally {
+        await fs.chmod(path.join(v.root, "notes", "locked.md"), 0o644);
+        await v.cleanup();
+      }
+    });
+  }
+
+  describe("write tools report the note by its normalised vault-relative path", () => {
+    const TITLE_TEMPLATE = "---\ntype: note\ncreated: 2026-01-01\ntags:\n  - x\n---\n# <% tp.file.title %>\n";
+    const CASES = [
+      ["vault_write", { template: "t", path: "notes\\Idea.md" }, "notes/Idea.md"],
+      ["vault_append", { path: "notes\\a.md", content: "more" }, "notes/a.md"],
+      ["vault_edit", { path: "notes\\a.md", old_string: "body a", new_string: "edited" }, "notes/a.md"],
+      ["vault_edit (no match)", { path: "notes\\a.md", old_string: "absent", new_string: "x" }, "notes/a.md"],
+      ["vault_update_frontmatter", { path: "notes\\a.md", fields: { status: "active" } }, "notes/a.md"],
+      ["vault_add_links", { path: "notes\\a.md", links: [{ target: "notes\\b.md" }] }, "notes/a.md"],
+      ["vault_add_links (nothing added)", { path: "notes\\a.md", links: [{ target: "notes\\missing.md" }] }, "notes/a.md"],
+    ];
+    for (const [label, args, rel] of CASES) {
+      it(`${label} given a backslash path names the note with '/' separators`, async () => {
+        const v = await makeVault({ "notes/a.md": note("A", "body a"), "notes/b.md": note("B") });
+        try {
+          const templateRegistry = new Map([["t", { content: TITLE_TEMPLATE }]]);
+          const h = await createHandlers({ vaultPath: v.root, templateRegistry, semanticIndex: null, activityLog: null, sessionId: "sep" });
+          const text = (await h.get(label.split(" ")[0])(args)).content[0].text;
+          assert.ok(text.includes(rel), text);
+          assert.doesNotMatch(text, /\\/);
+        } finally {
+          await v.cleanup();
+        }
+      });
+    }
+
+    it("vault_write given a backslash path titles the note by its file name", async () => {
+      const v = await makeVault({});
+      try {
+        const templateRegistry = new Map([["t", { content: TITLE_TEMPLATE }]]);
+        const h = await createHandlers({ vaultPath: v.root, templateRegistry, semanticIndex: null, activityLog: null, sessionId: "title" });
+        await h.get("vault_write")({ template: "t", path: "notes\\Idea.md" });
+        assert.match(await fs.readFile(path.join(v.root, "notes", "Idea.md"), "utf-8"), /^# Idea$/m);
+      } finally {
+        await v.cleanup();
+      }
+    });
+  });
+
   it("vault_append to a read-only note refuses without leaking the absolute path", { skip: IS_WIN && "POSIX permission bits" }, async () => {
     const v = await makeVault({ "notes/ro.md": note("RO") });
     try {

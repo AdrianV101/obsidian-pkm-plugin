@@ -111,6 +111,29 @@ function relError(e, rel) {
   return Object.assign(new Error(message, { cause: e }), { code: e.code });
 }
 
+const escapeRegExp = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+/**
+ * Rewrite absolute paths inside the vault in an error's message as vault-relative ones:
+ * filesystem errors name the absolute path (e.g. "EACCES: permission denied, open '/…/vault/a.md'").
+ * The error object itself is kept, so its type and code still reach the caller.
+ * @param {any} e
+ * @param {string[]} roots the vault root as configured and as resolved through symlinks
+ * @returns {any}
+ */
+function withVaultRelativeMessage(e, roots) {
+  if (!(e instanceof Error)) return e;
+  let message = e.message;
+  // Longest first: one root can contain the other (/var/… and /private/var/… on macOS).
+  for (const root of [...new Set(roots)].sort((a, b) => b.length - a.length)) {
+    // The root, optionally followed by a separator and the rest of the path up to a quote or line end.
+    const pattern = new RegExp(`${escapeRegExp(root)}(?:[\\\\/]([^'"\\n]*))?(?=['"\\s]|$)`, "gm");
+    message = message.replace(pattern, (_, rest) => (rest ? toVaultRel(rest) : "") || ".");
+  }
+  e.message = message;
+  return e;
+}
+
 async function isDirectory(absPath) {
   try {
     return (await fs.stat(absPath)).isDirectory();
@@ -319,7 +342,8 @@ export async function createHandlers({ vaultPath: rawVaultPath, templateRegistry
   }
 
   async function handleWrite(args) {
-    const { template: templateName, path: outputPath, variables = {}, frontmatter = {}, createDirs = true } = args;
+    const { template: templateName, variables = {}, frontmatter = {}, createDirs = true } = args;
+    const outputPath = toVaultRel(args.path);
 
     const templateInfo = templateRegistry.get(templateName);
     if (!templateInfo) {
@@ -330,7 +354,7 @@ export async function createHandlers({ vaultPath: rawVaultPath, templateRegistry
     const filePath = await safe(outputPath);
     await writableNote(outputPath);
 
-    const title = path.basename(outputPath, ".md");
+    const title = path.posix.basename(outputPath, ".md");
     const substituted = substituteTemplateVariables(templateInfo.content, {
       title,
       custom: variables,
@@ -374,26 +398,28 @@ export async function createHandlers({ vaultPath: rawVaultPath, templateRegistry
     if (!args.content) {
       throw new Error("content must be a non-empty string");
     }
-    const filePath = await safe(args.path);
-    await writableNote(args.path);
+    const rel = toVaultRel(args.path);
+    const filePath = await safe(rel);
+    await writableNote(rel);
     try {
       await mutateFile(filePath, (existing) => applyAppend(existing, args));
     } catch (e) {
       if (e.code === "ENOENT") {
-        throw new Error(`File not found: ${args.path}. Use vault_write to create new files.`, { cause: e });
+        throw new Error(`File not found: ${rel}. Use vault_write to create new files.`, { cause: e });
       }
-      throw relError(e, args.path);
+      throw relError(e, rel);
     }
-    semanticIndex?.notifyChanged?.(await onDiskPath(args.path));
-    return { content: [{ type: "text", text: `Appended to ${linkFor(args.path)}${args.position ? ` (${args.position})` : ""}` }] };
+    semanticIndex?.notifyChanged?.(await onDiskPath(rel));
+    return { content: [{ type: "text", text: `Appended to ${linkFor(rel)}${args.position ? ` (${args.position})` : ""}` }] };
   }
 
   async function handleEdit(args) {
     if (!args.old_string) {
       throw new Error("old_string must be a non-empty string");
     }
-    const filePath = await safe(args.path);
-    await writableNote(args.path);
+    const rel = toVaultRel(args.path);
+    const filePath = await safe(rel);
+    await writableNote(rel);
     let matchLines = [];
     try {
       await mutateFile(filePath, (content) => {
@@ -403,28 +429,28 @@ export async function createHandlers({ vaultPath: rawVaultPath, templateRegistry
       });
     } catch (e) {
       if (e.code === "ENOENT") {
-        throw new Error(`File not found: ${args.path}`, { cause: e });
+        throw new Error(`File not found: ${rel}`, { cause: e });
       }
-      throw relError(e, args.path);
+      throw relError(e, rel);
     }
 
     const count = matchLines.length;
     if (count === 0) {
       return {
-        content: [{ type: "text", text: `No match found for the specified old_string in ${args.path}` }],
+        content: [{ type: "text", text: `No match found for the specified old_string in ${rel}` }],
         isError: true
       };
     }
 
     if (count > 1) {
       return {
-        content: [{ type: "text", text: `Found ${count} matches for old_string in ${args.path} (lines ${formatLineList(matchLines)}). Please provide a more specific string that matches exactly once.` }],
+        content: [{ type: "text", text: `Found ${count} matches for old_string in ${rel} (lines ${formatLineList(matchLines)}). Please provide a more specific string that matches exactly once.` }],
         isError: true
       };
     }
 
-    semanticIndex?.notifyChanged?.(await onDiskPath(args.path));
-    return { content: [{ type: "text", text: `Successfully edited ${linkFor(args.path)}` }] };
+    semanticIndex?.notifyChanged?.(await onDiskPath(rel));
+    return { content: [{ type: "text", text: `Successfully edited ${linkFor(rel)}` }] };
   }
 
   // ── Search & Discovery ──────────────────────────────────────────────
@@ -1167,8 +1193,9 @@ export async function createHandlers({ vaultPath: rawVaultPath, templateRegistry
   }
 
   async function handleUpdateFrontmatter(args) {
-    const filePath = await safe(args.path);
-    await writableNote(args.path);
+    const rel = toVaultRel(args.path);
+    const filePath = await safe(rel);
+    await writableNote(rel);
     let frontmatter;
     try {
       await mutateFile(filePath, (content) => {
@@ -1178,23 +1205,24 @@ export async function createHandlers({ vaultPath: rawVaultPath, templateRegistry
       });
     } catch (e) {
       if (e.code === "ENOENT") {
-        throw new Error(`File not found: ${args.path}`, { cause: e });
+        throw new Error(`File not found: ${rel}`, { cause: e });
       }
-      throw relError(e, args.path);
+      throw relError(e, rel);
     }
 
-    semanticIndex?.notifyChanged?.(await onDiskPath(args.path));
+    semanticIndex?.notifyChanged?.(await onDiskPath(rel));
     const lines = Object.entries(frontmatter).map(([k, v]) => {
       const display = Array.isArray(v) ? `[${v.join(", ")}]` : String(v);
       return `${k}: ${display}`;
     });
     return {
-      content: [{ type: "text", text: `Updated frontmatter in ${linkFor(args.path)}:\n${lines.join("\n")}` }]
+      content: [{ type: "text", text: `Updated frontmatter in ${linkFor(rel)}:\n${lines.join("\n")}` }]
     };
   }
 
   async function handleAddLinks(args) {
-    const { path: filePath, links, section = "## Related", create_section = true } = args;
+    const { links, section = "## Related", create_section = true } = args;
+    const filePath = toVaultRel(args.path);
 
     if (!links || links.length === 0) {
       throw new Error("At least one link is required");
@@ -1279,7 +1307,7 @@ export async function createHandlers({ vaultPath: rawVaultPath, templateRegistry
 
     if (added.length > 0) semanticIndex?.notifyChanged?.(await onDiskPath(filePath));
     if (added.length === 0 && skipped.length > 0) {
-      const skipSummary = skipped.map(s => `${path.basename(s.target, ".md")} (${s.reason})`).join(", ");
+      const skipSummary = skipped.map(s => `${path.posix.basename(toVaultRel(s.target), ".md")} (${s.reason})`).join(", ");
       return {
         content: [{ type: "text", text: `No links added to ${filePath}.\nSkipped ${skipped.length}: ${skipSummary}` }]
       };
@@ -1287,7 +1315,7 @@ export async function createHandlers({ vaultPath: rawVaultPath, templateRegistry
 
     let summary = `Added ${added.length} link${added.length === 1 ? "" : "s"} to ${linkFor(filePath)} (${section}):\n${added.join("\n")}`;
     if (skipped.length > 0) {
-      const skipSummary = skipped.map(s => `${path.basename(s.target, ".md")} (${s.reason})`).join(", ");
+      const skipSummary = skipped.map(s => `${path.posix.basename(toVaultRel(s.target), ".md")} (${s.reason})`).join(", ");
       summary += `\nSkipped ${skipped.length}: ${skipSummary}`;
     }
     return { content: [{ type: "text", text: summary }] };
@@ -1415,7 +1443,7 @@ export async function createHandlers({ vaultPath: rawVaultPath, templateRegistry
     return { content: [{ type: "text", text: `${header}\n\n${sections.join("\n\n")}` }] };
   }
 
-  return new Map([
+  const handlers = new Map([
     ["vault_read", handleRead],
     ["vault_write", handleWrite],
     ["vault_append", handleAppend],
@@ -1437,4 +1465,15 @@ export async function createHandlers({ vaultPath: rawVaultPath, templateRegistry
     ["vault_add_links", handleAddLinks],
     ["vault_link_health", handleLinkHealth],
   ]);
+  const roots = [vaultPath, await fs.realpath(vaultPath).catch(() => vaultPath)];
+  for (const [name, handler] of handlers) {
+    handlers.set(name, async (args) => {
+      try {
+        return await handler(args);
+      } catch (e) {
+        throw withVaultRelativeMessage(e, roots);
+      }
+    });
+  }
+  return handlers;
 }
