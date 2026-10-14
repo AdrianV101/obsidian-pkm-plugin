@@ -165,6 +165,25 @@ describe("createLinkResolver", () => {
   });
 });
 
+describe("createLinkResolver unicode normalisation", () => {
+  const nfd = "caf\u0065\u0301";
+  const nfc = "caf\u00e9";
+  it("matches NFC links to NFD files and NFD links to NFC files, returning the on-disk spelling", () => {
+    const onNfd = createLinkResolver([`notes/${nfd}.md`, `x/${nfd}.md`]);
+    assert.deepEqual(onNfd.resolve(`notes/${nfc}`), { status: "resolved", path: `notes/${nfd}.md` });
+    assert.deepEqual(onNfd.resolve(`${nfc}`).status, "ambiguous");
+    const onNfc = createLinkResolver([`notes/${nfc}.md`]);
+    assert.deepEqual(onNfc.resolve(nfd), { status: "resolved", path: `notes/${nfc}.md` });
+    assert.deepEqual(onNfc.resolve(`notes/${nfd}`), { status: "resolved", path: `notes/${nfc}.md` });
+  });
+});
+
+describe("extractWikilinks multi-line", () => {
+  it("does not treat a bracket pair spanning lines as a link", () => {
+    assert.deepEqual(extractWikilinks("[[a\nb]] and [[c]]"), ["c"]);
+  });
+});
+
 describe("collectLinkedPaths", () => {
   it("returns every note the content's links may point to, skipping code and broken links", () => {
     const resolver = createLinkResolver(["a/one.md", "b/two.md", "c/two.md", "d/three.md"]);

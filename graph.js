@@ -2,8 +2,9 @@ import fs from "fs/promises";
 import path from "path";
 import { extractFrontmatter } from "./utils.js";
 import { maskCode } from "./markdown.js";
+import { toTagList } from "./helpers.js";
 
-const WIKILINK_REGEX = /\[\[([^\]]+)\]\]/g;
+const WIKILINK_REGEX = /\[\[([^\]\n]+)\]\]/g;
 
 /**
  * Split the inner text of a `[[...]]` link.
@@ -77,7 +78,7 @@ export function createLinkResolver(allFiles) {
   const byPath = new Map();
   const byBasename = new Map();
   for (const file of allFiles) {
-    const lower = file.toLowerCase();
+    const lower = file.normalize("NFC").toLowerCase();
     if (!byPath.has(lower)) byPath.set(lower, []);
     byPath.get(lower).push(file);
     const base = path.posix.basename(lower, ".md");
@@ -94,7 +95,7 @@ export function createLinkResolver(allFiles) {
 
   return {
     resolve(target) {
-      const cleaned = String(target).split(/[#^]/)[0].trim().toLowerCase();
+      const cleaned = String(target).split(/[#^]/)[0].trim().normalize("NFC").toLowerCase();
       if (!cleaned) return { status: "broken" };
       const withExt = cleaned.endsWith(".md") ? cleaned : cleaned + ".md";
       const exact = byPath.get(withExt);
@@ -102,7 +103,7 @@ export function createLinkResolver(allFiles) {
       const sameBasename = byBasename.get(path.posix.basename(withExt, ".md")) || [];
       if (!cleaned.includes("/")) return verdict(sameBasename);
       const suffix = "/" + withExt;
-      return verdict(sameBasename.filter(f => f.toLowerCase().endsWith(suffix)));
+      return verdict(sameBasename.filter(f => f.normalize("NFC").toLowerCase().endsWith(suffix)));
     },
   };
 }
@@ -171,7 +172,7 @@ export async function findFilesLinkingTo(targetPath, vaultPath, allFiles, resolv
  */
 export function rewriteWikilinks(content, oldTarget, newTarget) {
   // Match [[...]] links, capturing the full inner text
-  return content.replace(/\[\[([^\]]+)\]\]/g, (fullMatch, inner) => {
+  return content.replace(/\[\[([^\]\n]+)\]\]/g, (fullMatch, inner) => {
     // Split on | first to separate alias
     const pipeIdx = inner.indexOf("|");
     const linkPart = pipeIdx !== -1 ? inner.slice(0, pipeIdx) : inner;
@@ -318,7 +319,7 @@ export async function exploreNeighborhood({
           metadata = {
             type: fm.type || null,
             status: fm.status || null,
-            tags: Array.isArray(fm.tags) ? fm.tags.map(String) : [],
+            tags: toTagList(fm.tags).map(String),
           };
         }
       } catch (e) {

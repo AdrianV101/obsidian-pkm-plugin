@@ -3364,3 +3364,26 @@ describe("scalar frontmatter tags in graph and tag tools", () => {
     await fs.rm(dir, { recursive: true });
   });
 });
+
+describe("unicode-normalised links and scalar tags in neighborhood", () => {
+  it("vault_link_health does not report an NFD-named note as orphan or its NFC link as broken", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "nfd-links-"));
+    await fs.writeFile(path.join(dir, "café.md"), "# Cafe\n[[src]]\n");
+    await fs.writeFile(path.join(dir, "src.md"), "See [[café]].\n");
+    const h = await createHandlers({ vaultPath: dir, templateRegistry: new Map(), semanticIndex: null, activityLog: null, sessionId: "nfd" });
+    const text = (await h.get("vault_link_health")({ checks: ["orphans", "broken"] })).content[0].text;
+    assert.ok(text.includes("Broken links** (0)"), text);
+    assert.ok(text.includes("Orphan notes** (0)"), text);
+    await fs.rm(dir, { recursive: true });
+  });
+
+  it("vault_neighborhood shows scalar tags on linked nodes", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "nb-scalar-"));
+    await fs.writeFile(path.join(dir, "a.md"), "[[b]]\n");
+    await fs.writeFile(path.join(dir, "b.md"), "---\ntags: dev\n---\n# B\n");
+    const h = await createHandlers({ vaultPath: dir, templateRegistry: new Map(), semanticIndex: null, activityLog: null, sessionId: "nb" });
+    const text = (await h.get("vault_neighborhood")({ path: "a.md", depth: 1 })).content[0].text;
+    assert.ok(text.includes("tags: dev"), text);
+    await fs.rm(dir, { recursive: true });
+  });
+});
