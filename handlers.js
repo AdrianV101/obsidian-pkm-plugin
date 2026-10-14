@@ -143,8 +143,10 @@ export async function createHandlers({ vaultPath: rawVaultPath, templateRegistry
 
   /**
    * The spelling the file or folder has on disk when it differs from `rel` only by Unicode
-   * normalisation or case; otherwise `rel` as typed. Symlinks resolve to a different name, so
-   * trash and move (which act on the link itself) keep the typed path.
+   * normalisation or case; otherwise `rel` as typed (normalised). The link resolver, the file
+   * index and the semantic index all hold on-disk spellings, so trash and move canonicalise
+   * their source with this before any lookup. Symlinks resolve to a different name, so trash
+   * and move (which act on the link itself) keep the typed path.
    */
   const sameNameOnDisk = async (rel) => {
     const typed = toVaultRel(rel);
@@ -994,7 +996,7 @@ export async function createHandlers({ vaultPath: rawVaultPath, templateRegistry
   // ── Organization & Maintenance ──────────────────────────────────────
 
   async function handleTrash(args) {
-    const resolvedRelative = toVaultRel(args.path);
+    const resolvedRelative = await sameNameOnDisk(args.path);
     const filePath = await safe(resolvedRelative);
 
     let stat;
@@ -1032,15 +1034,13 @@ export async function createHandlers({ vaultPath: rawVaultPath, templateRegistry
       // No collision — use original path
     }
 
-    const indexedPath = await sameNameOnDisk(resolvedRelative);
-
     // Create trash directory and move file
     await fs.mkdir(path.dirname(trashAbsolute), { recursive: true });
     if (stat.isDirectory()) await fs.rename(filePath, trashAbsolute);
     else await withNoteLock(filePath, () => fs.rename(filePath, trashAbsolute));
 
     fileIndex.remove(resolvedRelative);
-    await semanticIndex?.notifyRemoved?.(indexedPath);
+    await semanticIndex?.notifyRemoved?.(resolvedRelative);
 
     // Build output
     let text = `Trashed ${resolvedRelative} → ${linkFor(trashRelative)}`;
@@ -1056,7 +1056,7 @@ export async function createHandlers({ vaultPath: rawVaultPath, templateRegistry
 
   async function handleMove(args) {
     // Both source and destination require exact paths (destructive operation)
-    const oldRelative = toVaultRel(args.old_path);
+    const oldRelative = await sameNameOnDisk(args.old_path);
     const oldAbsolute = await safe(oldRelative);
     const newRelative = toVaultRel(args.new_path);
     const newAbsolute = await safe(newRelative);
@@ -1102,8 +1102,6 @@ export async function createHandlers({ vaultPath: rawVaultPath, templateRegistry
     const basenameUnique = afterResolution.status === "resolved" && afterResolution.path === newRelative;
     const newLinkTarget = basenameUnique ? newBasename : newRelative.replace(/\.md$/, "");
 
-    const indexedOldPath = await sameNameOnDisk(oldRelative);
-
     // Create destination directory and move file
     await fs.mkdir(path.dirname(newAbsolute), { recursive: true });
     const renameNote = async () => {
@@ -1128,7 +1126,7 @@ export async function createHandlers({ vaultPath: rawVaultPath, templateRegistry
     }
 
     fileIndex.rename(oldRelative, newRelative);
-    semanticIndex?.notifyMoved?.(indexedOldPath, newRelative);
+    semanticIndex?.notifyMoved?.(oldRelative, newRelative);
 
     // Rewrite wikilinks in referring files, and in the moved note itself for its self-links
     let updatedCount = 0;
@@ -1207,6 +1205,16 @@ export async function createHandlers({ vaultPath: rawVaultPath, templateRegistry
     await writableNote(filePath);
     const { allFiles, resolver } = await freshGraph();
     const noteSet = new Set(allFiles);
+    // A target is a vault path. Like a link, it matches regardless of case and Unicode form,
+    // and the note is then named by its on-disk spelling.
+    const fold = (p) => p.normalize("NFC").toLowerCase();
+    const resolveTarget = (target) => {
+      const rel = toVaultRel(target);
+      const withExt = rel.endsWith(".md") ? rel : rel + ".md";
+      if (noteSet.has(withExt)) return withExt;
+      const resolution = resolver.resolve(withExt);
+      return resolution.status === "resolved" && fold(resolution.path) === fold(withExt) ? resolution.path : null;
+    };
 
     let added = [];
     let skipped = [];
@@ -1220,29 +1228,29 @@ export async function createHandlers({ vaultPath: rawVaultPath, templateRegistry
         const alreadyLinked = collectLinkedPaths(content, resolver);
 
         for (const { target, annotation = "" } of links) {
-          const targetWithExt = target.endsWith(".md") ? target : target + ".md";
+          const targetPath = resolveTarget(target);
 
-          if (!noteSet.has(targetWithExt)) {
+          if (targetPath === null) {
             skipped.push({ target, reason: "not found" });
             continue;
           }
 
-          if (alreadyLinked.has(targetWithExt)) {
+          if (alreadyLinked.has(targetPath)) {
             skipped.push({ target, reason: "already linked" });
             continue;
           }
 
           // Bare basename only when it resolves back to this exact note
-          const basename = path.posix.basename(targetWithExt, ".md");
+          const basename = path.posix.basename(targetPath, ".md");
           const byBasename = resolver.resolve(basename);
-          const displayName = byBasename.status === "resolved" && byBasename.path === targetWithExt
+          const displayName = byBasename.status === "resolved" && byBasename.path === targetPath
             ? basename
-            : targetWithExt.replace(/\.md$/, "");
+            : targetPath.replace(/\.md$/, "");
           const entry = annotation
             ? `- [[${displayName}]] — ${annotation}`
             : `- [[${displayName}]]`;
           added.push(entry);
-          alreadyLinked.add(targetWithExt);
+          alreadyLinked.add(targetPath);
         }
 
         if (added.length === 0) return original;

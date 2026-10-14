@@ -3711,6 +3711,75 @@ describe("write tools notify with the on-disk spelling of the note", () => {
   });
 });
 
+describe("vault_move, vault_trash and vault_add_links use the note's on-disk spelling", () => {
+  // The request spells the note differently from disk; on APFS/NTFS both name the same file.
+  const SPELLINGS = [
+    ["letter case", "Target", "target"],
+    ["Unicode normalisation (NFD on disk, NFC requested)", "Café", "Café"],
+  ];
+  const fmNote = (title, body = "") => `---\ntype: note\ncreated: 2026-01-01\ntags:\n  - t\n---\n# ${title}\n\n${body}\n`;
+
+  async function spellingVault(onDisk, t) {
+    const vault = await makeVault({
+      [`notes/${onDisk}.md`]: fmNote("T"),
+      "notes/ref.md": fmNote("Ref", `see [[${onDisk}]] and [[notes/${onDisk}]]`),
+    });
+    const h = await createHandlers({ vaultPath: vault, templateRegistry: new Map(), semanticIndex: null, activityLog: null, sessionId: "spelling" });
+    return { vault, h, aliases: async (typed) => {
+      try {
+        await fs.access(path.join(vault, "notes", `${typed}.md`));
+        return true;
+      } catch {
+        t.skip("this filesystem does not treat the two spellings as one file");
+        return false;
+      }
+    } };
+  }
+
+  for (const [label, onDisk, typed] of SPELLINGS) {
+    it(`vault_move given a ${label} variant of the old path rewrites every link to the note`, async (t) => {
+      const { vault, h, aliases } = await spellingVault(onDisk, t);
+      try {
+        if (!(await aliases(typed))) return;
+        const result = await h.get("vault_move")({ old_path: `notes/${typed}.md`, new_path: "archive/renamed.md" });
+        assert.match(result.content[0].text, /Updated wikilinks in 1 file/);
+        const ref = await fs.readFile(path.join(vault, "notes", "ref.md"), "utf-8");
+        assert.ok(ref.includes("see [[renamed]] and [[renamed]]"), ref);
+      } finally {
+        await fs.rm(vault, { recursive: true, force: true });
+      }
+    });
+
+    it(`vault_trash given a ${label} variant of the path warns about the links it breaks`, async (t) => {
+      const { vault, h, aliases } = await spellingVault(onDisk, t);
+      try {
+        if (!(await aliases(typed))) return;
+        const result = await h.get("vault_trash")({ path: `notes/${typed}.md` });
+        assert.match(result.content[0].text, /1 file had links to this note/);
+        assert.match(result.content[0].text, /notes%2Fref/);
+      } finally {
+        await fs.rm(vault, { recursive: true, force: true });
+      }
+    });
+
+    it(`vault_add_links accepts a ${label} variant of a target and links the note by its on-disk name`, async (t) => {
+      const { vault, h } = await spellingVault(onDisk, t);
+      try {
+        await fs.writeFile(path.join(vault, "notes", "hub.md"), fmNote("Hub"));
+        const result = await h.get("vault_add_links")({ path: "notes/hub.md", links: [{ target: `notes/${typed}.md` }] });
+        assert.match(result.content[0].text, /Added 1 link/);
+        const hub = await fs.readFile(path.join(vault, "notes", "hub.md"), "utf-8");
+        assert.ok(hub.includes(`- [[${onDisk}]]`), hub);
+
+        const again = await h.get("vault_add_links")({ path: "notes/ref.md", links: [{ target: `notes/${typed}` }] });
+        assert.match(again.content[0].text, /already linked/);
+      } finally {
+        await fs.rm(vault, { recursive: true, force: true });
+      }
+    });
+  }
+});
+
 describe("trash and move notify the index about the path they acted on", () => {
   let vault;
   let events;
