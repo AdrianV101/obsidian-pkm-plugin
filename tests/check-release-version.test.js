@@ -4,7 +4,7 @@ import { spawn } from "node:child_process";
 import fs from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
-import { checkReleaseVersion } from "../scripts/check-release-version.js";
+import { checkReleaseVersion } from "../scripts/release-version.js";
 
 const SCRIPT = path.join(import.meta.dirname, "..", "scripts", "check-release-version.js");
 
@@ -52,9 +52,9 @@ describe("check-release-version CLI", () => {
     await fs.rm(dir, { recursive: true, force: true });
   });
 
-  function run(env) {
+  function run(env, args = [SCRIPT]) {
     return new Promise((resolve, reject) => {
-      const child = spawn(process.execPath, [SCRIPT], {
+      const child = spawn(process.execPath, args, {
         cwd: dir,
         env: { PATH: process.env.PATH, ...env },
         stdio: ["ignore", "pipe", "pipe"],
@@ -76,5 +76,16 @@ describe("check-release-version CLI", () => {
     const failure = await run({ GITHUB_REF_TYPE: "branch", GITHUB_REF_NAME: "master" });
     assert.equal(failure.code, 1);
     assert.match(failure.stderr, /must run on a tag/);
+  });
+
+  it("never exits silently with 0: even when loaded rather than run as the entry point, a mismatch fails and a match prints the pass line", async () => {
+    const loader = ["-e", `import(${JSON.stringify(SCRIPT)})`];
+    const failure = await run({ GITHUB_REF_TYPE: "branch", GITHUB_REF_NAME: "master" }, loader);
+    assert.equal(failure.code, 1, "mismatch must not pass");
+    assert.match(failure.stderr, /must run on a tag/);
+
+    const pass = await run({ GITHUB_REF_TYPE: "tag", GITHUB_REF_NAME: "v3.11.0" }, loader);
+    assert.equal(pass.code, 0, pass.stderr);
+    assert.match(pass.stdout, /Release version check passed: v3\.11\.0/);
   });
 });
