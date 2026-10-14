@@ -3601,3 +3601,73 @@ describe("vault_neighborhood when quota runs out during its own semantic search"
     }
   });
 });
+
+// ─── write tools notify the semantic index ─────────────────────────────
+
+describe("write tools notify the semantic index", () => {
+  let vault;
+  let events;
+  let notifyHandlers;
+
+  beforeEach(async () => {
+    vault = await makeVault({
+      "05-Templates/research-note.md": TEMPLATE_CONTENT,
+      "notes/a.md": "---\ntype: research\ncreated: 2026-01-01\ntags:\n  - test\n---\n# A\n\nAlpha links to [[notes/b]].\n",
+      "notes/b.md": "---\ntype: research\ncreated: 2026-01-01\ntags:\n  - test\n---\n# B\n\nBeta body.\n",
+    });
+    events = [];
+    const recordingIndex = {
+      isAvailable: false,
+      notifyChanged: (p) => events.push(["changed", p]),
+      notifyRemoved: async (p) => { events.push(["removed", p]); },
+      notifyMoved: (from, to) => events.push(["moved", from, to]),
+    };
+    notifyHandlers = await createHandlers({
+      vaultPath: vault,
+      templateRegistry: await buildTemplateRegistry(vault),
+      semanticIndex: recordingIndex,
+      activityLog: null,
+      sessionId: "notify",
+    });
+  });
+
+  afterEach(async () => {
+    await fs.rm(vault, { recursive: true, force: true });
+  });
+
+  const writes = [
+    { tool: "vault_write", args: { template: "research-note", path: "notes/new-note.md" }, expected: [["changed", "notes/new-note.md"]] },
+    { tool: "vault_append", args: { path: "notes/b.md", content: "More." }, expected: [["changed", "notes/b.md"]] },
+    { tool: "vault_edit", args: { path: "notes/b.md", old_string: "Beta body.", new_string: "Beta edited." }, expected: [["changed", "notes/b.md"]] },
+    { tool: "vault_update_frontmatter", args: { path: "notes/b.md", fields: { status: "active" } }, expected: [["changed", "notes/b.md"]] },
+    { tool: "vault_add_links", args: { path: "notes/b.md", links: [{ target: "notes/a.md" }] }, expected: [["changed", "notes/b.md"]] },
+    { tool: "vault_trash", args: { path: "notes/b.md" }, expected: [["removed", "notes/b.md"]] },
+    {
+      tool: "vault_move",
+      args: { old_path: "notes/b.md", new_path: "archive/b.md" },
+      expected: [["moved", "notes/b.md", "archive/b.md"], ["changed", "notes/a.md"]],
+    },
+  ];
+  for (const c of writes) {
+    it(`${c.tool} notifies the index about the paths it wrote`, async () => {
+      const result = await notifyHandlers.get(c.tool)(c.args);
+      assert.ok(!result.isError, result.content?.[0]?.text);
+      assert.deepEqual(events, c.expected);
+    });
+  }
+
+  const failures = [
+    { tool: "vault_edit", args: { path: "notes/b.md", old_string: "not in the note", new_string: "x" } },
+    { tool: "vault_append", args: { path: "notes/missing.md", content: "x" } },
+  ];
+  for (const c of failures) {
+    it(`a failed ${c.tool} does not notify the index`, async () => {
+      try {
+        await notifyHandlers.get(c.tool)(c.args);
+      } catch {
+        // the failure itself is covered elsewhere
+      }
+      assert.deepEqual(events, []);
+    });
+  }
+});

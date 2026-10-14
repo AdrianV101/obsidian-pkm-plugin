@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import fs from "fs/promises";
 import path from "path";
 import os from "os";
+import { EventEmitter } from "node:events";
 import {
   SemanticIndex,
   chunkNote,
@@ -15,6 +16,7 @@ import {
   EmbeddingError,
 } from "../embeddings.js";
 import {
+  DIMS,
   QUOTA_BODY,
   embeddingsResponse,
   errorResponse,
@@ -1182,5 +1184,359 @@ describe("SemanticIndex health: fix round", () => {
     assert.match(idx.health().reason, /^OpenAI rejected the API key \(HTTP 401\)/);
     const stats = JSON.parse(await fs.readFile(path.join(vault, ".obsidian", "semantic-stats.json"), "utf-8"));
     assert.match(stats.reason, /^OpenAI rejected the API key/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// SemanticIndex freshness and consistency
+// ---------------------------------------------------------------------------
+describe("SemanticIndex freshness", () => {
+  let fake;
+  const opened = [];
+  const vaults = [];
+
+  /** Stand-in for fs.watch: records the listener so tests can deliver events. */
+  function fakeWatch() {
+    const watchers = [];
+    const watch = (_dir, _opts, listener) => {
+      const w = new EventEmitter();
+      w.listener = listener;
+      w.closed = false;
+      w.close = () => { w.closed = true; };
+      watchers.push(w);
+      return w;
+    };
+    return { watchers, watch, emit: (filename) => watchers.at(-1).listener("rename", filename) };
+  }
+
+  function deferred() {
+    let resolve;
+    const promise = new Promise(r => { resolve = r; });
+    return { promise, resolve };
+  }
+
+  async function vaultWith(files) {
+    const dir = await makeVault(files);
+    vaults.push(dir);
+    return dir;
+  }
+
+  async function openIndex(vaultPath, opts = {}) {
+    const idx = new SemanticIndex({
+      vaultPath,
+      openaiApiKey: "test-key",
+      dbPath: path.join(vaultPath, ".obsidian", "test-index.db"),
+      sleep: async () => {},
+      watch: fakeWatch().watch,
+      debounceMs: 0,
+      ...opts,
+    });
+    opened.push(idx);
+    await idx.initialize();
+    await idx.whenIdle();
+    return idx;
+  }
+
+  const indexedPaths = (idx) => idx.db.prepare("SELECT path FROM files ORDER BY path").all().map(r => r.path);
+  const requestsMentioning = (text) => fake.calls.filter(inputs => inputs.some(i => i.includes(text))).length;
+
+  afterEach(async () => {
+    for (const idx of opened.splice(0)) await idx.shutdown();
+    fake?.restore();
+    fake = null;
+    for (const dir of vaults.splice(0)) await fs.rm(dir, { recursive: true, force: true });
+  });
+
+  it("watcher events during the startup sync are queued, deduplicated, and processed after it", async () => {
+    const vault = await vaultWith({ "a.md": "Alpha body." });
+    const gate = deferred();
+    fake = installFakeOpenAI(async (inputs) => {
+      if (inputs.some(i => i.includes("Alpha"))) await gate.promise;
+      return embeddingsResponse(inputs);
+    });
+    const watcher = fakeWatch();
+    const idx = new SemanticIndex({
+      vaultPath: vault, openaiApiKey: "test-key", dbPath: path.join(vault, ".obsidian", "test-index.db"),
+      sleep: async () => {}, watch: watcher.watch, debounceMs: 0,
+    });
+    opened.push(idx);
+    await idx.initialize();
+    while (requestsMentioning("Alpha") === 0) await new Promise(r => setTimeout(r, 5));
+
+    await fs.writeFile(path.join(vault, "new.md"), "Newcomer body.");
+    for (let i = 0; i < 3; i++) watcher.emit("new.md");
+    await new Promise(r => setTimeout(r, 20));
+    assert.equal(requestsMentioning("Newcomer"), 0, "nothing is processed while the sync runs");
+
+    gate.resolve();
+    await idx.whenSynced();
+    await idx.whenIdle();
+    assert.equal(requestsMentioning("Newcomer"), 1, "three events, one reindex");
+    assert.deepEqual(indexedPaths(idx), ["a.md", "new.md"]);
+  });
+
+  it("events under dot-folders, such as the index's own DB files, are ignored", async () => {
+    const vault = await vaultWith({ "a.md": "Alpha body." });
+    fake = installFakeOpenAI();
+    const watcher = fakeWatch();
+    const idx = await openIndex(vault, { watch: watcher.watch });
+    const before = fake.calls.length;
+
+    watcher.emit(path.join(".obsidian", "test-index.db-wal"));
+    watcher.emit(path.join(".trash", "old.md"));
+    await idx.whenIdle();
+
+    assert.equal(fake.calls.length, before);
+    assert.deepEqual(indexedPaths(idx), ["a.md"]);
+  });
+
+  it("a folder renamed on disk loses its old paths and gains the new ones", async () => {
+    const vault = await vaultWith({ "projects/alpha/x.md": "X body.", "projects/alpha/y.md": "Y body.", "keep.md": "Keep." });
+    fake = installFakeOpenAI();
+    const watcher = fakeWatch();
+    const idx = await openIndex(vault, { watch: watcher.watch });
+
+    await fs.rename(path.join(vault, "projects", "alpha"), path.join(vault, "projects", "beta"));
+    watcher.emit(path.join("projects", "alpha"));
+    watcher.emit(path.join("projects", "beta"));
+    await idx.whenIdle();
+
+    assert.deepEqual(indexedPaths(idx), ["keep.md", "projects/beta/x.md", "projects/beta/y.md"]);
+  });
+
+  it("a watcher error closes it and restarts it with backoff, at most 5 times", async (t) => {
+    const vault = await vaultWith({ "a.md": "Alpha body." });
+    fake = installFakeOpenAI();
+    const watcher = fakeWatch();
+    const { delays, sleep } = recordingSleep();
+    const logs = t.mock.method(console, "error", () => {});
+    const idx = await openIndex(vault, { watch: watcher.watch, sleep });
+
+    for (let i = 0; i < 6; i++) {
+      watcher.watchers.at(-1).emit("error", new Error(`boom ${i}`));
+      await new Promise(r => setTimeout(r, 0));
+      await idx.whenIdle();
+    }
+
+    assert.equal(watcher.watchers.length, 6, "initial watcher plus 5 restarts");
+    assert.ok(watcher.watchers.every(w => w.closed));
+    assert.deepEqual(delays, [1000, 2000, 4000, 8000, 16000]);
+    const lines = logs.mock.calls.map(call => String(call.arguments[0]));
+    assert.equal(lines.filter(l => l.startsWith("File watcher: restarting")).length, 5);
+    assert.ok(lines.some(l => l.startsWith("File watcher: giving up after 5 restarts")));
+  });
+
+  it("notifyChanged reindexes the note after the debounce", async () => {
+    const vault = await vaultWith({ "a.md": "Alpha body." });
+    fake = installFakeOpenAI();
+    const idx = await openIndex(vault);
+
+    await fs.writeFile(path.join(vault, "a.md"), "Alpha rewritten.");
+    idx.notifyChanged("a.md");
+    await idx.whenIdle();
+
+    const row = idx.db.prepare("SELECT content_hash FROM files WHERE path = ?").get("a.md");
+    assert.equal(row.content_hash, contentHash("Alpha rewritten."));
+  });
+
+  it("notifyRemoved drops the note's rows without an API call", async () => {
+    const vault = await vaultWith({ "a.md": "Alpha body.", "b.md": "Beta body." });
+    fake = installFakeOpenAI();
+    const idx = await openIndex(vault);
+    const before = fake.calls.length;
+
+    await fs.rm(path.join(vault, "b.md"));
+    await idx.notifyRemoved("b.md");
+
+    assert.deepEqual(indexedPaths(idx), ["a.md"]);
+    assert.equal(idx.db.prepare("SELECT COUNT(*) AS n FROM chunks WHERE file_path = 'b.md'").get().n, 0);
+    assert.equal(fake.calls.length, before);
+  });
+
+  const moves = [
+    { name: "a note", files: { "a.md": "Alpha body.", "b.md": "Beta body." }, from: "b.md", to: "archive/b.md", expected: ["a.md", "archive/b.md"] },
+    { name: "a folder", files: { "a.md": "Alpha body.", "old/x.md": "X body.", "old/sub/y.md": "Y body." }, from: "old", to: "new", expected: ["a.md", "new/sub/y.md", "new/x.md"] },
+  ];
+  for (const c of moves) {
+    it(`notifyMoved carries ${c.name}'s rows to the new path without API calls`, async () => {
+      const vault = await vaultWith(c.files);
+      fake = installFakeOpenAI();
+      const idx = await openIndex(vault);
+      const before = fake.calls.length;
+
+      await fs.mkdir(path.dirname(path.join(vault, c.to)), { recursive: true });
+      await fs.rename(path.join(vault, c.from), path.join(vault, c.to));
+      idx.notifyMoved(c.from, c.to);
+      await idx.whenIdle();
+
+      assert.deepEqual(indexedPaths(idx), c.expected);
+      assert.equal(fake.calls.length, before);
+    });
+  }
+
+  it("reindexes of the same path run one at a time", async () => {
+    const vault = await vaultWith({ "x.md": "version zero" });
+    fake = installFakeOpenAI();
+    const idx = await openIndex(vault);
+    const gate = deferred();
+    fake.handler = async (inputs) => {
+      if (inputs.some(i => i.includes("version one"))) await gate.promise;
+      return embeddingsResponse(inputs);
+    };
+
+    await fs.writeFile(path.join(vault, "x.md"), "version one");
+    const first = idx.reindexFile("x.md");
+    while (requestsMentioning("version one") === 0) await new Promise(r => setTimeout(r, 5));
+    await fs.writeFile(path.join(vault, "x.md"), "version two");
+    const second = idx.reindexFile("x.md");
+    await new Promise(r => setTimeout(r, 20));
+    assert.equal(requestsMentioning("version two"), 0, "the second reindex waits for the first");
+
+    gate.resolve();
+    await Promise.all([first, second]);
+    assert.equal(requestsMentioning("version two"), 1);
+    const row = idx.db.prepare("SELECT content_hash FROM files WHERE path = ?").get("x.md");
+    assert.equal(row.content_hash, contentHash("version two"));
+  });
+
+  it("a late embedding result for old content never overwrites newer vectors (two server processes)", async () => {
+    const vault = await vaultWith({ "x.md": "version zero" });
+    fake = installFakeOpenAI();
+    const first = await openIndex(vault);
+    const second = await openIndex(vault);
+    const gate = deferred();
+    fake.handler = async (inputs) => {
+      if (inputs.some(i => i.includes("version one"))) await gate.promise;
+      return embeddingsResponse(inputs);
+    };
+
+    await fs.writeFile(path.join(vault, "x.md"), "version one");
+    const slow = first.reindexFile("x.md");
+    while (requestsMentioning("version one") === 0) await new Promise(r => setTimeout(r, 5));
+    await fs.writeFile(path.join(vault, "x.md"), "version two");
+    await second.reindexFile("x.md");
+    gate.resolve();
+    await slow;
+
+    const row = second.db.prepare("SELECT content_hash FROM files WHERE path = ?").get("x.md");
+    assert.equal(row.content_hash, contentHash("version two"));
+    const previews = second.db.prepare("SELECT content_preview FROM chunks WHERE file_path = ?").all("x.md");
+    assert.deepEqual(previews.map(p => p.content_preview), ["version two"]);
+    assert.equal(first.health().staleFiles, 0, "the discarding process sees the note as current");
+  });
+
+  it("unchanged content with a new mtime updates mtime_ms only and makes no API call", async () => {
+    const vault = await vaultWith({ "a.md": "Alpha body." });
+    fake = installFakeOpenAI();
+    const idx = await openIndex(vault);
+    const before = fake.calls.length;
+
+    const touched = new Date("2026-10-01T10:00:00Z");
+    await fs.utimes(path.join(vault, "a.md"), touched, touched);
+    await idx.reindexFile("a.md");
+
+    assert.equal(fake.calls.length, before);
+    assert.equal(idx.db.prepare("SELECT mtime_ms FROM files WHERE path = 'a.md'").get().mtime_ms, touched.getTime());
+    await idx.shutdown();
+    const reopened = await openIndex(vault);
+    assert.deepEqual(await reopened.whenSynced(), { updated: 0, failed: 0, skipped: 0 }, "the touched note is not re-read on restart");
+  });
+
+  const folderSearches = [
+    { name: "by widening k", opts: {} },
+    { name: "by an exhaustive folder scan once k reaches the KNN cap", opts: { maxKnnK: 8 } },
+  ];
+  for (const c of folderSearches) {
+    it(`folder-scoped search finds the folder's notes when 50+ other chunks rank higher (${c.name})`, async () => {
+      const files = { "target/t1.md": "TARGET one.", "target/t2.md": "TARGET two." };
+      for (let i = 0; i < 60; i++) files[`other/o${i}.md`] = `OTHER note ${i}.`;
+      const vault = await vaultWith(files);
+      const embed = (text) => {
+        const vec = new Array(DIMS).fill(0);
+        if (text.includes("TARGET")) vec[1] = 1;
+        else if (text.includes("OTHER")) { vec[0] = 1; vec[2] = (text.length % 7) / 100; }
+        else vec[0] = 1;
+        return vec;
+      };
+      fake = installFakeOpenAI((inputs) => embeddingsResponse(inputs, embed));
+      const idx = await openIndex(vault, c.opts);
+
+      const results = await idx.searchRaw({ query: "query", folder: "target", limit: 2 });
+
+      assert.deepEqual(results.map(r => r.path).sort(), ["target/t1.md", "target/t2.md"]);
+    });
+  }
+
+  it("an instance initialised again after shutdown syncs and reports the new sync", async () => {
+    const vault = await vaultWith({ "a.md": "Alpha body." });
+    fake = installFakeOpenAI();
+    const idx = await openIndex(vault);
+    await idx.shutdown();
+
+    await fs.writeFile(path.join(vault, "b.md"), "Beta body.");
+    await idx.initialize();
+    const summary = await idx.whenSynced();
+    await idx.whenIdle();
+
+    assert.deepEqual(summary, { updated: 1, failed: 0, skipped: 0 });
+    assert.deepEqual(indexedPaths(idx), ["a.md", "b.md"]);
+  });
+
+  it("shutdown before initialize finishes leaves neither the database nor a watcher open", async () => {
+    const vault = await vaultWith({ "a.md": "Alpha body." });
+    fake = installFakeOpenAI();
+    const watcher = fakeWatch();
+    const idx = new SemanticIndex({
+      vaultPath: vault, openaiApiKey: "test-key", dbPath: path.join(vault, ".obsidian", "test-index.db"),
+      sleep: async () => {}, watch: watcher.watch, debounceMs: 0,
+    });
+    opened.push(idx);
+
+    const init = idx.initialize();
+    const stopped = idx.shutdown();
+    await Promise.all([init, stopped]);
+
+    assert.equal(idx.db, null);
+    assert.equal(watcher.watchers.length, 0, "no watcher was started");
+    assert.equal(fake.calls.length, 0);
+  });
+
+  it("a too_large batch is split in half until it fits", async () => {
+    const section = (name) => `## ${name}\n\n` + `${name} words `.repeat(450);
+    const vault = await vaultWith({ "long.md": [section("One"), section("Two"), section("Three")].join("\n\n") });
+    fake = installFakeOpenAI((inputs) => (inputs.length > 1
+      ? errorResponse(400, "This model's maximum context length is 8192 tokens")
+      : embeddingsResponse(inputs)));
+    const idx = await openIndex(vault);
+
+    assert.deepEqual(fake.calls.map(inputs => inputs.length), [3, 2, 1, 1, 1]);
+    assert.equal(idx.db.prepare("SELECT chunk_count FROM files WHERE path = 'long.md'").get().chunk_count, 3);
+    assert.equal(idx.db.prepare("SELECT COUNT(*) AS n FROM vec_chunks").get().n, 3);
+  });
+
+  it("an oversize chunk is embedded as two halves and stored as one vector", async () => {
+    const vault = await vaultWith({ "big.md": "word ".repeat(1200) });
+    fake = installFakeOpenAI((inputs) => (inputs[0].length > 4000
+      ? errorResponse(400, "This model's maximum context length is 8192 tokens")
+      : embeddingsResponse(inputs)));
+    const idx = await openIndex(vault);
+
+    const [whole, firstHalf, secondHalf] = fake.calls.map(inputs => inputs[0]);
+    assert.equal(fake.calls.length, 3);
+    assert.equal(firstHalf + secondHalf, whole);
+    assert.equal(idx.db.prepare("SELECT COUNT(*) AS n FROM chunks WHERE file_path = 'big.md'").get().n, 1);
+    assert.equal(idx.db.prepare("SELECT COUNT(*) AS n FROM vec_chunks").get().n, 1);
+  });
+
+  it("too_large on an input too short to split is reported after a bounded number of requests", async () => {
+    const vault = await vaultWith({ "a.md": "Alpha body." });
+    fake = installFakeOpenAI();
+    const idx = await openIndex(vault);
+    fake.handler = () => errorResponse(400, "This model's maximum context length is 8192 tokens");
+
+    await fs.writeFile(path.join(vault, "a.md"), "word ".repeat(1200));
+    const before = fake.calls.length;
+    await assert.rejects(() => idx.reindexFile("a.md"), (err) => err.kind === "too_large");
+    assert.ok(fake.calls.length - before <= 10, `requests: ${fake.calls.length - before}`);
   });
 });

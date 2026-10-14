@@ -7,6 +7,7 @@ import crypto from "crypto";
 import { getAllMarkdownFiles } from "./utils.js";
 import { splitFrontmatter } from "./markdown.js";
 import { formatDisabledMessage, formatStaleFooter } from "./semantic-health.js";
+import { toVaultRel } from "./vault-fs.js";
 
 const EMBEDDING_MODEL = "text-embedding-3-large";
 const EMBEDDING_DIMENSIONS = 3072;
@@ -19,6 +20,12 @@ const MAX_CHARS_PER_CHUNK = 8000; // ~2000 tokens
 const BATCH_SIZE = 128;
 const REINDEX_BATCH_SIZE = 10; // files per batch during startup sync
 const DEBOUNCE_MS = 2000;
+const WATCHER_RESTART_BASE_MS = 1000;
+const MAX_WATCHER_RESTARTS = 5;
+// sqlite-vec rejects KNN queries with k above this.
+const MAX_KNN_K = 4096;
+// A too_large input shorter than this is not split further.
+const MIN_SPLIT_CHARS = 200;
 const MAX_ATTEMPTS = 3;
 // A rate-limit reset further away than this is not waited for: the call fails and the
 // note stays stale until the next sync or write notification.
@@ -114,9 +121,15 @@ export class SemanticIndex {
    * @param {string} opts.openaiApiKey - OpenAI API key for embeddings
    * @param {string} [opts.dbPath] - override path for the SQLite database
    * @param {string} [opts.statsPath] - override path for semantic-stats.json
-   * @param {(ms: number) => Promise<void>} [opts.sleep] - delay used between retries
+   * @param {(ms: number) => Promise<void>} [opts.sleep] - delay used between retries and watcher restarts
+   * @param {typeof fsSync.watch} [opts.watch] - file watcher factory
+   * @param {number} [opts.debounceMs] - delay before a changed path is reindexed
+   * @param {number} [opts.maxKnnK] - largest k sent to a sqlite-vec KNN query
    */
-  constructor({ vaultPath, openaiApiKey, dbPath, statsPath, sleep = defaultSleep }) {
+  constructor({
+    vaultPath, openaiApiKey, dbPath, statsPath, sleep = defaultSleep,
+    watch = fsSync.watch, debounceMs = DEBOUNCE_MS, maxKnnK = MAX_KNN_K,
+  }) {
     this.vaultPath = vaultPath;
     this.openaiApiKey = openaiApiKey;
     this.dbPath = dbPath || path.join(vaultPath, ".obsidian", "semantic-index.db");
@@ -124,7 +137,14 @@ export class SemanticIndex {
     this.db = null;
     this.watcher = null;
     this._sleep = sleep;
-    this._debounceTimers = new Map();
+    this._watch = watch;
+    this._debounceMs = debounceMs;
+    this._maxKnnK = maxKnnK;
+    this._debounced = new Map(); // rel -> { timer, done, resolve }
+    this._pendingEvents = new Set(); // paths changed while a sync was running
+    this._pathLocks = new Map(); // rel -> tail promise of that path's reindex queue
+    this._watcherRestarts = 0;
+    this._initPromise = null;
     this._syncState = { syncing: false, total: 0, done: 0 };
     this._syncPromise = null;
     this._inflight = new Set();
@@ -159,10 +179,26 @@ export class SemanticIndex {
     };
   }
 
-  async initialize() {
+  initialize() {
+    this._initPromise = this._initialize();
+    return this._initPromise;
+  }
+
+  async _initialize() {
+    // A shut-down instance may be initialised again: start from a clean lifecycle.
+    this._closing = false;
+    this._syncState = { syncing: false, total: 0, done: 0 };
+    this._syncPromise = null;
+    this._scanned = false;
+    this._pauseSync = false;
+    this._stale = new Set();
+    this._watcherRestarts = 0;
+
     // Ensure .obsidian dir exists
     const dbDir = path.dirname(this.dbPath);
     await fs.mkdir(dbDir, { recursive: true });
+    // shutdown() may have run while the directory was being created: open nothing.
+    if (this._closing) return;
 
     // Open DB and load sqlite-vec
     this.db = new Database(this.dbPath);
@@ -219,6 +255,7 @@ export class SemanticIndex {
 
   async shutdown() {
     this._closing = true;
+    if (this._initPromise) await this._initPromise.catch(() => {});
     if (this._abortController) {
       this._abortController.abort();
       this._abortController = null;
@@ -227,10 +264,12 @@ export class SemanticIndex {
       this.watcher.close();
       this.watcher = null;
     }
-    for (const timer of this._debounceTimers.values()) {
-      clearTimeout(timer);
+    for (const entry of this._debounced.values()) {
+      clearTimeout(entry.timer);
+      entry.resolve();
     }
-    this._debounceTimers.clear();
+    this._debounced.clear();
+    this._pendingEvents.clear();
     if (this._syncPromise) await this._syncPromise;
     if (this._inflight.size > 0) {
       await Promise.allSettled([...this._inflight]);
@@ -245,6 +284,67 @@ export class SemanticIndex {
   /** Resolves with the latest sync's summary ({ updated, failed, skipped }) once it finishes. */
   whenSynced() {
     return this._syncPromise ?? Promise.resolve(null);
+  }
+
+  /** Resolves once debounced events, in-flight reindexes, probes and any running sync have drained. */
+  async whenIdle() {
+    for (;;) {
+      const pending = [...this._inflight, ...[...this._debounced.values()].map(e => e.done)];
+      if (this._syncState.syncing && this._syncPromise) pending.push(this._syncPromise);
+      if (this._probePromise) pending.push(this._probePromise);
+      if (pending.length === 0) return;
+      await Promise.allSettled(pending);
+    }
+  }
+
+  /**
+   * A write tool changed (or created) this note or folder; reindex it after the debounce.
+   * @param {string} relativePath - vault-relative path
+   */
+  notifyChanged(relativePath) {
+    if (!this.db || this._closing) return;
+    this._enqueue(toVaultRel(relativePath));
+  }
+
+  /**
+   * A write tool removed this note; drop its rows (no API call).
+   * @param {string} relativePath - vault-relative path
+   * @returns {Promise<void>}
+   */
+  async notifyRemoved(relativePath) {
+    if (!this.db || this._closing) return;
+    const rel = toVaultRel(relativePath);
+    await this._runExclusive(rel, async () => this.removeFile(rel));
+    this._writeStats();
+  }
+
+  /**
+   * A write tool moved a note or folder; carry its rows over to the new path (no API call),
+   * then verify the new path against disk.
+   * @param {string} oldRelativePath
+   * @param {string} newRelativePath
+   */
+  notifyMoved(oldRelativePath, newRelativePath) {
+    if (!this.db || this._closing) return;
+    const from = toVaultRel(oldRelativePath);
+    const to = toVaultRel(newRelativePath);
+    const moved = this.db.prepare("SELECT path FROM files WHERE path = ? OR substr(path, 1, ?) = ?")
+      .all(from, from.length + 1, from + "/")
+      .map(row => row.path);
+    const txn = this.db.transaction(() => {
+      for (const oldPath of moved) {
+        const newPath = to + oldPath.slice(from.length);
+        this._deleteChunks(newPath);
+        this.db.prepare("DELETE FROM files WHERE path = ?").run(newPath);
+        this.db.prepare("UPDATE chunks SET file_path = ? WHERE file_path = ?").run(newPath, oldPath);
+        this.db.prepare("UPDATE files SET path = ? WHERE path = ?").run(newPath, oldPath);
+      }
+    });
+    txn();
+    for (const oldPath of moved) {
+      if (this._stale.delete(oldPath)) this._stale.add(to + oldPath.slice(from.length));
+    }
+    this._enqueue(to);
   }
 
   /**
@@ -365,17 +465,52 @@ export class SemanticIndex {
     }
     this._noteSuccess();
 
-    const vecResults = this.db.prepare(`
+    const queryVec = new Float32Array(queryEmbedding);
+    const prefix = folder ? (folder.endsWith("/") ? folder : folder + "/") : null;
+    if (!prefix) {
+      return this._collectResults(this._knn(queryVec, Math.min(limit * 3, 50)), { limit, threshold, excludeFiles });
+    }
+
+    // Folder-scoped: the folder's chunks may rank far down the global KNN list, so widen k
+    // until enough of them pass the filter or k covers every chunk.
+    const totalChunks = this.db.prepare("SELECT COUNT(*) AS n FROM chunks").get().n;
+    let k = Math.max(limit * 5, 50);
+    for (;;) {
+      const capped = Math.min(k, this._maxKnnK);
+      const results = this._collectResults(this._knn(queryVec, capped), { limit, threshold, excludeFiles, prefix });
+      if (results.length >= limit || capped >= totalChunks) return results;
+      if (capped === this._maxKnnK) {
+        return this._collectResults(this._folderScan(queryVec, prefix), { limit, threshold, excludeFiles, prefix });
+      }
+      k *= 2;
+    }
+  }
+
+  _knn(queryVec, k) {
+    return this.db.prepare(`
       SELECT rowid, distance
       FROM vec_chunks
       WHERE embedding MATCH ?
       ORDER BY distance
       LIMIT ?
-    `).all(
-      new Float32Array(queryEmbedding),
-      Math.min(limit * 3, 50)
-    );
+    `).all(queryVec, k);
+  }
 
+  /** Exact distances for every chunk under `prefix`, nearest first. */
+  _folderScan(queryVec, prefix) {
+    return this.db.prepare(`
+      SELECT c.id AS rowid, vec_distance_l2(v.embedding, ?) AS distance
+      FROM chunks c JOIN vec_chunks v ON v.rowid = c.id
+      WHERE substr(c.file_path, 1, ?) = ?
+      ORDER BY distance
+    `).all(queryVec, prefix.length, prefix);
+  }
+
+  /**
+   * @param {Array<{rowid: number|bigint, distance: number}>} vecResults - nearest first
+   * @param {{ limit: number, threshold?: number, excludeFiles?: Set<string>, prefix?: string }} opts
+   */
+  _collectResults(vecResults, { limit, threshold, excludeFiles, prefix }) {
     const results = [];
     const getChunk = this.db.prepare(`
       SELECT file_path, chunk_index, heading, content_preview
@@ -389,10 +524,7 @@ export class SemanticIndex {
       const chunk = getChunk.get(rowid);
       if (!chunk) continue;
 
-      if (folder) {
-        const prefix = folder.endsWith("/") ? folder : folder + "/";
-        if (!chunk.file_path.startsWith(prefix)) continue;
-      }
+      if (prefix && !chunk.file_path.startsWith(prefix)) continue;
 
       // L2 distance for normalized embeddings ranges 0-2; convert to 0-1 similarity
       const score = Math.max(0, Math.min(1, 1 - distance / 2));
@@ -416,10 +548,16 @@ export class SemanticIndex {
 
   /**
    * (Re-)index a single file: chunk it, embed it, store in SQLite.
+   * Reindexes of the same path run one at a time.
    * Rejects when embedding fails; the file then counts as stale.
    * @param {string} relativePath - vault-relative file path
    */
   async reindexFile(relativePath) {
+    if (!this.db) return;
+    return this._runExclusive(relativePath, () => this._reindexNow(relativePath));
+  }
+
+  async _reindexNow(relativePath) {
     if (!this.db) return;
 
     const absPath = path.resolve(this.vaultPath, relativePath);
@@ -436,10 +574,14 @@ export class SemanticIndex {
 
     const hash = contentHash(content);
     const stat = await fs.stat(absPath);
+    const mtimeMs = Math.floor(stat.mtimeMs);
 
-    // Check if unchanged
-    const existing = this.db.prepare("SELECT content_hash FROM files WHERE path = ?").get(relativePath);
+    // Unchanged content: at most the mtime moved (touch, sync client), so no API call.
+    const existing = this.db.prepare("SELECT content_hash, mtime_ms FROM files WHERE path = ?").get(relativePath);
     if (existing && existing.content_hash === hash) {
+      if (existing.mtime_ms !== mtimeMs) {
+        this.db.prepare("UPDATE files SET mtime_ms = ? WHERE path = ?").run(mtimeMs, relativePath);
+      }
       this._stale.delete(relativePath);
       return;
     }
@@ -447,7 +589,7 @@ export class SemanticIndex {
     const chunks = chunkNote(content, relativePath);
     if (chunks.length === 0) {
       // Nothing to embed: record the file so it does not count as stale.
-      this._storeFile(relativePath, Math.floor(stat.mtimeMs), hash, [], []);
+      this._storeFile(relativePath, mtimeMs, hash, [], []);
       return;
     }
 
@@ -469,11 +611,28 @@ export class SemanticIndex {
     }
     this._noteSuccess();
 
-    this._storeFile(relativePath, Math.floor(stat.mtimeMs), hash, chunks, embeddings);
+    this._storeFile(relativePath, mtimeMs, hash, chunks, embeddings);
   }
 
   _storeFile(relativePath, mtimeMs, hash, chunks, embeddings) {
+    const absPath = path.resolve(this.vaultPath, relativePath);
     const txn = this.db.transaction(() => {
+      // The note may have changed, or been indexed by another server process, while its
+      // embeddings were in flight: only content that is still on disk gets stored.
+      let currentHash;
+      try {
+        currentHash = contentHash(fsSync.readFileSync(absPath, "utf-8"));
+      } catch (e) {
+        if (e.code !== "ENOENT") throw e;
+        this._deleteChunks(relativePath);
+        this.db.prepare("DELETE FROM files WHERE path = ?").run(relativePath);
+        return "current";
+      }
+      if (currentHash !== hash) {
+        const row = this.db.prepare("SELECT content_hash FROM files WHERE path = ?").get(relativePath);
+        return row?.content_hash === currentHash ? "current" : "stale";
+      }
+
       this._deleteChunks(relativePath);
 
       const insertChunk = this.db.prepare(`
@@ -492,9 +651,10 @@ export class SemanticIndex {
         INSERT OR REPLACE INTO files (path, mtime_ms, content_hash, chunk_count, updated_at)
         VALUES (?, ?, ?, ?, ?)
       `).run(relativePath, mtimeMs, hash, chunks.length, new Date().toISOString());
+      return "current";
     });
-    txn();
-    this._stale.delete(relativePath);
+    if (txn() === "stale") this._stale.add(relativePath);
+    else this._stale.delete(relativePath);
   }
 
   _deleteChunks(relativePath) {
@@ -655,57 +815,143 @@ export class SemanticIndex {
     } finally {
       this._syncState.syncing = false;
       this._writeStats();
+      for (const rel of this._pendingEvents) this._schedule(rel);
+      this._pendingEvents.clear();
     }
   }
 
   _startWatcher() {
     try {
-      this.watcher = fsSync.watch(this.vaultPath, { recursive: true }, (eventType, filename) => {
-        if (!filename) return;
-        if (!filename.endsWith(".md")) return;
-        if (this._syncState.syncing) return;
-
-        // Ignore dotfiles/dot directories
-        const parts = filename.split(path.sep);
-        if (parts.some(p => p.startsWith("."))) return;
-
-        // Normalize to forward slashes (consistent with vault paths)
-        const relativePath = filename.split(path.sep).join("/");
-
-        // Debounce per file
-        if (this._debounceTimers.has(relativePath)) {
-          clearTimeout(this._debounceTimers.get(relativePath));
-          this._debounceTimers.delete(relativePath);
-        }
-
-        const timer = setTimeout(async () => {
-          this._debounceTimers.delete(relativePath);
-          try {
-            // Check if file still exists
-            await fs.access(path.resolve(this.vaultPath, relativePath));
-            await this._trackedReindex(relativePath);
-          } catch (e) {
-            if (e.code === "ENOENT") {
-              this.removeFile(relativePath);
-            } else if (!this._disabled) {
-              console.error(`Watcher reindex error for ${relativePath}: ${e.message}`);
-            }
-          }
-        }, DEBOUNCE_MS);
-
-        this._debounceTimers.set(relativePath, timer);
-      });
-
-      this.watcher.on("error", (err) => {
-        console.error(`File watcher error: ${err.message}. Stopping watcher.`);
-        if (this.watcher) {
-          this.watcher.close();
-          this.watcher = null;
-        }
-      });
+      this.watcher = this._watch(this.vaultPath, { recursive: true }, (_eventType, filename) => this._onWatchEvent(filename));
+      this.watcher.on("error", (err) => this._onWatcherError(err));
     } catch (err) {
       console.error(`Could not start file watcher: ${err.message}`);
     }
+  }
+
+  _onWatchEvent(filename) {
+    if (!filename) return;
+    const rel = toVaultRel(String(filename));
+    // Dot paths include the index's own DB files under .obsidian/.
+    if (!rel || rel.split("/").some(p => p.startsWith("."))) return;
+    this._enqueue(rel);
+  }
+
+  _onWatcherError(err) {
+    console.error(`File watcher error: ${err.message}`);
+    try {
+      this.watcher?.close();
+    } catch {
+      // already closed
+    }
+    this.watcher = null;
+    if (this._closing) return;
+    if (this._watcherRestarts >= MAX_WATCHER_RESTARTS) {
+      console.error(`File watcher: giving up after ${MAX_WATCHER_RESTARTS} restarts; write notifications and the startup sync still update the index`);
+      return;
+    }
+    this._watcherRestarts++;
+    const delay = WATCHER_RESTART_BASE_MS * 2 ** (this._watcherRestarts - 1);
+    console.error(`File watcher: restarting in ${delay}ms (restart ${this._watcherRestarts}/${MAX_WATCHER_RESTARTS})`);
+    this._sleep(delay).then(() => {
+      if (this._closing || !this.db) return;
+      this._startWatcher();
+      // Catch up on changes made while no watcher was running.
+      this._startSync();
+    });
+  }
+
+  /** Queue a changed path; while a sync runs, hold it (deduplicated) until the sync ends. */
+  _enqueue(rel) {
+    if (this._syncState.syncing) {
+      this._pendingEvents.add(rel);
+      return;
+    }
+    this._schedule(rel);
+  }
+
+  _schedule(rel) {
+    let entry = this._debounced.get(rel);
+    if (entry) {
+      clearTimeout(entry.timer);
+    } else {
+      let resolve;
+      const done = new Promise(r => { resolve = r; });
+      entry = { timer: null, done, resolve };
+      this._debounced.set(rel, entry);
+    }
+    entry.timer = setTimeout(() => {
+      this._debounced.delete(rel);
+      const work = this._processEvent(rel);
+      this._inflight.add(work);
+      work.finally(() => {
+        this._inflight.delete(work);
+        entry.resolve();
+      });
+    }, this._debounceMs);
+  }
+
+  async _processEvent(rel) {
+    try {
+      if (rel.endsWith(".md")) await this.reindexFile(rel);
+      else await this._reconcileSubtree(rel);
+    } catch (e) {
+      if (!this._disabled) console.error(`Semantic index: update failed for ${rel}: ${e.message}`);
+    } finally {
+      this._writeStats();
+    }
+  }
+
+  /**
+   * A non-.md path changed (folder created, renamed or deleted): drop index rows under it
+   * that are gone from disk and reindex notes under it that are new or have a new mtime.
+   */
+  async _reconcileSubtree(relDir) {
+    if (!this.db) return;
+    const absDir = path.join(this.vaultPath, relDir);
+    let onDisk = [];
+    try {
+      if (!(await fs.stat(absDir)).isDirectory()) return;
+      onDisk = (await getAllMarkdownFiles(absDir)).map(f => toVaultRel(path.join(relDir, f)));
+    } catch (e) {
+      if (e.code !== "ENOENT") throw e;
+    }
+
+    const prefix = relDir + "/";
+    const indexed = new Map(
+      this.db.prepare("SELECT path, mtime_ms FROM files WHERE substr(path, 1, ?) = ?")
+        .all(prefix.length, prefix)
+        .map(row => [row.path, row.mtime_ms])
+    );
+    const present = new Set(onDisk);
+    for (const rel of indexed.keys()) {
+      if (!present.has(rel)) await this._runExclusive(rel, async () => this.removeFile(rel));
+    }
+
+    const changed = [];
+    for (const rel of onDisk) {
+      try {
+        const stat = await fs.stat(path.join(this.vaultPath, rel));
+        if (indexed.get(rel) !== Math.floor(stat.mtimeMs)) changed.push(rel);
+      } catch {
+        // removed again since the listing
+      }
+    }
+    for (let i = 0; i < changed.length; i += REINDEX_BATCH_SIZE) {
+      await Promise.allSettled(changed.slice(i, i + REINDEX_BATCH_SIZE).map(rel => this.reindexFile(rel)));
+    }
+  }
+
+  /** Run `fn` after every earlier task queued for the same path has settled. */
+  _runExclusive(rel, fn) {
+    const previous = this._pathLocks.get(rel) ?? Promise.resolve();
+    const run = previous.then(fn);
+    const tail = run.catch(() => {});
+    this._pathLocks.set(rel, tail);
+    tail.then(() => {
+      if (this._pathLocks.get(rel) === tail) this._pathLocks.delete(rel);
+    });
+    return run;
   }
 }
 
@@ -826,11 +1072,44 @@ async function getEmbeddings(texts, apiKey, opts = {}) {
 
   for (let i = 0; i < texts.length; i += BATCH_SIZE) {
     const batch = texts.slice(i, i + BATCH_SIZE);
-    const embeddings = await callEmbeddingAPI(batch, apiKey, opts);
+    const embeddings = await embedAdaptive(batch, apiKey, opts);
     allEmbeddings.push(...embeddings);
   }
 
   return allEmbeddings;
+}
+
+/**
+ * callEmbeddingAPI, but a too_large failure splits the batch in half, and a single
+ * oversize input into two halves whose embeddings are length-weighted and re-normalised.
+ */
+async function embedAdaptive(texts, apiKey, opts) {
+  try {
+    return await callEmbeddingAPI(texts, apiKey, opts);
+  } catch (err) {
+    if (!(err instanceof EmbeddingError) || err.kind !== "too_large") throw err;
+    if (texts.length > 1) {
+      const mid = Math.ceil(texts.length / 2);
+      const first = await embedAdaptive(texts.slice(0, mid), apiKey, opts);
+      const second = await embedAdaptive(texts.slice(mid), apiKey, opts);
+      return [...first, ...second];
+    }
+    const text = texts[0];
+    if (text.length < MIN_SPLIT_CHARS * 2) throw err;
+    const mid = Math.floor(text.length / 2);
+    const [first] = await embedAdaptive([text.slice(0, mid)], apiKey, opts);
+    const [second] = await embedAdaptive([text.slice(mid)], apiKey, opts);
+    return [combineEmbeddings([first, second], [mid, text.length - mid])];
+  }
+}
+
+function combineEmbeddings(vectors, weights) {
+  const out = new Array(vectors[0].length).fill(0);
+  vectors.forEach((vec, v) => {
+    for (let i = 0; i < out.length; i++) out[i] += vec[i] * weights[v];
+  });
+  const norm = Math.sqrt(out.reduce((sum, x) => sum + x * x, 0));
+  return norm > 0 ? out.map(x => x / norm) : out;
 }
 
 /**
