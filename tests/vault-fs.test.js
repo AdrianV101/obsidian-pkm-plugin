@@ -878,12 +878,16 @@ describe("mutateFile staging and locking", () => {
       await fs.rename(p, moved);
     });
     await hasStarted;
-    const update = mutateFile(p, (c) => c + "late\n");
+    // The update's realpath races the rename. It resolves the old path (the update then queues
+    // behind the rename and fails with ENOENT), or on macOS, rarely, already the new one (the update
+    // lands in the moved note). Observed at once, since it can settle before the holder does.
+    const outcome = mutateFile(p, (c) => c + "late\n").then(() => "applied", (e) => e.code);
     release();
     await holder;
-    await assert.rejects(() => update, { code: "ENOENT" });
+    const result = await outcome;
+    assert.ok(result === "ENOENT" || result === "applied", result);
     await assert.rejects(() => fs.access(p), { code: "ENOENT" });
-    assert.equal(await fs.readFile(moved, "utf-8"), "start\n");
+    assert.equal(await fs.readFile(moved, "utf-8"), result === "applied" ? "start\nlate\n" : "start\n");
     assert.deepEqual(await tempNames(d), []);
   });
 
