@@ -98,6 +98,24 @@ describe("note-modifying tools go through mutateFile", () => {
       }
     });
   }
+
+  const WITH_RELATED = CRLF_NOTE.replace("## Other\r\n", "## Related\r\n- [[other]]\r\n\r\n## Other\r\n");
+  const LINK_CASES = [
+    ["creating the section", CRLF_NOTE, CRLF_NOTE + "\r\n## Related\r\n- [[b]]\r\n"],
+    ["into an existing section", WITH_RELATED, WITH_RELATED.replace("\r\n## Other\r\n", "\r\n- [[b]]\r\n## Other\r\n")],
+  ];
+  for (const [label, original, expected] of LINK_CASES) {
+    it(`vault_add_links ${label} keeps a CRLF note CRLF and its existing bytes intact`, async () => {
+      const v = await makeVault({ "notes/crlf.md": original, "notes/b.md": note("B"), "notes/other.md": note("Other") });
+      try {
+        const result = await v.handlers.get("vault_add_links")({ path: "notes/crlf.md", links: [{ target: "notes/b.md" }] });
+        assert.match(result.content[0].text, /Added 1 link/);
+        assert.equal(await fs.readFile(path.join(v.root, "notes", "crlf.md"), "utf-8"), expected);
+      } finally {
+        await v.cleanup();
+      }
+    });
+  }
 });
 
 const WORKER = fileURLToPath(new URL("./fixtures/append-worker.js", import.meta.url));

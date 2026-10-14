@@ -36,6 +36,7 @@ import {
 } from "./graph.js";
 import { getAllMarkdownFiles, extractFrontmatter } from "./utils.js";
 import { formatDisabledMessage, formatStaleFooter } from "./semantic-health.js";
+import { EmbeddingError } from "./embeddings.js";
 
 import { mutateFile, writeNew, withNoteLock, normalizeVaultRoot, resolveSafe, hasDotSegment, assertWritableReal, FileIndex, toVaultRel } from "./vault-fs.js";
 import { findSection, matchHeadings, parseHeadings, splitFrontmatter } from "./markdown.js";
@@ -657,8 +658,9 @@ export async function createHandlers({ vaultPath: rawVaultPath, templateRegistry
             excludeFiles: new Set([resolvedPath])
           });
         } catch (e) {
-          // Quota ran out during this very call: keep the graph output, say why semantics are missing.
-          if (semanticIndex.health?.().status !== "disabled") throw e;
+          // The embeddings request failed (or quota ran out during this very call): keep the graph
+          // output and say why semantics are missing.
+          if (!(e instanceof EmbeddingError) && semanticIndex.health?.().status !== "disabled") throw e;
           text += `\n(Semantic expansion skipped: ${e.message})\n`;
         }
 
@@ -1062,8 +1064,7 @@ export async function createHandlers({ vaultPath: rawVaultPath, templateRegistry
 
     // Create trash directory and move file
     await fs.mkdir(path.dirname(trashAbsolute), { recursive: true });
-    if (stat.isDirectory()) await fs.rename(filePath, trashAbsolute);
-    else await withNoteLock(filePath, () => fs.rename(filePath, trashAbsolute));
+    await withNoteLock(filePath, () => fs.rename(filePath, trashAbsolute));
 
     fileIndex.remove(resolvedRelative);
     await semanticIndex?.notifyRemoved?.(resolvedRelative);
@@ -1283,11 +1284,13 @@ export async function createHandlers({ vaultPath: rawVaultPath, templateRegistry
 
         if (added.length === 0) return original;
 
+        // The note's own line ending, so a CRLF note stays CRLF.
+        const eol = original.includes("\r\n") ? "\r\n" : "\n";
         if (matchHeadings(parseHeadings(content), section).length === 0) {
           if (!create_section) {
             throw new Error(`Section "${section}" not found in ${filePath}. Set create_section: true to create it.`);
           }
-          const sectionBlock = (content.endsWith("\n") ? "\n" : "\n\n") + section + "\n";
+          const sectionBlock = (content.endsWith("\n") ? eol : eol + eol) + section + eol;
           content = content + sectionBlock;
           if (matchHeadings(parseHeadings(content), section).length === 0) {
             throw new Error(`Failed to create section "${section}" in ${filePath}. Ensure the section parameter is a valid markdown heading (e.g., "## Related").`);
@@ -1295,7 +1298,7 @@ export async function createHandlers({ vaultPath: rawVaultPath, templateRegistry
         }
         const range = findSection(content, section);
 
-        const insertText = added.join("\n") + "\n";
+        const insertText = added.join(eol) + eol;
         return content.slice(0, range.sectionEnd) + insertText + content.slice(range.sectionEnd);
       });
     } catch (e) {

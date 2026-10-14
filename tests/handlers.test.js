@@ -6,7 +6,7 @@ import os from "os";
 import { createHandlers } from "../handlers.js";
 import { ActivityLog } from "../activity.js";
 import { SemanticIndex } from "../embeddings.js";
-import { embeddingsResponse, quotaResponse, installFakeOpenAI, makeVault } from "./fake-openai.js";
+import { embeddingsResponse, errorResponse, quotaResponse, installFakeOpenAI, makeVault } from "./fake-openai.js";
 import { createToolsList } from "../tools.js";
 import { AUTO_REDIRECT_THRESHOLD } from "../helpers.js";
 
@@ -3584,7 +3584,7 @@ describe("anchored semantic search footer", () => {
   });
 });
 
-describe("vault_neighborhood when quota runs out during its own semantic search", () => {
+describe("vault_neighborhood when its own semantic search fails", () => {
   it("keeps the graph output and appends the skipped note", async () => {
     const vault = await makeVault({ "a.md": "Alpha body. [[b]]", "b.md": "Beta body." });
     const fake = installFakeOpenAI((inputs) => embeddingsResponse(inputs));
@@ -3605,6 +3605,34 @@ describe("vault_neighborhood when quota runs out during its own semantic search"
       const text = result.content[0].text;
       assert.ok(text.includes("b.md"), text);
       assert.ok(text.includes("(Semantic expansion skipped: Semantic search disabled since "), text);
+    } finally {
+      await idx.shutdown();
+      fake.restore();
+      await fs.rm(vault, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps the graph output and says why when the semantic search fails for a transient reason", async () => {
+    const vault = await makeVault({ "a.md": "Alpha body. [[b]]", "b.md": "Beta body." });
+    const fake = installFakeOpenAI((inputs) => embeddingsResponse(inputs));
+    const idx = new SemanticIndex({
+      vaultPath: vault,
+      openaiApiKey: "test-key",
+      dbPath: path.join(vault, ".obsidian", "test-index.db"),
+      sleep: async () => {},
+    });
+    try {
+      await idx.initialize();
+      await idx.whenSynced();
+      const h = await createHandlers({
+        vaultPath: vault, templateRegistry: new Map(), semanticIndex: idx, activityLog: null, sessionId: "nb-transient",
+      });
+      fake.handler = () => errorResponse(503, "upstream busy");
+      const result = await h.get("vault_neighborhood")({ path: "a.md", include_semantic: true });
+      const text = result.content[0].text;
+      assert.ok(text.includes("b.md"), text);
+      assert.ok(text.includes("(Semantic expansion skipped: OpenAI API error (503): upstream busy)"), text);
+      assert.equal(idx.health().status, "ok");
     } finally {
       await idx.shutdown();
       fake.restore();
