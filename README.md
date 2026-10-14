@@ -287,6 +287,7 @@ File layout:
 ├── tools.js          # MCP tool definitions (names, descriptions, input schemas)
 ├── handlers.js       # Tool handler implementations
 ├── helpers.js        # Pure functions (path security, filtering, templates, frontmatter)
+├── markdown.js       # Dependency-free markdown parsing (frontmatter split, headings, code masking), shared with hooks
 ├── graph.js          # Wikilink resolution and BFS graph traversal
 ├── embeddings.js     # Semantic index (OpenAI embeddings, SQLite + sqlite-vec)
 ├── activity.js       # Activity log (session tracking, SQLite)
