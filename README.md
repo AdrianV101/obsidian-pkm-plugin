@@ -56,7 +56,7 @@ Without this, knowledge stays fragmented across per-project memory files and cha
 | Tool | Description |
 |------|-------------|
 | `vault_write` | Create notes from templates with enforced frontmatter (ADRs, research, devlogs, tasks, etc.) |
-| `vault_append` | Add content to notes, with positional insert (after/before heading, end of section) |
+| `vault_append` | Add content to notes, with positional insert (after/before heading, end of section; the heading must be unique) |
 | `vault_edit` | Surgical string replacement for precise edits |
 | `vault_update_frontmatter` | Atomic YAML frontmatter updates (set, create, remove fields; validates enums by note type) |
 
@@ -83,7 +83,7 @@ Without this, knowledge stays fragmented across per-project memory files and cha
 
 | Tool | Description |
 |------|-------------|
-| `vault_read` | Read note contents (pagination by heading, tail, chunk, line range; auto-redirects large files) |
+| `vault_read` | Read note contents (pagination by heading, tail, chunk, line range; auto-redirects large files). Output is capped with a hint for reading on; a duplicated heading returns an error listing its line numbers |
 | `vault_peek` | Inspect file metadata and structure without reading full content |
 | `vault_list` | List files and folders |
 | `vault_recent` | Recently modified files |
@@ -92,14 +92,14 @@ Without this, knowledge stays fragmented across per-project memory files and cha
 
 | Tool | Description |
 |------|-------------|
-| `vault_move` | Move/rename files with automatic wikilink updating across the vault |
-| `vault_trash` | Soft-delete to `.trash/` (Obsidian convention), warns about broken incoming links |
+| `vault_move` | Move/rename notes with automatic wikilink updating across the vault. Moving a folder does not rewrite links that pointed at the notes inside it |
+| `vault_trash` | Soft-delete a note to `.trash/` (Obsidian convention), warns about broken incoming links. Folders are refused; trash notes one by one |
 
 ### Session Memory
 
 | Tool | Description |
 |------|-------------|
-| `vault_activity` | Cross-conversation memory — logs every tool call with timestamps and session IDs |
+| `vault_activity` | Cross-conversation memory — logs every tool call with timestamps and session IDs (summarised arguments, 90 days by default) |
 
 ### Agents, Skills & Commands
 
@@ -222,7 +222,11 @@ Use `VAULT_PKM_OPENAI_KEY` (preferred) to avoid conflicts with project-level Ope
 
 **Optional: `VAULT_PKM_VAULT_NAME`** — overrides the vault name used in `obsidian://` links emitted in tool output. Defaults to `basename(VAULT_PATH)`, which is correct for most setups. Set this only if your on-disk folder name differs from the vault name you registered in Obsidian (e.g. `VAULT_PATH=/Users/me/Notes` but Obsidian shows the vault as `My PKM`).
 
+**Optional: `VAULT_PKM_ACTIVITY_RETENTION_DAYS`** — how many days `vault_activity` keeps entries (default `90`; `0` keeps everything). Older entries are deleted when the server starts.
+
 This enables `vault_semantic_search` and `vault_suggest_links`. Uses `text-embedding-3-large` with a SQLite + sqlite-vec index stored at `.obsidian/semantic-index.db`. The index rebuilds automatically — delete the DB file to force a full re-embed.
+
+If OpenAI rejects the key or the account runs out of credits, the index switches to a **disabled** state instead of silently going stale. Semantic tools then answer `Semantic search disabled since <date>: <reason>`, each call retries the API once, and the index re-enables and catches up by itself as soon as a request succeeds. The session-start summary line, `npx obsidian-pkm doctor` and the server's startup log show the status, the reason and how many notes are stale. When notes have changed since they were last indexed, semantic search results end with a footer saying so.
 
 <details>
 <summary><strong>Vault Structure</strong></summary>
@@ -274,6 +278,10 @@ graph LR
     HND --> H[helpers.js]
     HND --> G[graph.js]
     HND --> U[utils.js]
+    HND --> VFS[vault-fs.js]
+    HND --> MD[markdown.js]
+    HND --> FM[frontmatter.js]
+    HOOKS[hooks/] --> MD
     HND -->|read/write| V[(Obsidian Vault)]
     E -->|embeddings API| OAI[OpenAI]
     E -->|vector store| DB[(SQLite + sqlite-vec)]
@@ -286,13 +294,15 @@ File layout:
 ├── index.js          # MCP server setup, request routing, lifecycle
 ├── tools.js          # MCP tool definitions (names, descriptions, input schemas)
 ├── handlers.js       # Tool handler implementations
-├── helpers.js        # Pure functions (path security, filtering, templates, frontmatter)
+├── helpers.js        # Pure functions (filtering, templates, peek); re-exports path and frontmatter helpers
+├── vault-fs.js       # File access: path containment, write-target rules, live file index, atomic writes
 ├── markdown.js       # Dependency-free markdown parsing (frontmatter split, headings, code masking), shared with hooks
 ├── frontmatter.js    # YAML frontmatter parse/render/byte-preserving update (yaml package)
 ├── graph.js          # Wikilink resolution and BFS graph traversal
 ├── embeddings.js     # Semantic index (OpenAI embeddings, SQLite + sqlite-vec)
+├── semantic-health.js # Dependency-free semantic index health formatting (server, hooks, doctor)
 ├── activity.js       # Activity log (session tracking, SQLite)
-├── utils.js          # Shared utilities (frontmatter parsing, file listing)
+├── utils.js          # Shared utilities (file listing; re-exports frontmatter parsing)
 ├── cli.js            # CLI entry point (routes `init` / `doctor` subcommands or starts the server)
 ├── init.js           # Vault scaffolding wizard (templates, PARA folders)
 ├── doctor.js         # `obsidian-pkm doctor` setup diagnostics
@@ -329,7 +339,9 @@ File layout:
 
 **Knowledge capture** uses the `pkm-capture` agent to update the project devlog and persist PKM-worthy content from a session (decisions, research findings, tasks, bug root causes) in one pass. It is triggered automatically when you open a pull request: a PostToolUse hook watches for a successful `gh pr create` and hands Claude the PR URL, transcript path and session ID for the capture. You can also dispatch it manually after significant work blocks. It runs in the background on Haiku without interrupting the coding flow.
 
-**Fuzzy path resolution** lets read-only tools accept short names instead of full vault paths. `vault_read({ path: "devlog" })` resolves to `01-Projects/MyApp/development/devlog.md` automatically (`.md` extension optional). Folder-scoped tools like `vault_list`, `vault_search`, and `vault_query` accept partial folder names — `folder: "MyApp"` resolves to `01-Projects/MyApp`. Ambiguous matches return an error listing candidates. Write/destructive tools always require exact paths.
+**Session context** is loaded by a SessionStart hook. It injects the project's `_index.md` (Overview and Current Status first, up to 2,500 characters), the three newest devlog entries by the date in their headings (up to 1,500 characters each) and up to ten open tasks, about 8 KB at most. After a compaction only the project path and task titles are injected. Activity entries are kept for 90 days by default (`VAULT_PKM_ACTIVITY_RETENTION_DAYS`), and long arguments such as note bodies are stored as `<N chars>`. The `path` filter of `vault_activity` matches the stored argument exactly (full vault-relative paths, case-sensitive; a folder matches everything under it), so a short name or partial folder finds nothing.
+
+**Fuzzy path resolution** lets read-only tools accept short names instead of full vault paths. `vault_read({ path: "devlog" })` resolves to `01-Projects/MyApp/development/devlog.md` automatically (`.md` extension optional). Folder-scoped tools like `vault_list`, `vault_search`, and `vault_query` accept partial folder names — `folder: "MyApp"` resolves to `01-Projects/MyApp`. A short name containing `/` must match the end of the real path (`development/devlog` finds `01-Projects/MyApp/development/devlog.md`). Ambiguous matches return an error listing candidates; pass the full path. Write/destructive tools always require exact paths and only accept `.md` notes outside dot-folders.
 
 ## Troubleshooting
 
@@ -349,7 +361,13 @@ Set `VAULT_PKM_OPENAI_KEY` in `~/.claude/settings.json`. See [Enable Semantic Se
 Run `claude mcp list` to check. If `vault-pkm` is missing, reinstall the plugin: `claude plugin install vault-pkm@claude-community`. Then run `/vault-pkm:setup` to configure it.
 
 **Semantic index not updating after file changes**
-Check your Node version with `node -v`. The file watcher uses `fs.watch({ recursive: true })` which requires Node.js >= 20.
+Notes written through the vault tools are reindexed right away. Other changes are picked up by a file watcher (`fs.watch({ recursive: true })`, Node.js >= 20), which restarts itself up to five times after an error, and every server start catches up on anything missed. Run `npx obsidian-pkm doctor` to see the index status and how many notes are stale.
+
+**Semantic search says "disabled since …"**
+OpenAI rejected the key (HTTP 401/403) or the account has no credits left (HTTP 429 `insufficient_quota`). Fix the key or add credits. The next semantic tool call retries once; when it succeeds the index re-enables and catches up on its own.
+
+**Hidden `.lock` / `.tmp` files next to notes, or sync conflicts on them**
+Every note write briefly creates hidden files beside the note: a lock (`.<hash>.lock`) and a staging file (`.<hash>.<pid>.<rand>.tmp`). They are removed within moments, but a sync or version-control tool that does not skip dotfiles can pick them up. Ignore the patterns `.*.lock` and `.*.tmp` there (for example `(?d).*.lock` and `(?d).*.tmp` in Syncthing's `.stignore`, or `.*.lock` and `.*.tmp` in the `.gitignore` used by obsidian-git). A crashed write can leave one behind; it is safe to delete, and the plugin treats a lock older than 10 seconds as stale.
 
 **Not sure if everything is set up correctly?**
 Run `npx obsidian-pkm doctor` for a diagnostic checklist that validates your Node version, vault path, templates, API keys, and native dependencies. It reads `VAULT_PATH` and the OpenAI key from your shell environment or, failing that, from the `env` block of `~/.claude/settings.json`, and says which source it used.

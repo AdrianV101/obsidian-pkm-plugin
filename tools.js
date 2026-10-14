@@ -317,7 +317,7 @@ Pass custom <%...%> variables via the 'variables' parameter.` + LINK_FORMAT_NOTE
     },
     {
       name: "vault_move",
-      description: "Move or rename a markdown file within the vault. Automatically updates wikilinks in all files that reference the moved file. Both paths must be exact." + LINK_FORMAT_NOTE,
+      description: "Move or rename a markdown note (or a folder) within the vault. Moving a note automatically updates wikilinks in all files that reference it; moving a folder does not rewrite links that pointed at the notes inside it. Both paths must be exact." + LINK_FORMAT_NOTE,
       inputSchema: {
         type: "object",
         properties: {

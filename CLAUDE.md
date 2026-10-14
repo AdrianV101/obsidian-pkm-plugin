@@ -45,7 +45,7 @@ npm run typecheck
 
 The project consists of three parts:
 
-**MCP Server**: A Node.js ES module server implementing the Model Context Protocol. The main entry point is `index.js` (server setup and request routing); tool definitions live in `tools.js`, handlers in `handlers.js`, and pure helper functions in `helpers.js`. It provides 20 tools for vault interaction:
+**MCP Server**: A Node.js ES module server implementing the Model Context Protocol. The main entry point is `index.js` (server setup and request routing); tool definitions live in `tools.js` and handlers in `handlers.js`. Shared modules: `vault-fs.js` (path containment, write-target rules, the live `FileIndex`, and `mutateFile`/`writeNew`, the only way notes are modified or created), `markdown.js` (dependency-free frontmatter splitting, heading parsing and section lookup; the hooks import it, so it must stay free of package imports), `frontmatter.js` (all YAML work, using `yaml`), `semantic-health.js` (dependency-free health formatting shared by the server, the hooks and doctor) and `helpers.js` (filtering, templates, peek). It provides 20 tools for vault interaction:
 - `vault_read` - Read note contents (supports pagination: `heading`, `tail`, `tail_sections` [with optional `section_level` param, default: 2], `chunk`, `lines`; auto-redirects to peek data for files >80k chars; `force` bypasses redirect; `heading` matches `## Foo` (level + text) or `Foo` (text at any level) and errors on duplicates; every mode's output is capped at 80k chars (400k with `force`) with a `[truncated: …; continue with lines: {start: N}]` marker)
 - `vault_peek` - Inspect file metadata/structure without reading full content (size, frontmatter, indented heading tree, preview)
 - `vault_write` - Create new notes from templates (enforces frontmatter; settable fields: `status`, `priority`, `project`, `deciders`, `due`, `source`; `variables` param for custom `<%...%>` substitution in template body)
@@ -61,8 +61,8 @@ The project consists of three parts:
 - `vault_query` - Query notes by YAML frontmatter (type, status, `tags` [ALL must match], `tags_any` [ANY must match], dates, `custom_fields` for arbitrary field matching, `sort_by`/`sort_order` for result ordering)
 - `vault_tags` - Discover all tags with per-note counts; supports folder scoping, glob patterns, inline `#tag` parsing
 - `vault_activity` - Query/clear activity log (all tool calls with timestamps and session IDs)
-- `vault_trash` - Soft-delete to `.trash/` (Obsidian convention), warns about broken incoming links
-- `vault_move` - Move/rename files with automatic wikilink updating across vault (`update_links: false` to skip)
+- `vault_trash` - Soft-delete a note to `.trash/` (Obsidian convention), warns about broken incoming links; refuses folders
+- `vault_move` - Move/rename notes or folders with automatic wikilink updating across vault (`update_links: false` to skip); folder moves do not rewrite links that pointed at notes inside the folder
 - `vault_add_links` - Add annotated wikilinks to a note's section with deduplication (default: ## Related)
 - `vault_link_health` - Graph health report: orphans, broken links, weakly connected notes, ambiguous links
 
@@ -85,7 +85,9 @@ Finds conceptually related notes even when they use different terminology. For e
 - Requires `VAULT_PKM_OPENAI_KEY` or `OPENAI_API_KEY` env var — tool is hidden from tool list when not set
 - Uses OpenAI `text-embedding-3-large` (3072 dimensions)
 - Index stored at `$VAULT_PATH/.obsidian/semantic-index.db` (SQLite + sqlite-vec)
-- Background `fs.watch` keeps index fresh; startup sync catches changes made while server was stopped
+- Write tools notify the index directly (`notifyChanged`/`notifyRemoved`/`notifyMoved`); a background `fs.watch` (restarted with backoff after errors) catches other changes; startup sync catches changes made while the server was stopped
+- API errors are classified (`EmbeddingError.kind`): auth and quota failures put the index into a disabled state persisted in `.obsidian/semantic-stats.json` (`status`, `reason`, `since`, `last_success_at`, `stale_files`); semantic tool calls probe once and the index re-enables on success; rate limits and transient errors are retried up to 3 times
+- Reindexes of one note are serialized, and the content hash is re-checked inside the store transaction
 - Chunking: whole-note for short notes, heading-based (`##`) splits for notes > ~2000 tokens
 - Params: `query` (required), `limit`, `folder`, `threshold` (0-1 similarity score), `anchor` (optional path for graph-distance weighting), `graph_weight` (0-1, default: 0.3)
 
@@ -128,7 +130,7 @@ Logs all MCP tool calls with timestamps and session IDs. Enables cross-session m
 - Storage: SQLite DB at `$VAULT_PATH/.obsidian/activity-log.db` (separate from semantic index)
 - Session ID: generated via `crypto.randomUUID()` at MCP server startup (each conversation gets its own)
 - Logs every tool call except `vault_activity` itself
-- Supports filtering by tool name, session ID, date range, and path (exact note, or folder prefix)
+- Supports filtering by tool name, session ID, date range, and path (exact note, or folder prefix; the filter matches the stored argument, so it needs the full vault-relative path, is case-sensitive, and a short name or partial folder matches nothing)
 - Arguments are summarised before storage: strings over 200 chars become `"<N chars>"` (path-like keys `path`, `source`, `destination`, `folder`, `target`, `old_path`, `new_path` are kept)
 - Retention: rows older than `VAULT_PKM_ACTIVITY_RETENTION_DAYS` (default 90; `0` keeps everything) are deleted at server start; the DB uses `auto_vacuum = INCREMENTAL`
 - Schema version in `PRAGMA user_version` (1 = indexed `path` column + summarised args)
@@ -239,16 +241,16 @@ Read-only tools (`vault_read`, `vault_peek`, `vault_links`, `vault_neighborhood`
 - Short names resolve by basename: `"devlog"` → `"01-Projects/MyApp/development/devlog.md"`
 - `.md` extension is optional: `"devlog"` and `"devlog.md"` both work
 - Ambiguous names (multiple files with same basename) return an error listing all candidates
-- Use a more specific path or the `folder` param to disambiguate
+- Pass the full path to disambiguate; an input containing `/` must match the end of the real path
 
 Folder-scoped tools (`vault_list`, `vault_search`, `vault_query`, `vault_tags`, `vault_recent`, `vault_link_health`) support fuzzy folder resolution:
 - Exact folder paths still work as before
 - Partial names match by substring: `"MyApp"` → `"01-Projects/MyApp"`
 - Ambiguous matches return an error listing candidates
 
-Write/destructive tools (`vault_write`, `vault_append`, `vault_edit`, `vault_update_frontmatter`, `vault_trash`, `vault_move`, `vault_add_links`) require exact paths to prevent accidental modifications.
+Write/destructive tools (`vault_write`, `vault_append`, `vault_edit`, `vault_update_frontmatter`, `vault_trash`, `vault_move`, `vault_add_links`) require exact paths to prevent accidental modifications, and the writing ones only accept `.md` notes outside dot-folders.
 
-Implementation: `helpers.js` (`buildBasenameMap`, `resolveFuzzyPath`, `resolveFuzzyFolder`)
+Implementation: `FileIndex.exists`/`FileIndex.resolveFuzzy` in `vault-fs.js` for notes, `resolveFuzzyFolder` in `helpers.js` for folders
 
 ### PKM Agents
 
