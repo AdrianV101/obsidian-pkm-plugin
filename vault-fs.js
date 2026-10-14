@@ -385,10 +385,11 @@ export class FileIndex {
 // Guarantees:
 // - Plugin processes (any number of servers on one vault) are serialised per note by an
 //   in-process queue plus an O_EXCL lock file holding a token unique to its holder, and a
-//   holder only ever removes its own lock. A lock older than the stale timeout (left by a
-//   crashed process) is taken over by one waiter at a time. That takeover can still race with a
-//   holder that outlived the stale timeout releasing its own lock at the same instant; the
-//   mtime/size/inode re-check before the rename (below) is then the fallback against a lost update.
+//   holder only ever removes its own lock. A lock older than the stale timeout is presumed left
+//   by a crashed process and taken over, so a holder still working past the stale timeout is no
+//   longer exclusive, and a crash part-way through a takeover can let two waiters in together.
+//   In both cases the mtime/size/inode re-check before the rename (below) is the fallback
+//   against a lost update.
 // - Writers outside the plugin (Obsidian, sync clients) take no lock. They are detected by
 //   comparing mtime/size/inode just before the rename and the update is re-applied; a write
 //   landing in the few microseconds between that check and the rename can still be lost.
