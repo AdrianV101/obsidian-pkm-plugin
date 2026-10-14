@@ -185,7 +185,9 @@ async function main() {
   console.log(JSON.stringify(output));
 }
 
+// A failing SessionStart hook is reported to the user as a hook error; missing PKM context is not
+// worth that, so log and exit cleanly.
 main().catch((err) => {
   console.error(`PKM SessionStart hook error: ${err.message}`);
-  process.exit(1);
+  process.exit(0);
 });

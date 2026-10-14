@@ -80,6 +80,13 @@ describe("session-start.js", () => {
     assert.ok(result.hookSpecificOutput.additionalContext.includes("could not parse"));
   });
 
+  it("an unexpected failure exits 0 with the error on stderr, so it never surfaces as a hook error", async () => {
+    // Valid JSON that is not an object: reading its fields throws outside every handled path.
+    const { code, stderr } = await runScript([SCRIPT], { ...process.env, VAULT_PATH: vaultPath }, "null");
+    assert.equal(code, 0, stderr);
+    assert.match(stderr, /PKM SessionStart hook error: /);
+  });
+
   it("returns JSON warning when VAULT_PATH not set", async () => {
     const { stdout } = await runScript(
       [SCRIPT],
