@@ -89,6 +89,31 @@ describe("doctor command", () => {
       assert.ok(!stdout.includes("sk-from-env") && !stdout.includes("sk-from-settings"), "key values are never printed");
     });
 
+    it("warns when the environment and settings.json both set VAULT_PATH or the key to different values, naming both sources and never the values", async () => {
+      const vaultPath = await makeVault();
+      const otherVault = await makeVault("other");
+      await writeSettings({ env: { VAULT_PATH: otherVault, VAULT_PKM_OPENAI_KEY: "sk-from-settings" } });
+
+      const differing = await runDoctor({ ...envWithout(...KEY_VARS), VAULT_PATH: vaultPath, VAULT_PKM_OPENAI_KEY: "sk-from-env" });
+      assert.ok(
+        differing.stdout.includes("⚠ VAULT_PATH differs between the environment and ~/.claude/settings.json; using the environment value"),
+        differing.stdout
+      );
+      assert.ok(
+        differing.stdout.includes("⚠ VAULT_PKM_OPENAI_KEY differs between the environment and ~/.claude/settings.json; using the environment value"),
+        differing.stdout
+      );
+      assert.ok(!differing.stdout.includes("sk-from-env") && !differing.stdout.includes("sk-from-settings"), "key values are never printed");
+
+      await writeSettings({ env: { VAULT_PATH: vaultPath, VAULT_PKM_OPENAI_KEY: "sk-same" } });
+      const agreeing = await runDoctor({ ...envWithout(...KEY_VARS), VAULT_PATH: vaultPath, VAULT_PKM_OPENAI_KEY: "sk-same" });
+      assert.ok(!agreeing.stdout.includes("differs"), "no warning when both sources agree");
+
+      await writeSettings({ env: { VAULT_PATH: otherVault } });
+      const onlyEnv = await runDoctor({ ...envWithout(...KEY_VARS), VAULT_PATH: otherVault });
+      assert.ok(!onlyEnv.stdout.includes("differs"), "no warning when only one source is set");
+    });
+
     it("applies the server's key-name precedence across sources: settings VAULT_PKM_OPENAI_KEY beats environment OPENAI_API_KEY", async () => {
       const vaultPath = await makeVault();
       await writeSettings({ env: { VAULT_PKM_OPENAI_KEY: "sk-from-settings" } });

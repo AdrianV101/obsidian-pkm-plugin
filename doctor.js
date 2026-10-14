@@ -34,11 +34,15 @@ async function readSettingsEnv(homeDir) {
  * @param {string} name
  * @param {Record<string, unknown>} settingsEnv
  * @param {(v: unknown) => boolean} isUsable
- * @returns {{ value: string, source: string } | null}
+ * @returns {{ value: string, source: string, shadowsDifferent: boolean } | null}
+ *   shadowsDifferent: the environment won while settings.json holds another usable value for the same name
  */
 function lookup(name, settingsEnv, isUsable) {
-  if (isUsable(process.env[name])) return { value: String(process.env[name]), source: "environment" };
-  if (isUsable(settingsEnv[name])) return { value: String(settingsEnv[name]), source: SETTINGS_LABEL };
+  if (isUsable(process.env[name])) {
+    const shadowsDifferent = isUsable(settingsEnv[name]) && String(settingsEnv[name]) !== String(process.env[name]);
+    return { value: String(process.env[name]), source: "environment", shadowsDifferent };
+  }
+  if (isUsable(settingsEnv[name])) return { value: String(settingsEnv[name]), source: SETTINGS_LABEL, shadowsDifferent: false };
   return null;
 }
 
@@ -72,6 +76,10 @@ export async function runDoctor() {
   if (vaultSetting) {
     ok(`VAULT_PATH: ${vaultPath} (from ${vaultSetting.source})`);
     passed++;
+    if (vaultSetting.shadowsDifferent) {
+      warn(`VAULT_PATH differs between the environment and ${SETTINGS_LABEL}; using the environment value`);
+      warnings++;
+    }
   } else {
     warn(`VAULT_PATH not set in the environment or ${SETTINGS_LABEL}, using default: ${vaultPath}`);
     warnings++;
@@ -124,6 +132,10 @@ export async function runDoctor() {
   if (apiKey) {
     ok(`VAULT_PKM_OPENAI_KEY set (from ${apiKey.source}${keyName === KEY_NAMES[0] ? "" : ` as ${keyName}`}; semantic search enabled)`);
     passed++;
+    if (apiKey.shadowsDifferent) {
+      warn(`${keyName} differs between the environment and ${SETTINGS_LABEL}; using the environment value`);
+      warnings++;
+    }
     if (keyName === "OBSIDIAN_PKM_OPENAI_KEY") {
       warn("OBSIDIAN_PKM_OPENAI_KEY is deprecated — rename to VAULT_PKM_OPENAI_KEY");
       warnings++;
