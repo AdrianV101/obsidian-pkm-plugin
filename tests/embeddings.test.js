@@ -1142,6 +1142,54 @@ describe("SemanticIndex health: fix round", () => {
     assert.ok(fake.calls.length <= 10, `got ${fake.calls.length} requests`);
   });
 
+  // Resolves to "closed" when shutdown() finishes, or "hung" if it is still waiting after a second.
+  async function shutdownPromptly(idx) {
+    let timer;
+    const hung = new Promise((r) => { timer = setTimeout(() => r("hung"), 1000); });
+    try {
+      return await Promise.race([idx.shutdown().then(() => "closed"), hung]);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  it("shutdown during an in-flight embeddings request aborts it instead of waiting for the response", async () => {
+    const vault = await vaultWith(manyNotes(1));
+    let inFlight;
+    const requested = new Promise((r) => { inFlight = r; });
+    // The fake never answers; only an abort of the request's signal ends it.
+    fake = installFakeOpenAI((_inputs, _n, signal) => new Promise((_resolve, reject) => {
+      inFlight();
+      signal?.addEventListener("abort", () => reject(signal.reason), { once: true });
+    }));
+    const idx = await openIndex(vault);
+    await requested;
+    assert.equal(await shutdownPromptly(idx), "closed");
+    assert.equal(fake.calls.length, 1);
+  });
+
+  it("shutdown during a retry backoff ends the wait at once and sends no further request", async () => {
+    const vault = await vaultWith(manyNotes(1));
+    fake = installFakeOpenAI(() => errorResponse(503, "busy"));
+    let waiting;
+    const inBackoff = new Promise((r) => { waiting = r; });
+    const idx = new SemanticIndex({
+      vaultPath: vault,
+      openaiApiKey: "test-key",
+      dbPath: path.join(vault, ".obsidian", "test-index.db"),
+      // A backoff that never elapses on its own; only an abort ends it.
+      sleep: (_ms, signal) => new Promise((resolve) => {
+        waiting();
+        signal?.addEventListener("abort", resolve, { once: true });
+      }),
+    });
+    opened.push(idx);
+    await idx.initialize();
+    await inBackoff;
+    assert.equal(await shutdownPromptly(idx), "closed");
+    assert.equal(fake.calls.length, 1);
+  });
+
   it("initialize keeps the persisted stale_files and vault_files until the scan completes", async () => {
     const vault = await vaultWith(manyNotes(3));
     await fs.mkdir(path.join(vault, ".obsidian"), { recursive: true });

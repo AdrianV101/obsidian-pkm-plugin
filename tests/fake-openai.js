@@ -38,8 +38,9 @@ export const quotaResponse = () => errorResponse(429, QUOTA_BODY);
 
 /**
  * Replace globalThis.fetch with a fake embeddings endpoint.
- * `handler(inputs, callNumber)` returns a Response (or a promise of one), or throws to
- * simulate a network failure. `calls` records the `input` array of every request.
+ * `handler(inputs, callNumber, signal)` returns a Response (or a promise of one), or throws to
+ * simulate a network failure; `signal` is the request's AbortSignal. `calls` records the
+ * `input` array of every request.
  */
 export function installFakeOpenAI(handler = (inputs) => embeddingsResponse(inputs)) {
   const original = globalThis.fetch;
@@ -52,7 +53,7 @@ export function installFakeOpenAI(handler = (inputs) => embeddingsResponse(input
   globalThis.fetch = async (_url, opts) => {
     const inputs = JSON.parse(opts.body).input;
     calls.push(inputs);
-    return fake.handler(inputs, calls.length);
+    return fake.handler(inputs, calls.length, opts.signal);
   };
   return fake;
 }

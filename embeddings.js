@@ -34,7 +34,25 @@ const RETRYABLE_KINDS = new Set(["rate_limit", "transient"]);
 const DISABLING_KINDS = new Set(["auth", "quota"]);
 const TOO_LARGE_RE = /maximum context length|context_length_exceeded|max_tokens_per_request|\bmax(?:imum)?\s+\d+\s+tokens\b|too many tokens/i;
 
-const defaultSleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+const REQUEST_TIMEOUT_MS = 30000;
+
+/** Resolves after `ms`, or as soon as `signal` aborts. */
+const defaultSleep = (ms, signal) => new Promise(resolve => {
+  if (signal?.aborted) return resolve();
+  const done = () => {
+    clearTimeout(timer);
+    signal?.removeEventListener("abort", done);
+    resolve();
+  };
+  const timer = setTimeout(done, ms);
+  signal?.addEventListener("abort", done, { once: true });
+});
+
+/** The request timeout, combined with `signal` where AbortSignal.any exists (Node >= 20.3). */
+function requestSignal(signal) {
+  const timeout = AbortSignal.timeout(REQUEST_TIMEOUT_MS);
+  return signal && typeof AbortSignal.any === "function" ? AbortSignal.any([signal, timeout]) : timeout;
+}
 
 /** An OpenAI embeddings failure, classified so callers can decide to retry, disable or split. */
 export class EmbeddingError extends Error {
@@ -121,7 +139,8 @@ export class SemanticIndex {
    * @param {string} opts.openaiApiKey - OpenAI API key for embeddings
    * @param {string} [opts.dbPath] - override path for the SQLite database
    * @param {string} [opts.statsPath] - override path for semantic-stats.json
-   * @param {(ms: number) => Promise<void>} [opts.sleep] - delay used between retries and watcher restarts
+   * @param {(ms: number, signal?: AbortSignal) => Promise<void>} [opts.sleep] - delay used between retries
+   *   and watcher restarts; it should end early when `signal` (shutdown) aborts
    * @param {typeof fsSync.watch} [opts.watch] - file watcher factory
    * @param {number} [opts.debounceMs] - delay before a changed path is reindexed
    * @param {number} [opts.maxKnnK] - largest k sent to a sqlite-vec KNN query
@@ -150,6 +169,7 @@ export class SemanticIndex {
     this._syncPromise = null;
     this._inflight = new Set();
     this._abortController = null;
+    this._requestAbort = null; // aborted by shutdown(): ends in-flight embedding requests and retry waits
     this._lastKnownVaultFiles = 0;
     this._disabled = null; // { reason, since } while auth/quota failures block embedding
     this._lastSuccessAt = null;
@@ -249,6 +269,7 @@ export class SemanticIndex {
 
     // Start background sync (non-blocking)
     this._abortController = new AbortController();
+    this._requestAbort = new AbortController();
     this._startSync();
 
     // Start file watcher
@@ -263,6 +284,7 @@ export class SemanticIndex {
       this._abortController.abort();
       this._abortController = null;
     }
+    this._requestAbort?.abort();
     if (this.watcher) {
       this.watcher.close();
       this.watcher = null;
@@ -365,7 +387,7 @@ export class SemanticIndex {
 
   async _runProbe() {
     try {
-      await getEmbeddings(["ping"], this.openaiApiKey, { maxAttempts: 1, sleep: this._sleep });
+      await getEmbeddings(["ping"], this.openaiApiKey, this._embeddingOptions({ maxAttempts: 1 }));
     } catch (err) {
       this._noteFailure(err);
       return false;
@@ -378,6 +400,11 @@ export class SemanticIndex {
       if (!this._closing) this._startSync();
     }
     return true;
+  }
+
+  /** Options for an embeddings request: shutdown aborts it and any retry wait. */
+  _embeddingOptions(extra = {}) {
+    return { sleep: this._sleep, signal: this._requestAbort?.signal, ...extra };
   }
 
   _noteSuccess() {
@@ -460,7 +487,7 @@ export class SemanticIndex {
 
     let queryEmbedding;
     try {
-      [queryEmbedding] = await getEmbeddings([query], this.openaiApiKey, { sleep: this._sleep });
+      [queryEmbedding] = await getEmbeddings([query], this.openaiApiKey, this._embeddingOptions());
     } catch (err) {
       this._noteFailure(err);
       if (this._disabled) throw new Error(formatDisabledMessage(this.health()), { cause: err });
@@ -614,7 +641,7 @@ export class SemanticIndex {
 
     let embeddings;
     try {
-      embeddings = await getEmbeddings(chunks.map(c => c.text), this.openaiApiKey, { sleep: this._sleep });
+      embeddings = await getEmbeddings(chunks.map(c => c.text), this.openaiApiKey, this._embeddingOptions());
     } catch (err) {
       this._stale.add(relativePath);
       this._noteFailure(err);
@@ -1158,11 +1185,13 @@ function combineEmbeddings(vectors, weights) {
  * @param {string} apiKey
  * @param {Object} [opts]
  * @param {number} [opts.maxAttempts=3]
- * @param {(ms: number) => Promise<void>} [opts.sleep]
+ * @param {(ms: number, signal?: AbortSignal) => Promise<void>} [opts.sleep]
+ * @param {AbortSignal} [opts.signal] - aborts the request and any retry wait; nothing is retried after it
  * @returns {Promise<number[][]>} embeddings in input order
  */
-async function callEmbeddingAPI(texts, apiKey, { maxAttempts = MAX_ATTEMPTS, sleep = defaultSleep } = {}) {
+async function callEmbeddingAPI(texts, apiKey, { maxAttempts = MAX_ATTEMPTS, sleep = defaultSleep, signal } = {}) {
   for (let attempt = 1; ; attempt++) {
+    signal?.throwIfAborted();
     let error;
     let response = null;
     try {
@@ -1176,9 +1205,10 @@ async function callEmbeddingAPI(texts, apiKey, { maxAttempts = MAX_ATTEMPTS, sle
           model: EMBEDDING_MODEL,
           input: texts
         }),
-        signal: AbortSignal.timeout(30000)
+        signal: requestSignal(signal)
       });
     } catch (e) {
+      if (signal?.aborted) throw e;
       const { kind, retryAfterMs } = classifyEmbeddingError(null, e.message, null);
       error = new EmbeddingError(`OpenAI API request failed: ${e.message}`, { kind, retryAfterMs, cause: e });
     }
@@ -1203,7 +1233,7 @@ async function callEmbeddingAPI(texts, apiKey, { maxAttempts = MAX_ATTEMPTS, sle
     const delay = error.retryAfterMs ?? 1000 * 2 ** (attempt - 1);
     if (delay > MAX_RETRY_WAIT_MS) throw error;
     console.error(`OpenAI ${error.kind} error, retrying in ${delay}ms (attempt ${attempt + 1}/${maxAttempts})...`);
-    await sleep(delay);
+    await sleep(delay, signal);
   }
 }
 
