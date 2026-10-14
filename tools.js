@@ -210,6 +210,11 @@ Pass custom <%...%> variables via the 'variables' parameter.` + LINK_FORMAT_NOTE
           semantic_limit: {
             type: "number",
             description: "Max semantic results to include (default: 5)"
+          },
+          max_nodes: {
+            type: "number",
+            description: "Max graph nodes to list, closest first (default: 50). The rest are reported as '+N not shown'.",
+            default: 50
           }
         },
         required: ["path"]

@@ -5,6 +5,7 @@ import path from "path";
 import os from "os";
 import { createHandlers } from "../handlers.js";
 import { ActivityLog } from "../activity.js";
+import { createToolsList } from "../tools.js";
 import { AUTO_REDIRECT_THRESHOLD } from "../helpers.js";
 
 let tmpDir;
@@ -3385,5 +3386,113 @@ describe("unicode-normalised links and scalar tags in neighborhood", () => {
     const text = (await h.get("vault_neighborhood")({ path: "a.md", depth: 1 })).content[0].text;
     assert.ok(text.includes("tags: dev"), text);
     await fs.rm(dir, { recursive: true });
+  });
+});
+
+// ─── vault_move link correctness and case-only renames ───────────────
+
+describe("vault_move link correctness", () => {
+  async function moveVault(files) {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "move-correct-"));
+    for (const [rel, content] of Object.entries(files)) {
+      await fs.mkdir(path.dirname(path.join(dir, rel)), { recursive: true });
+      await fs.writeFile(path.join(dir, rel), content);
+    }
+    const h = await createHandlers({ vaultPath: dir, templateRegistry: new Map(), semanticIndex: null, activityLog: null, sessionId: "move-correct" });
+    return { dir, h, read: (rel) => fs.readFile(path.join(dir, rel), "utf-8") };
+  }
+
+  it("moving a/note.md never repoints links meant for b/note.md or ambiguous [[note]] links", async () => {
+    const { dir, h, read } = await moveVault({
+      "a/note.md": "# A\n",
+      "b/note.md": "# B\n",
+      "ref.md": "[[note]] [[a/note]] [[b/note]] [[A/Note#h|x]]\n",
+    });
+    await h.get("vault_move")({ old_path: "a/note.md", new_path: "archive/note.md" });
+    assert.equal(await read("ref.md"), "[[note]] [[archive/note]] [[b/note]] [[archive/note#h|x]]\n");
+    await fs.rm(dir, { recursive: true });
+  });
+
+  it("rewrites links inside the moved note that point to itself", async () => {
+    const { dir, h, read } = await moveVault({ "self.md": "# Self\nSee [[self]] and [[self#Self|top]].\n" });
+    const result = await h.get("vault_move")({ old_path: "self.md", new_path: "renamed-self.md" });
+    assert.equal(await read("renamed-self.md"), "# Self\nSee [[renamed-self]] and [[renamed-self#Self|top]].\n");
+    assert.ok(result.content[0].text.includes("Updated wikilinks in 1 file"), result.content[0].text);
+    await fs.rm(dir, { recursive: true });
+  });
+
+  it("renames a note to a different letter case and rewrites its links", async () => {
+    const { dir, h, read } = await moveVault({
+      "cs/Note.md": "# Case\nbody\n",
+      "ref.md": "See [[Note]] and [[cs/Note|n]].\n",
+    });
+    await h.get("vault_move")({ old_path: "cs/Note.md", new_path: "cs/note.md" });
+    assert.deepEqual(await fs.readdir(path.join(dir, "cs")), ["note.md"]);
+    assert.equal(await read("cs/note.md"), "# Case\nbody\n");
+    assert.equal(await read("ref.md"), "See [[note]] and [[note|n]].\n");
+    await fs.rm(dir, { recursive: true });
+  });
+
+  it("still refuses a destination that is the same file under a different name (hard link)", async () => {
+    const { dir, h } = await moveVault({ "a.md": "# A\n" });
+    await fs.link(path.join(dir, "a.md"), path.join(dir, "b.md"));
+    await assert.rejects(() => h.get("vault_move")({ old_path: "a.md", new_path: "b.md" }), /already exists/);
+    assert.deepEqual((await fs.readdir(dir)).sort(), ["a.md", "b.md"]);
+    await fs.rm(dir, { recursive: true });
+  });
+});
+
+// ─── vault_neighborhood max_nodes and capped graph proximity ─────────
+
+describe("neighbourhood node cap", () => {
+  const ids = Array.from({ length: 60 }, (_, i) => `c${String(i + 1).padStart(2, "0")}`);
+
+  /** Vault with hub.md linking c01..c60 in order, plus handlers bound to it. */
+  async function hubVault(semanticIndex = null) {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "neighborhood-cap-"));
+    await fs.mkdir(path.join(dir, "c"));
+    await fs.writeFile(path.join(dir, "hub.md"), "# Hub\n" + ids.map(id => `[[${id}]]`).join("\n") + "\n");
+    for (const id of ids) await fs.writeFile(path.join(dir, "c", `${id}.md`), `# ${id}\n`);
+    const h = await createHandlers({ vaultPath: dir, templateRegistry: new Map(), semanticIndex, activityLog: null, sessionId: "cap" });
+    return { dir, h };
+  }
+
+  it("vault_neighborhood lists at most max_nodes nodes (default 50) and reports the rest as '+N not shown'", async () => {
+    const { dir, h } = await hubVault();
+    for (const [maxNodes, shown] of [[undefined, 50], [5, 5]]) {
+      const text = (await h.get("vault_neighborhood")({ path: "hub.md", depth: 1, max_nodes: maxNodes })).content[0].text;
+      const listed = text.split("\n").filter(l => l.startsWith("- "));
+      assert.equal(listed.length, shown, `max_nodes ${maxNodes}`);
+      assert.ok(text.includes(`+${61 - shown} not shown`), text);
+    }
+    const all = (await h.get("vault_neighborhood")({ path: "hub.md", depth: 1, max_nodes: 100 })).content[0].text;
+    assert.ok(!all.includes("not shown"), all);
+    await fs.rm(dir, { recursive: true });
+  });
+
+  it("vault_neighborhood include_semantic never lists a linked note beyond the cap as unlinked", async () => {
+    const { dir, h } = await hubVault(createMockSemanticIndex([
+      { path: "c/c60.md", score: 0.9, preview: "linked but beyond the cap" },
+    ]));
+    const text = (await h.get("vault_neighborhood")({ path: "hub.md", depth: 1, include_semantic: true })).content[0].text;
+    assert.ok(!text.includes("Semantically related"), text);
+    await fs.rm(dir, { recursive: true });
+  });
+
+  it("vault_semantic_search anchor gives a proximity bonus only to nodes inside the capped neighbourhood", async () => {
+    const { dir, h } = await hubVault(createMockSemanticIndex([
+      { path: "c/c02.md", score: 0.8, preview: "inside the cap" },
+      { path: "c/c55.md", score: 0.8, preview: "beyond the cap" },
+    ]));
+    const text = (await h.get("vault_semantic_search")({ query: "q", anchor: "hub.md", limit: 5 })).content[0].text;
+    assert.match(text, /c\/c02\.md.*combined: 0\.86, semantic: 0\.8, graph: depth 1/);
+    assert.match(text, /c\/c55\.md.*combined: 0\.56, semantic: 0\.8, not in graph/);
+    await fs.rm(dir, { recursive: true });
+  });
+
+  it("vault_neighborhood advertises an optional max_nodes number parameter", () => {
+    const tool = createToolsList("", [], false).find(t => t.name === "vault_neighborhood");
+    assert.equal(tool.inputSchema.properties.max_nodes.type, "number");
+    assert.ok(!tool.inputSchema.required.includes("max_nodes"));
   });
 });

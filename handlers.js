@@ -32,6 +32,7 @@ import {
   createLinkResolver,
   collectLinkedPaths,
   resolutionPaths,
+  DEFAULT_MAX_NODES,
 } from "./graph.js";
 import { getAllMarkdownFiles, extractFrontmatter } from "./utils.js";
 import { mutateFile, writeNew, withNoteLock, normalizeVaultRoot, resolveSafe, hasDotSegment, assertWritableReal, FileIndex, toVaultRel } from "./vault-fs.js";
@@ -537,6 +538,7 @@ export async function createHandlers({ vaultPath: rawVaultPath, templateRegistry
     const { rel: resolvedPath, abs: resolvedAbs } = await resolveNote(args.path);
     const depth = Math.min(positiveInt(args.depth, 2), 5);
     const direction = args.direction || "both";
+    const maxNodes = positiveInt(args.max_nodes, DEFAULT_MAX_NODES);
 
     const { allFiles, resolver } = await freshGraph();
     const result = await exploreNeighborhood({
@@ -546,6 +548,7 @@ export async function createHandlers({ vaultPath: rawVaultPath, templateRegistry
       resolver,
       depth,
       direction,
+      maxNodes,
     });
 
     let text = formatNeighborhood(result, {
@@ -570,12 +573,8 @@ export async function createHandlers({ vaultPath: rawVaultPath, templateRegistry
           excludeFiles: new Set([resolvedPath])
         });
 
-        const graphPaths = new Set();
-        for (const [, nodes] of result.depthGroups) {
-          for (const node of nodes) graphPaths.add(node.path);
-        }
-
-        const unlinked = semanticResults.filter(r => !graphPaths.has(r.path)).slice(0, semanticLimit);
+        // Every linked node counts, including those beyond max_nodes
+        const unlinked = semanticResults.filter(r => !result.discovered.has(r.path)).slice(0, semanticLimit);
 
         if (unlinked.length > 0) {
           text += `\n**Semantically related (unlinked)** (${unlinked.length} node${unlinked.length === 1 ? "" : "s"})\n`;
@@ -1012,23 +1011,50 @@ export async function createHandlers({ vaultPath: rawVaultPath, templateRegistry
     await assertMovable(oldRelative);
     await assertMovable(newRelative);
 
-    // Verify destination does NOT exist
+    // On a case-insensitive filesystem "Note.md" -> "note.md" stats the source itself.
+    // Only a case variant of the same entry may proceed; any other existing destination is refused.
+    let destStat = null;
     try {
-      await fs.access(newAbsolute);
-      throw new Error(`Destination already exists: ${newRelative}. Use vault_edit or vault_trash + vault_write instead.`);
+      destStat = await fs.stat(newAbsolute);
     } catch (e) {
       if (e.code !== "ENOENT") throw e;
     }
+    const caseOnlyRename = destStat !== null &&
+      destStat.ino === sourceStat.ino && destStat.dev === sourceStat.dev &&
+      oldRelative !== newRelative && oldRelative.toLowerCase() === newRelative.toLowerCase();
+    if (destStat && !caseOnlyRename) {
+      throw new Error(`Destination already exists: ${newRelative}. Use vault_edit or vault_trash + vault_write instead.`);
+    }
 
-    // Find files linking to the source (before move)
-    const { allFiles, resolver } = await freshGraph();
-    const linkingFiles = args.update_links !== false
-      ? await findFilesLinkingTo(oldRelative, vaultPath, allFiles, resolver)
+    // Links are judged against the vault as it was before the move
+    const isNote = !sourceStat.isDirectory();
+    const updateLinks = args.update_links !== false && isNote;
+    const { allFiles: filesBefore, resolver } = await freshGraph();
+    const linkingFiles = updateLinks
+      ? await findFilesLinkingTo(oldRelative, vaultPath, filesBefore, resolver)
       : [];
+
+    // New link text: bare basename when it will resolve uniquely to the moved note, else the full path
+    const filesAfter = filesBefore.filter(f => f !== oldRelative).concat(newRelative);
+    const newBasename = path.posix.basename(newRelative, ".md");
+    const afterResolution = createLinkResolver(filesAfter).resolve(newBasename);
+    const basenameUnique = afterResolution.status === "resolved" && afterResolution.path === newRelative;
+    const newLinkTarget = basenameUnique ? newBasename : newRelative.replace(/\.md$/, "");
 
     // Create destination directory and move file
     await fs.mkdir(path.dirname(newAbsolute), { recursive: true });
-    const renameNote = () => fs.rename(oldAbsolute, newAbsolute);
+    const renameNote = async () => {
+      if (!caseOnlyRename) return fs.rename(oldAbsolute, newAbsolute);
+      // Some case-insensitive filesystems ignore a direct case-only rename; go through a temp name.
+      const tempAbsolute = path.join(path.dirname(oldAbsolute), `.${path.basename(oldAbsolute)}.${process.pid}.${Date.now()}.case-rename`);
+      await fs.rename(oldAbsolute, tempAbsolute);
+      try {
+        await fs.rename(tempAbsolute, newAbsolute);
+      } catch (e) {
+        await fs.rename(tempAbsolute, oldAbsolute);
+        throw e;
+      }
+    };
     // Under the note's lock, an in-flight append finishes first and a later one finds the old path gone.
     try {
       if (sourceStat.isDirectory()) await renameNote();
@@ -1040,26 +1066,16 @@ export async function createHandlers({ vaultPath: rawVaultPath, templateRegistry
 
     fileIndex.rename(oldRelative, newRelative);
 
-    // Determine new link target — use full path if basename is now ambiguous
-    const newBasename = path.basename(newRelative, ".md").toLowerCase();
-    const newEntries = fileIndex.basenameMap.get(newBasename);
-    const isAmbiguous = newEntries && newEntries.length > 1;
-    const newLinkTarget = isAmbiguous
-      ? newRelative.replace(/\.md$/, "")
-      : path.basename(newRelative, ".md");
-
-    // Determine old link target — pass full path so both [[basename]] and [[folder/name]] links match
-    const oldLinkTarget = oldRelative.replace(/\.md$/, "");
-
-    // Rewrite wikilinks in referring files
+    // Rewrite wikilinks in referring files, and in the moved note itself for its self-links
     let updatedCount = 0;
     const failedRewrites = [];
-    if (args.update_links !== false) {
+    if (updateLinks) {
       // Each rewrite is recomputed from the file's current content, not the scan-time copy.
-      for (const { file } of linkingFiles) {
+      const toRewrite = [...linkingFiles.map(({ file }) => file), newRelative];
+      for (const file of new Set(toRewrite)) {
         let result;
         try {
-          result = await mutateFile(path.join(vaultPath, file), (content) => rewriteWikilinks(content, oldLinkTarget, newLinkTarget));
+          result = await mutateFile(path.join(vaultPath, file), (content) => rewriteWikilinks(content, { resolver, movedFrom: oldRelative, newTarget: newLinkTarget }));
         } catch (e) {
           if (e.code === "ENOENT") continue;
           failedRewrites.push(file);
@@ -1077,8 +1093,9 @@ export async function createHandlers({ vaultPath: rawVaultPath, templateRegistry
     if (failedRewrites.length > 0) {
       text += `\nCould not update links in ${failedRewrites.length} file${failedRewrites.length === 1 ? "" : "s"} (changing on disk, read-only or locked); fix by hand: ${failedRewrites.join(", ")}`;
     }
-    if (isAmbiguous) {
-      text += `\n\n**Note:** Basename "${path.basename(newRelative, ".md")}" is ambiguous (${newEntries.length} files). Links were rewritten using full paths.`;
+    if (isNote && !basenameUnique) {
+      const sameName = filesAfter.filter(f => path.posix.basename(f, ".md").toLowerCase() === newBasename.toLowerCase()).length;
+      text += `\n\n**Note:** Basename "${newBasename}" is ambiguous (${sameName} files). Links were rewritten using full paths.`;
     }
 
     return { content: [{ type: "text", text }] };

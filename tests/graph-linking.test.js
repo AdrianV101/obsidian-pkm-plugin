@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import fs from "fs/promises";
 import path from "path";
 import os from "os";
-import { findFilesLinkingTo, buildIncomingIndex, createLinkResolver } from "../graph.js";
+import { findFilesLinkingTo, buildIncomingIndex, createLinkResolver, exploreNeighborhood } from "../graph.js";
 import { getAllMarkdownFiles } from "../utils.js";
 
 let tmpDir;
@@ -114,6 +114,28 @@ describe("buildIncomingIndex", () => {
     assert.deepEqual([...index.get("t.md")].sort(), ["a.md", "b.md"]);
     assert.equal(index.get("a.md"), undefined);
     assert.equal(index.get("u.md"), undefined);
+    await fs.rm(dir, { recursive: true });
+  });
+});
+
+describe("exploreNeighborhood node cap", () => {
+  const ids = Array.from({ length: 60 }, (_, i) => `c${String(i + 1).padStart(2, "0")}`);
+
+  it("keeps the first maxNodes nodes in BFS order (default 50) and counts the rest as omitted", async () => {
+    const files = { "hub.md": ids.map(id => `[[${id}]]`).join("\n") + "\n" };
+    for (const id of ids) files[`c/${id}.md`] = `# ${id}\n`;
+    const dir = await makeVault(files);
+    const { allFiles, resolver } = await graphInputs(dir);
+
+    for (const [maxNodes, shown] of [[undefined, 50], [5, 5]]) {
+      const result = await exploreNeighborhood({ startPath: "hub.md", vaultPath: dir, allFiles, resolver, depth: 1, maxNodes });
+      const shownPaths = [...result.depthGroups.values()].flat().map(n => n.path);
+      assert.deepEqual(shownPaths, ["hub.md", ...ids.slice(0, shown - 1).map(id => `c/${id}.md`)], `maxNodes ${maxNodes}`);
+      assert.equal(result.totalNodes, 61);
+      assert.equal(result.omittedNodes, 61 - shown);
+      assert.equal(result.discovered.size, 61);
+      assert.ok(result.discovered.has("c/c60.md"));
+    }
     await fs.rm(dir, { recursive: true });
   });
 });

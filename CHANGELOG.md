@@ -7,6 +7,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- **`vault_neighborhood` `max_nodes`** (default 50). Only the closest nodes (BFS order) are listed; the rest are summarised as "+N not shown". Graph proximity in `vault_semantic_search` (anchor) and `vault_suggest_links` (`graph_context`) only counts nodes inside that capped neighbourhood.
 - **Contract tests** (`tests/manifest.test.js`): `package.json` and `.claude-plugin/plugin.json` versions match, scripts referenced by `plugin.json`/`hooks.json` exist, `tools.js` and the handler map name the same tools, skill/agent/command frontmatter carries its required fields, hook commands quote their path expansions, and every module reachable from `hooks/*.js` imports only relative or `node:` specifiers (guards against a repeat of the v3.6.1 marketplace-install break).
 - **`npm run typecheck`**: `tsc` checks the JSDoc types (`jsconfig.json`, non-strict) locally and in CI.
 - **Release version check** (`scripts/check-release-version.js`, logic in `scripts/release-version.js`; the CLI has no entry-point guard, so it cannot silently pass): the publish workflow (build and publish jobs) refuses unless the tag is `v<version>` and matches both `package.json` and `plugin.json`.
@@ -30,6 +31,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - A fuzzy path that contains `/` must match the end of the real path (`research/findings` finds `projects/app/research/findings.md`; `wrong-folder/findings` no longer falls back to any `findings.md`). Ambiguity errors now say "pass the full path" instead of suggesting a `folder` parameter that read tools don't have.
 
 ### Fixed
+- **`vault_move` only rewrites links that point to the moved note.** With `a/note.md` and `b/note.md`, moving `a/note.md` no longer repoints `[[note]]` or `[[b/note]]`. Links inside the moved note that point to itself are updated. Links in code are left alone. Each rewrite is recomputed from the file's current content.
+- **Case-only renames** (`Note.md` → `note.md`) work on case-insensitive filesystems (macOS, Windows) instead of failing with "Destination already exists".
 - **Wikilinks inside code are no longer treated as links.** Fenced code blocks and inline code spans are ignored by `vault_links`, `vault_neighborhood`, `vault_link_health`, `vault_add_links`, `vault_suggest_links`, `vault_trash` and `vault_move`.
 - **Escaped table links** `[[note\|alias]]` now resolve to `note`.
 - **One link resolver for every graph tool.** Paths match case-insensitively. `[[folder/note]]` resolves by path suffix and no longer falls back to any `note.md`. `vault_add_links` deduplicates by resolved note instead of by basename.

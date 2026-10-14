@@ -6,6 +6,9 @@ import { toTagList } from "./helpers.js";
 
 const WIKILINK_REGEX = /\[\[([^\]\n]+)\]\]/g;
 
+/** Default cap on nodes shown by vault_neighborhood and used for graph proximity in semantic search. */
+export const DEFAULT_MAX_NODES = 50;
+
 /**
  * Split the inner text of a `[[...]]` link.
  * `\|` is the alias separator Obsidian uses inside tables; it is kept verbatim in `separator`.
@@ -162,41 +165,27 @@ export async function findFilesLinkingTo(targetPath, vaultPath, allFiles, resolv
 }
 
 /**
- * Rewrite wikilinks in content that match an old target to point to a new target.
- * Preserves aliases (|text) and heading/block references (#heading, ^block).
+ * Rewrite the wikilinks in `content` that `resolver` resolves unambiguously to `movedFrom`,
+ * pointing them at `newTarget`. `#heading` / `^block` suffixes, aliases (`|` or table-safe `\|`)
+ * and the embed `!` are preserved. Links inside code are never touched.
  *
  * @param {string} content - file content
- * @param {string} oldTarget - old link target (basename or path, without .md)
- * @param {string} newTarget - new link target (basename or path, without .md)
- * @returns {string} content with links rewritten
+ * @param {Object} options
+ * @param {{ resolve(target: string): LinkResolution }} options.resolver - built from the file list before the move
+ * @param {string} options.movedFrom - vault-relative path of the moved note before the move
+ * @param {string} options.newTarget - link text for the note's new location (basename or path, no .md)
+ * @returns {string}
  */
-export function rewriteWikilinks(content, oldTarget, newTarget) {
-  // Match [[...]] links, capturing the full inner text
-  return content.replace(/\[\[([^\]\n]+)\]\]/g, (fullMatch, inner) => {
-    // Split on | first to separate alias
-    const pipeIdx = inner.indexOf("|");
-    const linkPart = pipeIdx !== -1 ? inner.slice(0, pipeIdx) : inner;
-    const aliasPart = pipeIdx !== -1 ? inner.slice(pipeIdx) : ""; // includes the |
-
-    // Split link part on # to separate heading/block ref
-    const hashIdx = linkPart.indexOf("#");
-    const pathPart = hashIdx !== -1 ? linkPart.slice(0, hashIdx) : linkPart;
-    const fragPart = hashIdx !== -1 ? linkPart.slice(hashIdx) : ""; // includes the #
-
-    // Check if this link's path matches the old target
-    const pathTrimmed = pathPart.trim();
-    const pathNoExt = pathTrimmed.endsWith(".md") ? pathTrimmed.slice(0, -3) : pathTrimmed;
-
-    // Match by exact path or by basename
-    const oldNoExt = oldTarget.endsWith(".md") ? oldTarget.slice(0, -3) : oldTarget;
-    const oldBasename = oldNoExt.includes("/") ? oldNoExt.split("/").pop() : oldNoExt;
-
-    if (pathNoExt.toLowerCase() === oldNoExt.toLowerCase() || pathNoExt.toLowerCase() === oldBasename.toLowerCase()) {
-      return `[[${newTarget}${fragPart}${aliasPart}]]`;
-    }
-
-    return fullMatch;
-  });
+export function rewriteWikilinks(content, { resolver, movedFrom, newTarget }) {
+  let out = "";
+  let last = 0;
+  for (const link of findWikilinks(content)) {
+    const resolution = resolver.resolve(link.target + link.fragment);
+    if (resolution.status !== "resolved" || resolution.path !== movedFrom) continue;
+    out += content.slice(last, link.start) + `[[${newTarget}${link.fragment}${link.separator}${link.alias}]]`;
+    last = link.end;
+  }
+  return out + content.slice(last);
 }
 
 // --- Link Discovery ---
@@ -257,11 +246,14 @@ function getIncomingLinks(filePath, incomingIndex) {
  * @param {{ resolve(target: string): LinkResolution }} options.resolver - from createLinkResolver(allFiles)
  * @param {number} [options.depth=2] - maximum traversal depth
  * @param {"both"|"outgoing"|"incoming"} [options.direction="both"] - link direction to follow
+ * @param {number} [options.maxNodes=DEFAULT_MAX_NODES] - nodes kept in depthGroups, closest first (BFS order)
  * @returns {Promise<NeighborhoodResult>}
  *
  * @typedef {Object} NeighborhoodResult
- * @property {Map<number, NodeInfo[]>} depthGroups - nodes grouped by hop distance
+ * @property {Map<number, NodeInfo[]>} depthGroups - the first maxNodes nodes, grouped by hop distance
  * @property {number} totalNodes - total nodes discovered
+ * @property {number} omittedNodes - discovered nodes left out of depthGroups by maxNodes
+ * @property {Set<string>} discovered - paths of every discovered node, shown or not
  *
  * @typedef {Object} NodeInfo
  * @property {string} path - vault-relative file path
@@ -279,6 +271,7 @@ export async function exploreNeighborhood({
   resolver,
   depth: maxDepth = 2,
   direction = "both",
+  maxNodes = DEFAULT_MAX_NODES,
 }) {
   // Verify start file exists
   const startFullPath = path.resolve(vaultPath, startPath);
@@ -299,7 +292,7 @@ export async function exploreNeighborhood({
 
   // BFS state
   const visited = new Set();
-  const depthGroups = new Map();
+  const order = []; // NodeInfo in BFS order; the first maxNodes are shown
   let queue = [{ path: startPath, depth: 0, ambiguous: false }];
 
   while (queue.length > 0) {
@@ -327,11 +320,7 @@ export async function exploreNeighborhood({
         // File deleted between listing and reading — record node but skip link discovery
       }
 
-      // Record node
-      if (!depthGroups.has(depth)) {
-        depthGroups.set(depth, []);
-      }
-      depthGroups.get(depth).push({ path: nodePath, depth, ambiguous, metadata });
+      order.push({ path: nodePath, depth, ambiguous, metadata });
 
       // Don't discover links beyond max depth
       if (depth >= maxDepth) continue;
@@ -372,9 +361,17 @@ export async function exploreNeighborhood({
     queue = nextQueue;
   }
 
+  const depthGroups = new Map();
+  for (const node of order.slice(0, maxNodes)) {
+    if (!depthGroups.has(node.depth)) depthGroups.set(node.depth, []);
+    depthGroups.get(node.depth).push(node);
+  }
+
   return {
     depthGroups,
-    totalNodes: visited.size,
+    totalNodes: order.length,
+    omittedNodes: Math.max(0, order.length - maxNodes),
+    discovered: new Set(order.map(n => n.path)),
   };
 }
 
@@ -416,6 +413,10 @@ export function formatNeighborhood(result, { startPath, depth, direction, format
 
       output += line + "\n";
     }
+  }
+
+  if (result.omittedNodes > 0) {
+    output += `\n+${result.omittedNodes} not shown (raise max_nodes or lower depth to see them)\n`;
   }
 
   return output;

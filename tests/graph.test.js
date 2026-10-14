@@ -245,3 +245,17 @@ describe("formatNeighborhood", () => {
     assert.ok(result.includes("Center"));
   });
 });
+
+describe("formatNeighborhood omitted nodes", () => {
+  it("prints a '+N not shown' line only when nodes were omitted", () => {
+    const depthGroups = new Map([[0, [{ path: "start.md", depth: 0, ambiguous: false, metadata: { type: null, status: null, tags: [] } }]]]);
+    for (const [omittedNodes, expected] of [[11, true], [0, false], [undefined, false]]) {
+      const text = formatNeighborhood(
+        { depthGroups, totalNodes: 1 + (omittedNodes || 0), omittedNodes },
+        { startPath: "start.md", depth: 2, direction: "both" }
+      );
+      assert.equal(text.includes("+11 not shown"), expected, `omittedNodes ${omittedNodes}`);
+      assert.equal(/not shown/.test(text), expected, `omittedNodes ${omittedNodes}`);
+    }
+  });
+});

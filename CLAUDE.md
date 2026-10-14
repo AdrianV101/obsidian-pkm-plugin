@@ -75,7 +75,7 @@ Explores the graph neighborhood around a note by traversing wikilinks using BFS.
 - Resolves wikilink targets to actual file paths (handles `[[note]]`, `[[folder/note]]`, `[[note|alias]]`, `[[note#heading]]`)
 - Detects ambiguous links (multiple files with same basename) and annotates them
 - Per-call indexes: basename resolution map + incoming link index (no persistent state)
-- Params: `path` (required), `depth` (default: 2), `direction` (`"both"` | `"outgoing"` | `"incoming"`), `include_semantic` (boolean, appends unlinked semantic results), `semantic_limit` (default: 5)
+- Params: `path` (required), `depth` (default: 2), `direction` (`"both"` | `"outgoing"` | `"incoming"`), `include_semantic` (boolean, appends unlinked semantic results), `semantic_limit` (default: 5), `max_nodes` (default: 50; extra nodes reported as "+N not shown")
 - Implementation: `graph.js` module (link resolution, BFS traversal, formatting)
 
 ### vault_semantic_search (Semantic Similarity Search)
