@@ -344,6 +344,79 @@ describe("FileIndex", () => {
     });
   }
 
+  describe("notes moved or deleted outside the plugin after build", () => {
+    let vault;
+    let now;
+    let index;
+
+    // The clock never advances, so only an eviction (never the throttle window) can allow a rescan.
+    async function buildAfterAMiss(files) {
+      vault = await tmp("index-evict-");
+      for (const rel of files) await addNote(vault, rel);
+      now = 50_000;
+      index = await FileIndex.build(vault, { now: () => now });
+      await assert.rejects(() => index.resolveFuzzy("no-such-note"), /File not found/);
+    }
+
+    async function moveOnDisk(from, to) {
+      await fs.mkdir(path.dirname(path.join(vault, to)), { recursive: true });
+      await fs.rename(path.join(vault, from), path.join(vault, to));
+    }
+
+    after(async () => {
+      if (vault) await fs.rm(vault, { recursive: true, force: true });
+    });
+
+    it("resolveFuzzy finds a note renamed on disk at its new location, even inside the throttle window of an earlier miss", async () => {
+      await buildAfterAMiss(["inbox/foo.md"]);
+      await moveOnDisk("inbox/foo.md", "projects/foo.md");
+      assert.equal(await index.resolveFuzzy("foo"), "projects/foo.md");
+      assert.equal(index.has("inbox/foo.md"), false);
+    });
+
+    it("an exact lookup of the new path does not leave a phantom match at the old one", async () => {
+      await buildAfterAMiss(["inbox/foo.md"]);
+      await moveOnDisk("inbox/foo.md", "projects/foo.md");
+      assert.equal(await index.resolveFuzzy("projects/foo"), "projects/foo.md");
+      assert.equal(await index.resolveFuzzy("foo"), "projects/foo.md");
+    });
+
+    it("exists() is false for a note deleted on disk, and the stale entry is dropped", async () => {
+      await buildAfterAMiss(["inbox/gone.md"]);
+      await fs.rm(path.join(vault, "inbox", "gone.md"));
+      assert.equal(await index.exists("inbox/gone.md"), false);
+      assert.equal(index.has("inbox/gone.md"), false);
+      await assert.rejects(() => index.resolveFuzzy("gone"), /File not found/);
+    });
+
+    it("a fuzzy candidate deleted on disk no longer makes a name ambiguous", async () => {
+      await buildAfterAMiss(["a/twin.md", "b/twin.md"]);
+      await fs.rm(path.join(vault, "a", "twin.md"));
+      assert.equal(await index.resolveFuzzy("twin"), "b/twin.md");
+    });
+
+    it("a rescan that fails does not use up the throttle window", { skip: IS_WIN && "POSIX permission bits" }, async (t) => {
+      vault = await tmp("index-rescan-fail-");
+      await addNote(vault, "readable/a.md");
+      now = 50_000;
+      index = await FileIndex.build(vault, { now: () => now });
+      const locked = path.join(vault, "locked");
+      await fs.mkdir(locked);
+      await fs.chmod(locked, 0o000);
+      try {
+        try {
+          await fs.readdir(locked);
+          return t.skip("running with permission to read any directory");
+        } catch { /* expected: the rescan below will fail too */ }
+        await assert.rejects(() => index.resolveFuzzy("late-note"), { code: "EACCES" });
+      } finally {
+        await fs.chmod(locked, 0o755);
+      }
+      await addNote(vault, "readable/late-note.md");
+      assert.equal(await index.resolveFuzzy("late-note"), "readable/late-note.md");
+    });
+  });
+
   it("on a case-insensitive filesystem an exact path in another case resolves to the on-disk spelling without a duplicate entry", async (t) => {
     const probe = await tmp("index-case-");
     await fs.writeFile(path.join(probe, "Probe.md"), "p");

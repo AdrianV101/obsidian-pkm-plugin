@@ -180,7 +180,9 @@ function isIndexable(rel) {
 /**
  * Live index of the vault's markdown notes. Keys are NFC-normalised so a note
  * stored under an NFD name (macOS) is found by its NFC spelling; values are the
- * on-disk spelling, which is what callers must use to open the file.
+ * on-disk spelling, which is what callers must use to open the file. Lookups
+ * re-check cached entries on disk, so a note moved or deleted outside the plugin
+ * is dropped instead of resolving to a path that no longer exists.
  */
 export class FileIndex {
   #root;
@@ -230,10 +232,20 @@ export class FileIndex {
     const direct = (await this.#lookup(rel)) ?? (rel.endsWith(".md") ? null : await this.#lookup(rel + ".md"));
     if (direct !== null) return direct;
 
-    let matches = this.#fuzzyMatches(rel);
-    if (matches.length === 0 && this.#now() - this.#lastRescan >= RESCAN_THROTTLE_MS) {
-      this.#lastRescan = this.#now();
-      await this.listFresh();
+    let matches = [];
+    let evicted = false;
+    for (const candidate of this.#fuzzyMatches(rel)) {
+      if (await this.#isFileOnDisk(candidate)) {
+        matches.push(candidate);
+      } else {
+        this.remove(candidate);
+        evicted = true;
+      }
+    }
+    // A vanished candidate proves the vault changed outside the plugin, so rescan at once (each
+    // eviction is a one-off); a plain miss rescans at most once per throttle window.
+    if (evicted || (matches.length === 0 && this.#now() - this.#lastRescan >= RESCAN_THROTTLE_MS)) {
+      await this.#rescan();
       matches = this.#fuzzyMatches(rel);
     }
     if (matches.length === 1) return matches[0];
@@ -308,6 +320,28 @@ export class FileIndex {
     return this.#byBase;
   }
 
+  /** A rescan that fails does not use up the throttle window. */
+  async #rescan() {
+    const previous = this.#lastRescan;
+    this.#lastRescan = this.#now();
+    try {
+      await this.listFresh();
+    } catch (e) {
+      this.#lastRescan = previous;
+      throw e;
+    }
+  }
+
+  /** Whether a cached entry is still a file on disk; an unreadable location counts as present. */
+  async #isFileOnDisk(rel) {
+    try {
+      return (await fs.stat(resolveLexical(rel, this.#root))).isFile();
+    } catch (e) {
+      if (e.code === "ENOENT" || e.code === "ENOTDIR") return false;
+      return true;
+    }
+  }
+
   #fuzzyMatches(rel) {
     const needle = keyOf(rel).toLowerCase();
     if (needle.includes("/")) {
@@ -320,10 +354,13 @@ export class FileIndex {
     return [...(this.#byBase.get(baseKeyOf(needle)) ?? [])];
   }
 
-  /** Cached lookup, else fs.stat; a hit is cached under its real, on-disk spelling. */
+  /** Cached lookup (re-checked on disk), else fs.stat; a hit is cached under its real, on-disk spelling. */
   async #lookup(rel) {
     const cached = this.#byKey.get(keyOf(rel));
-    if (cached !== undefined) return cached;
+    if (cached !== undefined) {
+      if (await this.#isFileOnDisk(cached)) return cached;
+      this.remove(cached);
+    }
     if (!isIndexable(rel)) return null;
     const abs = resolveLexical(rel, this.#root);
     let real;

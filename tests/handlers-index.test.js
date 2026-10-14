@@ -52,6 +52,22 @@ describe("the file index follows the vault after createHandlers", () => {
     }
   });
 
+  it("a note moved on disk after createHandlers is read at its new location by name, with no phantom ambiguity", async () => {
+    const v = await makeVault();
+    try {
+      assert.match((await v.handlers.get("vault_read")({ path: "target" })).content[0].text, /# Target/);
+      await fs.mkdir(path.join(v.root, "projects"), { recursive: true });
+      await fs.rename(path.join(v.root, "notes", "target.md"), path.join(v.root, "projects", "target.md"));
+
+      assert.match((await v.handlers.get("vault_read")({ path: "target" })).content[0].text, /# Target/);
+      assert.match((await v.handlers.get("vault_read")({ path: "projects/target" })).content[0].text, /# Target/);
+      assert.match((await v.handlers.get("vault_read")({ path: "target" })).content[0].text, /# Target/);
+      await assert.rejects(() => v.handlers.get("vault_read")({ path: "notes/target.md" }), /File not found/);
+    } finally {
+      await v.cleanup();
+    }
+  });
+
   it("vault_write, vault_move and vault_trash keep fuzzy resolution in step", async () => {
     const v = await makeVault();
     try {
