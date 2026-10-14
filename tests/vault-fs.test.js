@@ -11,6 +11,8 @@ import {
   assertWritableNote,
   assertWritableFolder,
   FileIndex,
+  mutateFile,
+  writeNew,
 } from "../vault-fs.js";
 
 const IS_WIN = process.platform === "win32";
@@ -353,5 +355,181 @@ describe("FileIndex", () => {
     const index = await FileIndex.build(root);
     assert.equal(await index.resolveFuzzy("NOTES/ALPHA.md"), "notes/alpha.md");
     assert.equal(index.list().filter((f) => f.toLowerCase() === "notes/alpha.md").length, 1);
+  });
+});
+
+// ─── mutateFile / writeNew ────────────────────────────────────────────
+
+async function tempNames(dir) {
+  return (await fs.readdir(dir)).filter((n) => n.endsWith(".tmp"));
+}
+
+describe("mutateFile", () => {
+  let dir;
+
+  before(async () => {
+    dir = await tmp("mutate-");
+  });
+
+  after(async () => {
+    await fs.rm(dir, { recursive: true, force: true });
+  });
+
+  async function note(name, content) {
+    const p = path.join(dir, name);
+    await fs.writeFile(p, content);
+    return p;
+  }
+
+  it("writes the transform's result and returns the content before and after", async () => {
+    const p = await note("basic.md", "one\n");
+    const result = await mutateFile(p, (c) => c + "two\n");
+    assert.deepEqual(result, { before: "one\n", after: "one\ntwo\n" });
+    assert.equal(await fs.readFile(p, "utf-8"), "one\ntwo\n");
+  });
+
+  it("serialises concurrent updates to one file so every change lands", async () => {
+    const p = await note("concurrent.md", "");
+    await Promise.all(Array.from({ length: 10 }, (_, i) => mutateFile(p, (c) => c + `line ${i}\n`)));
+    const lines = (await fs.readFile(p, "utf-8")).trim().split("\n").sort();
+    assert.deepEqual(lines, Array.from({ length: 10 }, (_, i) => `line ${i}`).sort());
+  });
+
+  it("re-reads and re-applies the transform when the file changes between read and write", async () => {
+    const p = await note("external.md", "start\n");
+    let calls = 0;
+    await mutateFile(p, async (c) => {
+      calls++;
+      if (calls === 1) await fs.appendFile(p, "external\n");
+      return c + "ours\n";
+    });
+    assert.equal(calls, 2);
+    assert.equal(await fs.readFile(p, "utf-8"), "start\nexternal\nours\n");
+  });
+
+  it("gives up after maxAttempts when the file keeps changing, without writing its own result", async () => {
+    const p = await note("busy.md", "start\n");
+    let calls = 0;
+    await assert.rejects(
+      () => mutateFile(p, async (c) => {
+        calls++;
+        await fs.appendFile(p, `external ${calls}\n`);
+        return c + "ours\n";
+      }, { maxAttempts: 3 }),
+      (err) => {
+        assert.equal(err.code, "ECONFLICT");
+        assert.match(err.message, /Gave up updating busy\.md after 3 attempts/);
+        return true;
+      }
+    );
+    assert.equal(calls, 3);
+    assert.equal(await fs.readFile(p, "utf-8"), "start\nexternal 1\nexternal 2\nexternal 3\n");
+  });
+
+  const outcomes = [
+    ["a successful update", async (p) => mutateFile(p, (c) => c + "x")],
+    ["a transform that throws", async (p) => assert.rejects(() => mutateFile(p, () => { throw new Error("boom"); }), /boom/)],
+    ["giving up", async (p) => assert.rejects(() => mutateFile(p, async (c) => { await fs.appendFile(p, "e"); return c; }, { maxAttempts: 2 }))],
+  ];
+  for (const [label, run] of outcomes) {
+    it(`leaves no temp file behind after ${label}`, async () => {
+      const sub = await fs.mkdtemp(path.join(dir, "clean-"));
+      const p = path.join(sub, "n.md");
+      await fs.writeFile(p, "n");
+      await run(p);
+      assert.deepEqual(await tempNames(sub), []);
+    });
+  }
+
+  it("throws ENOENT as-is for a missing file", async () => {
+    await assert.rejects(() => mutateFile(path.join(dir, "missing.md"), (c) => c), { code: "ENOENT" });
+  });
+
+  it("does not touch the file when the transform returns identical content", async () => {
+    const p = await note("noop.md", "same");
+    const past = new Date(Date.now() - 60_000);
+    await fs.utimes(p, past, past);
+    const { mtimeMs } = await fs.stat(p);
+    await mutateFile(p, (c) => c);
+    assert.equal((await fs.stat(p)).mtimeMs, mtimeMs);
+  });
+
+  it("replaces the file by rename: a reader that opened it before the update still reads the complete previous version",
+    { skip: IS_WIN && "Windows cannot rename over a file another handle holds open" }, async () => {
+      const p = await note("reader.md", "old version\n");
+      const handle = await fs.open(p, "r");
+      try {
+        await mutateFile(p, () => "new version\n");
+        assert.equal(await handle.readFile("utf-8"), "old version\n");
+        assert.equal(await fs.readFile(p, "utf-8"), "new version\n");
+      } finally {
+        await handle.close();
+      }
+    });
+
+  it("keeps the note's permission bits", { skip: IS_WIN && "POSIX permission bits" }, async () => {
+    const p = await note("mode.md", "m");
+    await fs.chmod(p, 0o600);
+    await mutateFile(p, (c) => c + "!");
+    assert.equal((await fs.stat(p)).mode & 0o777, 0o600);
+  });
+
+  it("updates a symlinked note's target and keeps the symlink", { skip: IS_WIN && "file symlinks need privileges on Windows" }, async () => {
+    const target = await note("real.md", "real\n");
+    const link = path.join(dir, "link.md");
+    await fs.symlink(target, link);
+    await mutateFile(link, (c) => c + "appended\n");
+    assert.equal((await fs.lstat(link)).isSymbolicLink(), true);
+    assert.equal(await fs.readFile(target, "utf-8"), "real\nappended\n");
+  });
+});
+
+describe("writeNew", () => {
+  let dir;
+
+  before(async () => {
+    dir = await tmp("writenew-");
+  });
+
+  after(async () => {
+    await fs.rm(dir, { recursive: true, force: true });
+  });
+
+  it("creates the file with the given content and leaves no temp file", async () => {
+    const p = path.join(dir, "created.md");
+    await writeNew(p, "hello\n");
+    assert.equal(await fs.readFile(p, "utf-8"), "hello\n");
+    assert.deepEqual(await tempNames(dir), []);
+  });
+
+  it("fails with EEXIST on an existing file, leaving it untouched and no temp file", async () => {
+    const p = path.join(dir, "existing.md");
+    await fs.writeFile(p, "original");
+    await assert.rejects(() => writeNew(p, "replacement"), (err) => {
+      assert.equal(err.code, "EEXIST");
+      assert.match(err.message, /^File already exists: /);
+      return true;
+    });
+    assert.equal(await fs.readFile(p, "utf-8"), "original");
+    assert.deepEqual(await tempNames(dir), []);
+  });
+
+  it("lets exactly one of two concurrent creations of the same path succeed", async () => {
+    const p = path.join(dir, "race.md");
+    const results = await Promise.allSettled([writeNew(p, "first"), writeNew(p, "second")]);
+    const fulfilled = results.filter((r) => r.status === "fulfilled");
+    assert.equal(fulfilled.length, 1);
+    const winner = results[0].status === "fulfilled" ? "first" : "second";
+    assert.equal(await fs.readFile(p, "utf-8"), winner);
+  });
+
+  it("falls back to an exclusive copy when the filesystem refuses hard links, keeping fail-if-exists", async () => {
+    const noLinks = { link: async () => { throw Object.assign(new Error("not supported"), { code: "EPERM" }); } };
+    const p = path.join(dir, "nolink.md");
+    await writeNew(p, "copied", noLinks);
+    assert.equal(await fs.readFile(p, "utf-8"), "copied");
+    await assert.rejects(() => writeNew(p, "again", noLinks), { code: "EEXIST" });
+    assert.equal(await fs.readFile(p, "utf-8"), "copied");
+    assert.deepEqual(await tempNames(dir), []);
   });
 });

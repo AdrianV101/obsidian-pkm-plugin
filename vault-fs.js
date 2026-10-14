@@ -1,5 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import crypto from "node:crypto";
 
 const ESCAPE_MESSAGE = "Path escapes vault directory. Paths must be relative to the vault root (e.g., '01-Projects/MyApp/_index.md').";
 
@@ -339,5 +340,101 @@ export class FileIndex {
     if (!isIndexable(realRel)) return null;
     this.add(realRel);
     return this.#byKey.get(keyOf(realRel));
+  }
+}
+
+// ── Atomic writes ────────────────────────────────────────────────────
+
+/** Per-file promise chains; module-level so every handler instance in the process shares them. */
+const fileQueues = new Map();
+
+function withFileLock(key, fn) {
+  const previous = fileQueues.get(key) ?? Promise.resolve();
+  const run = previous.then(fn, fn);
+  const tail = run.then(() => {}, () => {});
+  fileQueues.set(key, tail);
+  tail.then(() => {
+    if (fileQueues.get(key) === tail) fileQueues.delete(key);
+  });
+  return run;
+}
+
+function tempPathFor(target) {
+  const suffix = `${process.pid}.${crypto.randomBytes(6).toString("hex")}.tmp`;
+  return path.join(path.dirname(target), `.${path.basename(target)}.${suffix}`);
+}
+
+async function replaceFile(target, content, mode) {
+  const tmp = tempPathFor(target);
+  try {
+    await fs.writeFile(tmp, content, { encoding: "utf-8", flag: "wx", flush: true });
+    await fs.chmod(tmp, mode & 0o7777);
+    await fs.rename(tmp, target);
+  } catch (e) {
+    await fs.rm(tmp, { force: true });
+    throw e;
+  }
+}
+
+function sameVersion(a, b) {
+  return a.mtimeMs === b.mtimeMs && a.size === b.size && a.ino === b.ino;
+}
+
+/**
+ * The only way to modify an existing note: serialised per file in this process,
+ * re-applied when another writer changes the file mid-update, and swapped in by
+ * rename so readers never see a partial file.
+ * @param {string} absPath
+ * @param {(content: string) => string | Promise<string>} transform
+ * @param {{ maxAttempts?: number }} [options]
+ * @returns {Promise<{ before: string, after: string }>}
+ * @throws ENOENT (as-is) when the file does not exist
+ */
+export async function mutateFile(absPath, transform, { maxAttempts = 3 } = {}) {
+  const target = await fs.realpath(absPath);
+  return withFileLock(target, async () => {
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      const statBefore = await fs.stat(target);
+      const before = await fs.readFile(target, "utf-8");
+      const after = await transform(before);
+      if (typeof after !== "string") throw new TypeError("mutateFile transform must return a string");
+      const statAfter = await fs.stat(target);
+      if (!sameVersion(statBefore, statAfter)) continue;
+      if (after !== before) await replaceFile(target, after, statBefore.mode);
+      return { before, after };
+    }
+    const err = Object.assign(new Error(`Gave up updating ${path.basename(absPath)} after ${maxAttempts} attempts: it kept changing on disk. Try again.`), { code: "ECONFLICT" });
+    throw err;
+  });
+}
+
+const LINK_UNSUPPORTED = new Set(["EPERM", "ENOTSUP", "EOPNOTSUPP", "ENOSYS"]);
+
+/**
+ * Create a file atomically; fails if it already exists.
+ * @param {string} absPath
+ * @param {string} content
+ * @param {{ link?: (from: string, to: string) => Promise<void> }} [options] link is a test seam
+ * @throws {Error} code "EEXIST" when the target exists
+ */
+export async function writeNew(absPath, content, { link = (from, to) => fs.link(from, to) } = {}) {
+  const tmp = tempPathFor(absPath);
+  await fs.writeFile(tmp, content, { encoding: "utf-8", flag: "wx", flush: true });
+  try {
+    try {
+      await link(tmp, absPath);
+    } catch (e) {
+      if (!LINK_UNSUPPORTED.has(e.code)) throw e;
+      // Filesystems without hard links (exFAT, some network shares): exclusive copy keeps fail-if-exists.
+      await fs.copyFile(tmp, absPath, fs.constants.COPYFILE_EXCL);
+    }
+  } catch (e) {
+    if (e.code === "EEXIST") {
+      const err = Object.assign(new Error(`File already exists: ${absPath}`, { cause: e }), { code: "EEXIST" });
+      throw err;
+    }
+    throw e;
+  } finally {
+    await fs.rm(tmp, { force: true });
   }
 }

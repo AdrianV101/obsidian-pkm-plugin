@@ -30,6 +30,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - A fuzzy path that contains `/` must match the end of the real path (`research/findings` finds `projects/app/research/findings.md`; `wrong-folder/findings` no longer falls back to any `findings.md`). Ambiguity errors now say "pass the full path" instead of suggesting a `folder` parameter that read tools don't have.
 
 ### Fixed
+- Note writes are atomic and safe against concurrent writers. Every modification goes through a per-file lock, re-applies itself if the file changed on disk mid-update (up to 3 attempts), and swaps the new content in by rename, so readers never see a half-written note. `vault_move` recomputes each link rewrite from the referrer's current content instead of a stale copy. New notes are created atomically (temp file + hard link).
+- `vault_append` keeps CRLF notes CRLF instead of inserting LF-only lines.
 - A `VAULT_PATH` with a trailing slash no longer makes every path look like it escapes the vault (server and session-start hook).
 - **`vault_read` with `heading: "2026-10-08"` finds `## 2026-10-08`.** A heading query without `#`s used to fail.
 - **Frontmatter, heading and code-block detection share one parser (`markdown.js`).** CRLF notes, `~~~` fences and unclosed fences are now handled the same way in reads, peeks, inline tags and semantic chunking.

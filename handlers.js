@@ -23,12 +23,48 @@ import {
 } from "./helpers.js";
 import { exploreNeighborhood, formatNeighborhood, findFilesLinkingTo, rewriteWikilinks, extractWikilinks, resolveLink, buildIncomingIndex } from "./graph.js";
 import { getAllMarkdownFiles, extractFrontmatter } from "./utils.js";
-import { normalizeVaultRoot, resolveSafe, hasDotSegment, assertWritableReal, FileIndex, toVaultRel } from "./vault-fs.js";
+import { mutateFile, writeNew, normalizeVaultRoot, resolveSafe, hasDotSegment, assertWritableReal, FileIndex, toVaultRel } from "./vault-fs.js";
 import { findSection, matchHeadings, parseHeadings, splitFrontmatter } from "./markdown.js";
 
 function positiveInt(value, fallback) {
   const n = Math.floor(Number(value));
   return Number.isFinite(n) && n >= 1 ? n : fallback;
+}
+
+/**
+ * Insert `args.content` into a note per vault_append's heading/position rules, using
+ * the note's own line ending so a CRLF note stays CRLF.
+ * @param {string} existing
+ * @param {{ path: string, content: string, heading?: string, position?: string }} args
+ * @returns {string}
+ */
+function applyAppend(existing, args) {
+  const eol = existing.includes("\r\n") ? "\r\n" : "\n";
+  const content = args.content.replace(/\r?\n/g, eol);
+  if (args.position) {
+    if (!args.heading) {
+      throw new Error("'heading' is required when 'position' is specified");
+    }
+    const range = findSection(existing, args.heading);
+    if (args.position === "before_heading") {
+      return existing.slice(0, range.headingStart) + content + eol + existing.slice(range.headingStart);
+    }
+    if (args.position === "after_heading") {
+      return existing.slice(0, range.afterHeading) + content + eol + existing.slice(range.afterHeading);
+    }
+    if (args.position === "end_of_section") {
+      const before = existing.slice(0, range.sectionEnd);
+      const separator = before.length > 0 && !before.endsWith("\n") ? eol : "";
+      return before + separator + content + eol + existing.slice(range.sectionEnd);
+    }
+    throw new Error(`Unknown position: ${args.position}`);
+  }
+  // Without a position, an unknown heading falls back to appending at the end
+  if (args.heading && matchHeadings(parseHeadings(existing), args.heading).length > 0) {
+    const range = findSection(existing, args.heading);
+    return existing.slice(0, range.afterHeading) + content + eol + existing.slice(range.afterHeading);
+  }
+  return existing + eol + content;
 }
 
 async function isDirectory(absPath) {
@@ -212,9 +248,8 @@ export async function createHandlers({ vaultPath: rawVaultPath, templateRegistry
       await fs.mkdir(path.dirname(filePath), { recursive: true });
     }
 
-    // Atomic create — wx flag fails if file already exists (no TOCTOU race)
     try {
-      await fs.writeFile(filePath, substituted, { encoding: "utf-8", flag: "wx" });
+      await writeNew(filePath, substituted);
     } catch (e) {
       if (e.code === "EEXIST") {
         throw new Error(`File already exists: ${outputPath}. Use vault_edit or vault_append to modify existing files.`, { cause: e });
@@ -242,48 +277,14 @@ export async function createHandlers({ vaultPath: rawVaultPath, templateRegistry
     }
     const filePath = await safe(args.path);
     await writableNote(args.path);
-    let existing;
     try {
-      existing = await fs.readFile(filePath, "utf-8");
+      await mutateFile(filePath, (existing) => applyAppend(existing, args));
     } catch (e) {
       if (e.code === "ENOENT") {
         throw new Error(`File not found: ${args.path}. Use vault_write to create new files.`, { cause: e });
       }
       throw e;
     }
-
-    let newContent;
-    if (args.position) {
-      if (!args.heading) {
-        throw new Error("'heading' is required when 'position' is specified");
-      }
-      const range = findSection(existing, args.heading);
-
-      if (args.position === "before_heading") {
-        newContent = existing.slice(0, range.headingStart) + args.content + "\n" + existing.slice(range.headingStart);
-      } else if (args.position === "after_heading") {
-        newContent = existing.slice(0, range.afterHeading) + args.content + "\n" + existing.slice(range.afterHeading);
-      } else if (args.position === "end_of_section") {
-        const before = existing.slice(0, range.sectionEnd);
-        const after = existing.slice(range.sectionEnd);
-        const separator = before.length > 0 && !before.endsWith("\n") ? "\n" : "";
-        newContent = before + separator + args.content + "\n" + after;
-      } else {
-        throw new Error(`Unknown position: ${args.position}`);
-      }
-    } else if (args.heading) {
-      // Without a position, an unknown heading falls back to appending at the end
-      if (matchHeadings(parseHeadings(existing), args.heading).length === 0) {
-        newContent = existing + "\n" + args.content;
-      } else {
-        const range = findSection(existing, args.heading);
-        newContent = existing.slice(0, range.afterHeading) + args.content + "\n" + existing.slice(range.afterHeading);
-      }
-    } else {
-      newContent = existing + "\n" + args.content;
-    }
-
-    await fs.writeFile(filePath, newContent, "utf-8");
     return { content: [{ type: "text", text: `Appended to ${linkFor(args.path)}${args.position ? ` (${args.position})` : ""}` }] };
   }
 
@@ -293,16 +294,19 @@ export async function createHandlers({ vaultPath: rawVaultPath, templateRegistry
     }
     const filePath = await safe(args.path);
     await writableNote(args.path);
-    let content;
+    let count = 0;
     try {
-      content = await fs.readFile(filePath, "utf-8");
+      await mutateFile(filePath, (content) => {
+        count = countOccurrences(content, args.old_string);
+        if (count !== 1) return content;
+        return content.replace(args.old_string, () => args.new_string);
+      });
     } catch (e) {
       if (e.code === "ENOENT") {
         throw new Error(`File not found: ${args.path}`, { cause: e });
       }
       throw e;
     }
-    const count = countOccurrences(content, args.old_string);
 
     if (count === 0) {
       return {
@@ -318,8 +322,6 @@ export async function createHandlers({ vaultPath: rawVaultPath, templateRegistry
       };
     }
 
-    const newContent = content.replace(args.old_string, () => args.new_string);
-    await fs.writeFile(filePath, newContent, "utf-8");
     return { content: [{ type: "text", text: `Successfully edited ${linkFor(args.path)}` }] };
   }
 
@@ -993,12 +995,16 @@ export async function createHandlers({ vaultPath: rawVaultPath, templateRegistry
     // Rewrite wikilinks in referring files
     let updatedCount = 0;
     if (args.update_links !== false) {
-      for (const { file, content } of linkingFiles) {
-        const updated = rewriteWikilinks(content, oldLinkTarget, newLinkTarget);
-        if (updated !== content) {
-          await fs.writeFile(path.join(vaultPath, file), updated, "utf-8");
-          updatedCount++;
+      // Each rewrite is recomputed from the file's current content, not the scan-time copy.
+      for (const { file } of linkingFiles) {
+        let result;
+        try {
+          result = await mutateFile(path.join(vaultPath, file), (content) => rewriteWikilinks(content, oldLinkTarget, newLinkTarget));
+        } catch (e) {
+          if (e.code === "ENOENT") continue;
+          throw e;
         }
+        if (result.after !== result.before) updatedCount++;
       }
     }
 
@@ -1017,17 +1023,19 @@ export async function createHandlers({ vaultPath: rawVaultPath, templateRegistry
   async function handleUpdateFrontmatter(args) {
     const filePath = await safe(args.path);
     await writableNote(args.path);
-    let content;
+    let frontmatter;
     try {
-      content = await fs.readFile(filePath, "utf-8");
+      await mutateFile(filePath, (content) => {
+        const updated = updateFrontmatter(content, args.fields || {});
+        frontmatter = updated.frontmatter;
+        return updated.content;
+      });
     } catch (e) {
       if (e.code === "ENOENT") {
         throw new Error(`File not found: ${args.path}`, { cause: e });
       }
       throw e;
     }
-    const { content: newContent, frontmatter } = updateFrontmatter(content, args.fields || {});
-    await fs.writeFile(filePath, newContent, "utf-8");
 
     const lines = Object.entries(frontmatter).map(([k, v]) => {
       const display = Array.isArray(v) ? `[${v.join(", ")}]` : String(v);
@@ -1048,51 +1056,69 @@ export async function createHandlers({ vaultPath: rawVaultPath, templateRegistry
     // Exact path only — destructive operation
     const absPath = await safe(filePath);
     await writableNote(filePath);
-    let content;
+    await fileIndex.listFresh();
+
+    let added = [];
+    let skipped = [];
     try {
-      content = await fs.readFile(absPath, "utf-8");
+      await mutateFile(absPath, (original) => {
+        added = [];
+        skipped = [];
+        let content = original;
+
+        // Extract existing wikilinks for deduplication (case-insensitive basename)
+        const existingLinks = extractWikilinks(content).map(
+          l => path.basename(l.split("#")[0].split("^")[0].trim(), ".md").toLowerCase()
+        );
+
+        for (const { target, annotation = "" } of links) {
+          const targetWithExt = target.endsWith(".md") ? target : target + ".md";
+          const targetBasename = path.basename(target, ".md").toLowerCase();
+
+          if (!fileIndex.has(targetWithExt)) {
+            skipped.push({ target, reason: "not found" });
+            continue;
+          }
+
+          if (existingLinks.includes(targetBasename)) {
+            skipped.push({ target, reason: "already linked" });
+            continue;
+          }
+
+          // Use full path for disambiguation when basename is not unique
+          const candidates = fileIndex.basenameMap.get(targetBasename) || [];
+          const displayName = candidates.length > 1
+            ? targetWithExt.replace(/\.md$/, "")
+            : path.basename(target, ".md");
+          const entry = annotation
+            ? `- [[${displayName}]] — ${annotation}`
+            : `- [[${displayName}]]`;
+          added.push(entry);
+          existingLinks.push(targetBasename);
+        }
+
+        if (added.length === 0) return original;
+
+        if (matchHeadings(parseHeadings(content), section).length === 0) {
+          if (!create_section) {
+            throw new Error(`Section "${section}" not found in ${filePath}. Set create_section: true to create it.`);
+          }
+          const sectionBlock = (content.endsWith("\n") ? "\n" : "\n\n") + section + "\n";
+          content = content + sectionBlock;
+          if (matchHeadings(parseHeadings(content), section).length === 0) {
+            throw new Error(`Failed to create section "${section}" in ${filePath}. Ensure the section parameter is a valid markdown heading (e.g., "## Related").`);
+          }
+        }
+        const range = findSection(content, section);
+
+        const insertText = added.join("\n") + "\n";
+        return content.slice(0, range.sectionEnd) + insertText + content.slice(range.sectionEnd);
+      });
     } catch (e) {
       if (e.code === "ENOENT") {
         throw new Error(`File not found: ${filePath}. Use vault_write to create new files.`, { cause: e });
       }
       throw e;
-    }
-
-    await fileIndex.listFresh();
-
-    // Extract existing wikilinks for deduplication (case-insensitive basename)
-    const existingLinks = extractWikilinks(content).map(
-      l => path.basename(l.split("#")[0].split("^")[0].trim(), ".md").toLowerCase()
-    );
-
-    const added = [];
-    const skipped = [];
-
-    for (const { target, annotation = "" } of links) {
-      const targetWithExt = target.endsWith(".md") ? target : target + ".md";
-      const targetBasename = path.basename(target, ".md").toLowerCase();
-
-      if (!fileIndex.has(targetWithExt)) {
-        skipped.push({ target, reason: "not found" });
-        continue;
-      }
-
-      if (existingLinks.includes(targetBasename)) {
-        skipped.push({ target, reason: "already linked" });
-        continue;
-      }
-
-      // Use full path for disambiguation when basename is not unique
-      const basenameKey = targetBasename;
-      const candidates = fileIndex.basenameMap.get(basenameKey) || [];
-      const displayName = candidates.length > 1
-        ? targetWithExt.replace(/\.md$/, "")
-        : path.basename(target, ".md");
-      const entry = annotation
-        ? `- [[${displayName}]] — ${annotation}`
-        : `- [[${displayName}]]`;
-      added.push(entry);
-      existingLinks.push(targetBasename);
     }
 
     if (added.length === 0 && skipped.length > 0) {
@@ -1101,22 +1127,6 @@ export async function createHandlers({ vaultPath: rawVaultPath, templateRegistry
         content: [{ type: "text", text: `No links added to ${filePath}.\nSkipped ${skipped.length}: ${skipSummary}` }]
       };
     }
-
-    if (matchHeadings(parseHeadings(content), section).length === 0) {
-      if (!create_section) {
-        throw new Error(`Section "${section}" not found in ${filePath}. Set create_section: true to create it.`);
-      }
-      const sectionBlock = (content.endsWith("\n") ? "\n" : "\n\n") + section + "\n";
-      content = content + sectionBlock;
-      if (matchHeadings(parseHeadings(content), section).length === 0) {
-        throw new Error(`Failed to create section "${section}" in ${filePath}. Ensure the section parameter is a valid markdown heading (e.g., "## Related").`);
-      }
-    }
-    const range = findSection(content, section);
-
-    const insertText = added.join("\n") + "\n";
-    content = content.slice(0, range.sectionEnd) + insertText + content.slice(range.sectionEnd);
-    await fs.writeFile(absPath, content, "utf-8");
 
     let summary = `Added ${added.length} link${added.length === 1 ? "" : "s"} to ${linkFor(filePath)} (${section}):\n${added.join("\n")}`;
     if (skipped.length > 0) {
