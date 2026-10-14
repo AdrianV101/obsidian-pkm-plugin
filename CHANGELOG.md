@@ -6,6 +6,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+- **Contract tests** (`tests/manifest.test.js`): `package.json` and `.claude-plugin/plugin.json` versions match, scripts referenced by `plugin.json`/`hooks.json` exist, `tools.js` and the handler map name the same tools, skill/agent/command frontmatter carries its required fields, hook commands quote their path expansions, and every module reachable from `hooks/*.js` imports only relative or `node:` specifiers (guards against a repeat of the v3.6.1 marketplace-install break).
+- **`npm run typecheck`**: `tsc` checks the JSDoc types (`jsconfig.json`, non-strict) locally and in CI.
+- **Release version check** (`scripts/check-release-version.js`): the publish workflow and `prepublishOnly` refuse unless the tag is `v<version>` and matches both `package.json` and `plugin.json`.
+- **Dependabot**: weekly npm and monthly GitHub Actions updates, with minor and patch updates grouped.
+- **`obsidian-pkm doctor`** reads `VAULT_PATH` and the OpenAI key from the `env` block of `~/.claude/settings.json` when the shell environment lacks them, and says which source each value came from (the resolved key variable name is reported). It never echoes `settings.json` content when the file fails to parse.
+
+### Changed
+- **Capture fires on pull request creation, not on commits.** The PreToolUse `git commit` reminder (`hooks/pre-commit-reminder.sh`) is replaced by `hooks/capture-reminder.js`, a dependency-free PostToolUse hook. It fires only after a real `gh pr create` whose output contains the PR URL, so mentions like `grep "gh pr create"` no longer trigger it, and it passes the PR URL, `transcript_path` and `session_id` to `pkm-capture`.
+- **`pkm-capture` runs on haiku** and locates the session transcript from `transcript_path`, falling back to `<session_id>.jsonl` in the project folder (every non-alphanumeric path character mapped to `-`, which also fixes worktree paths containing `.`).
+- **CI** runs on Ubuntu and macOS with Node 20, 22 and 24 (fail-fast off) for pushes and PRs to `master` and `next`, adds a typecheck step, and lints `hooks/` and `scripts/`.
+- **Publish workflow** refuses to publish unless it runs on a tag named `v<version>` matching both `package.json` and `plugin.json` (manual runs included), and the publish job no longer installs dependencies (`npm publish --provenance --access public --ignore-scripts`).
+- Hook helpers import Node builtins with the `node:` prefix.
+
+### Fixed
+- **SessionStart hook command quotes its paths**, so a plugin root or vault path containing spaces (for example an iCloud vault under `Mobile Documents`) reaches `session-start.js` as one argument.
+- Stale JSDoc that `tsc` flagged: `formatPath` on `formatPeek`/`formatNeighborhood`, `custom_fields` on `matchesFilters`, the `createHandlers` return type.
+- Docs: removed the hard-coded test-count badge; corrected the Node EOL, prebuilt-binary and Obsidian Sync claims; fixed the README project structure (no `docs/`; adds `tools.js`, `doctor.js`, the hooks), the broken troubleshooting anchor, and the claim that `plugin.json` holds permissions; CONTRIBUTING now points tool definitions at `tools.js` and documents the `next` branching policy.
+
+### Security
+- Lockfile refreshed with `npm audit fix`, clearing 1 critical (`proxy-addr`) and 5 high (`@modelcontextprotocol/sdk`, `fast-uri`, `hono`, `ip-address`, `js-yaml`) production advisories.
+
 ## [3.10.1] - 2026-05-03
 
 ### Added
