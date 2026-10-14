@@ -3,7 +3,7 @@ import path from "path";
 import {
   matchesFilters,
   formatMetadata,
-  countOccurrences,
+  occurrenceLines,
   substituteTemplateVariables,
   validateFrontmatterStrict,
   extractInlineTags,
@@ -65,6 +65,13 @@ function applyAppend(existing, args) {
     return existing.slice(0, range.afterHeading) + content + eol + existing.slice(range.afterHeading);
   }
   return existing + eol + content;
+}
+
+const MAX_LISTED_LINES = 10;
+
+function formatLineList(lines) {
+  const shown = lines.slice(0, MAX_LISTED_LINES).join(", ");
+  return lines.length > MAX_LISTED_LINES ? `${shown}, +${lines.length - MAX_LISTED_LINES} more` : shown;
 }
 
 /**
@@ -315,11 +322,11 @@ export async function createHandlers({ vaultPath: rawVaultPath, templateRegistry
     }
     const filePath = await safe(args.path);
     await writableNote(args.path);
-    let count = 0;
+    let matchLines = [];
     try {
       await mutateFile(filePath, (content) => {
-        count = countOccurrences(content, args.old_string);
-        if (count !== 1) return content;
+        matchLines = occurrenceLines(content, args.old_string);
+        if (matchLines.length !== 1) return content;
         return content.replace(args.old_string, () => args.new_string);
       });
     } catch (e) {
@@ -329,6 +336,7 @@ export async function createHandlers({ vaultPath: rawVaultPath, templateRegistry
       throw relError(e, args.path);
     }
 
+    const count = matchLines.length;
     if (count === 0) {
       return {
         content: [{ type: "text", text: `No match found for the specified old_string in ${args.path}` }],
@@ -338,7 +346,7 @@ export async function createHandlers({ vaultPath: rawVaultPath, templateRegistry
 
     if (count > 1) {
       return {
-        content: [{ type: "text", text: `Found ${count} matches for old_string in ${args.path}. Please provide a more specific string that matches exactly once.` }],
+        content: [{ type: "text", text: `Found ${count} matches for old_string in ${args.path} (lines ${formatLineList(matchLines)}). Please provide a more specific string that matches exactly once.` }],
         isError: true
       };
     }
@@ -600,9 +608,7 @@ export async function createHandlers({ vaultPath: rawVaultPath, templateRegistry
 
       if (matchesFilters(metadata, filters)) {
         const { summary, tagLine } = formatMetadata(metadata);
-        const relativePath = args.folder
-          ? path.join(args.folder, file)
-          : file;
+        const relativePath = toVaultRel(path.relative(vaultPath, path.join(searchDir, file)));
         results.push({ path: relativePath, summary, tagLine, metadata });
       }
     }
@@ -829,9 +835,9 @@ export async function createHandlers({ vaultPath: rawVaultPath, templateRegistry
     if (!inputText && !sourcePath) {
       throw new Error("Either 'content' or 'path' must be provided");
     }
+    const source = sourcePath ? await resolveNote(sourcePath) : null;
     if (!inputText) {
-      const { abs: filePath } = await resolveNote(sourcePath);
-      inputText = await fs.readFile(filePath, "utf-8");
+      inputText = await fs.readFile(source.abs, "utf-8");
     }
 
     const body = splitFrontmatter(inputText).body.trim();
@@ -842,7 +848,7 @@ export async function createHandlers({ vaultPath: rawVaultPath, templateRegistry
     );
 
     const excludeFiles = new Set();
-    if (sourcePath) excludeFiles.add(sourcePath);
+    if (source) excludeFiles.add(source.rel);
 
     const overfetch = args.graph_context ? 5 : 3;
     const results = await semanticIndex.searchRaw({
@@ -867,9 +873,8 @@ export async function createHandlers({ vaultPath: rawVaultPath, templateRegistry
       throw new Error("graph_context requires 'path' parameter (cannot build graph neighborhood from raw content)");
     }
     if (args.graph_context && sourcePath) {
-      const { rel: resolvedSource } = await resolveNote(sourcePath);
       const neighborhood = await exploreNeighborhood({
-        startPath: resolvedSource,
+        startPath: source.rel,
         vaultPath,
         depth: 2,
         direction: "both",

@@ -62,6 +62,13 @@ export function compareFrontmatterValues(a, b, field) {
 
 export { resolveLexical as resolvePath };
 
+/** A frontmatter `tags` value as a list: a scalar is one tag, a missing value none. */
+function toTagList(tags) {
+  if (Array.isArray(tags)) return tags;
+  if (tags === null || tags === undefined) return [];
+  return [tags];
+}
+
 /**
  * Check if note metadata matches a set of query filters.
  *
@@ -88,7 +95,7 @@ export function matchesFilters(metadata, filters) {
   }
 
   if (filters.tags && filters.tags.length > 0) {
-    const noteTags = (metadata.tags || []).filter(Boolean).map(t => String(t).toLowerCase());
+    const noteTags = toTagList(metadata.tags).filter(Boolean).map(t => String(t).toLowerCase());
     const allPresent = filters.tags.every(tag =>
       noteTags.includes(tag.toLowerCase())
     );
@@ -96,7 +103,7 @@ export function matchesFilters(metadata, filters) {
   }
 
   if (filters.tags_any && filters.tags_any.length > 0) {
-    const noteTags = (metadata.tags || []).filter(Boolean).map(t => String(t).toLowerCase());
+    const noteTags = toTagList(metadata.tags).filter(Boolean).map(t => String(t).toLowerCase());
     const anyPresent = filters.tags_any.some(tag =>
       noteTags.includes(tag.toLowerCase())
     );
@@ -148,8 +155,9 @@ export function formatMetadata(metadata) {
       : metadata.created;
     parts.push(`created: ${dateStr}`);
   }
-  const tagLine = metadata.tags?.length > 0
-    ? `tags: ${metadata.tags.join(", ")}`
+  const tags = toTagList(metadata.tags);
+  const tagLine = tags.length > 0
+    ? `tags: ${tags.join(", ")}`
     : "";
   return { summary: parts.join(" | "), tagLine };
 }
@@ -170,6 +178,30 @@ export function countOccurrences(content, searchString) {
     position += searchString.length;
   }
   return count;
+}
+
+/**
+ * 1-based line numbers of each non-overlapping occurrence of a substring.
+ *
+ * @param {string} content - text to search
+ * @param {string} searchString - substring to find
+ * @returns {number[]}
+ */
+export function occurrenceLines(content, searchString) {
+  const lines = [];
+  if (searchString.length === 0) return lines;
+  let line = 1;
+  let scanned = 0;
+  let position = 0;
+  while ((position = content.indexOf(searchString, position)) !== -1) {
+    for (let i = scanned; i < position; i++) {
+      if (content.charCodeAt(i) === 10) line++;
+    }
+    scanned = position;
+    lines.push(line);
+    position += searchString.length;
+  }
+  return lines;
 }
 
 /**
