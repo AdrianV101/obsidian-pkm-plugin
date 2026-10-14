@@ -59,6 +59,8 @@ describe("capture-reminder hook", { concurrency: true }, () => {
       "npm test; gh pr create --fill",
       "git push -u origin feat\ngh pr create --fill",
       "gh pr create --fill 2>&1 | tail -1",
+      "git push && \\\n  gh pr create --fill",
+      "gh pr create \\\n  --draft --title x",
       "GH_HOST=x gh pr create --fill",
       "cd repo && GH_HOST=x A=1 gh pr create --fill",
       "GH_TOKEN=\"$(gh auth token --user AdrianV101)\" gh pr create --draft --fill",

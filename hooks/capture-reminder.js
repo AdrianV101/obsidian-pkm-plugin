@@ -52,6 +52,11 @@ function splitSimpleCommands(command) {
       inWord = true;
       continue;
     }
+    if (ch === "\\" && next === "\n") {
+      i++;
+      endWord();
+      continue;
+    }
     if (ch === "\\" && next !== undefined) {
       word += command[++i];
       inWord = true;
