@@ -42,7 +42,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Security
 - Every tool now resolves paths through their real location: a symlink inside the vault that points outside it can no longer be read or written through (`vault-fs.js` `resolveSafe`).
-- Write tools (`vault_write`, `vault_append`, `vault_edit`, `vault_update_frontmatter`, `vault_add_links`, `vault_trash`, and both paths of `vault_move`) only accept `.md` notes outside dot-folders, so `.obsidian/`, `.git/` and `.trash/` can no longer be modified through them.
+- Write tools (`vault_write`, `vault_append`, `vault_edit`, `vault_update_frontmatter`, `vault_add_links`, `vault_trash`, and both paths of `vault_move`) only accept `.md` notes outside dot-folders, so `.obsidian/`, `.git/` and `.trash/` can no longer be modified through them. The rules also judge the real target of an in-vault symlink (a link into `.git/` or to a non-`.md` file is refused) and read backslashes as separators on every platform.
 - Development/CI lockfile (`package-lock.json`, which is not published) refreshed with `npm audit fix`, clearing 1 critical (`proxy-addr`) and 5 high (`@modelcontextprotocol/sdk`, `fast-uri`, `hono`, `ip-address`, `js-yaml`) advisories in the dependency tree used for development and CI. Installed copies of the plugin resolve their own dependencies.
 
 ## [3.10.1] - 2026-05-03

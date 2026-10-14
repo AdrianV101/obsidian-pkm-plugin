@@ -25,7 +25,7 @@ import {
 } from "./helpers.js";
 import { exploreNeighborhood, formatNeighborhood, findFilesLinkingTo, rewriteWikilinks, extractWikilinks, resolveLink, buildIncomingIndex } from "./graph.js";
 import { getAllMarkdownFiles, extractFrontmatter } from "./utils.js";
-import { toVaultRel, normalizeVaultRoot, resolveSafe, assertWritableNote, assertWritableFolder } from "./vault-fs.js";
+import { normalizeVaultRoot, resolveSafe, hasDotSegment, assertWritableReal } from "./vault-fs.js";
 import { findSection, matchHeadings, parseHeadings, splitFrontmatter } from "./markdown.js";
 
 function positiveInt(value, fallback) {
@@ -47,6 +47,8 @@ function positiveInt(value, fallback) {
 export async function createHandlers({ vaultPath: rawVaultPath, templateRegistry, semanticIndex, activityLog, sessionId, vaultName }) {
   const vaultPath = normalizeVaultRoot(rawVaultPath);
   const safe = (relativePath) => resolveSafe(relativePath, vaultPath);
+  const writableNote = (relativePath) => assertWritableReal(relativePath, vaultPath, "note");
+  const writableFolder = (relativePath) => assertWritableReal(relativePath, vaultPath, "folder");
   const resolvedVaultName = vaultName || path.basename(vaultPath);
   const linkFor = (relativePath) => obsidianLink(relativePath, resolvedVaultName);
 
@@ -207,7 +209,7 @@ export async function createHandlers({ vaultPath: rawVaultPath, templateRegistry
     }
 
     const filePath = await safe(outputPath);
-    assertWritableNote(outputPath);
+    await writableNote(outputPath);
 
     const title = path.basename(outputPath, ".md");
     const substituted = substituteTemplateVariables(templateInfo.content, {
@@ -255,7 +257,7 @@ export async function createHandlers({ vaultPath: rawVaultPath, templateRegistry
       throw new Error("content must be a non-empty string");
     }
     const filePath = await safe(args.path);
-    assertWritableNote(args.path);
+    await writableNote(args.path);
     let existing;
     try {
       existing = await fs.readFile(filePath, "utf-8");
@@ -306,7 +308,7 @@ export async function createHandlers({ vaultPath: rawVaultPath, templateRegistry
       throw new Error("old_string must be a non-empty string");
     }
     const filePath = await safe(args.path);
-    assertWritableNote(args.path);
+    await writableNote(args.path);
     let content;
     try {
       content = await fs.readFile(filePath, "utf-8");
@@ -753,6 +755,7 @@ export async function createHandlers({ vaultPath: rawVaultPath, templateRegistry
 
     // --- Anchor blending (Tier 3) ---
     if (args.anchor) {
+      // Containment first, so an escaping anchor reports an escape rather than "Anchor note not found" from the catch below.
       await safe(args.anchor);
       let resolvedAnchor;
       try {
@@ -909,11 +912,10 @@ export async function createHandlers({ vaultPath: rawVaultPath, templateRegistry
       throw e;
     }
     // Dot-folder directories fall through to the write rule; other folders get the folder message.
-    const inDotFolder = toVaultRel(resolvedRelative).split("/").some((seg) => seg.startsWith("."));
-    if (stat.isDirectory() && !inDotFolder) {
+    if (stat.isDirectory() && !hasDotSegment(resolvedRelative)) {
       throw new Error(`Cannot trash a folder: ${resolvedRelative}. vault_trash only trashes individual notes; trash the notes inside it one by one.`);
     }
-    assertWritableNote(resolvedRelative);
+    await writableNote(resolvedRelative);
 
     // Find incoming links for warning output
     const allFilesList = Array.from(allFilesSet);
@@ -970,9 +972,9 @@ export async function createHandlers({ vaultPath: rawVaultPath, templateRegistry
       if (e.code === "ENOENT") throw new Error(`ENOENT: File not found: ${oldRelative}`, { cause: e });
       throw e;
     }
-    const assertMovable = sourceStat.isDirectory() ? assertWritableFolder : assertWritableNote;
-    assertMovable(oldRelative);
-    assertMovable(newRelative);
+    const assertMovable = sourceStat.isDirectory() ? writableFolder : writableNote;
+    await assertMovable(oldRelative);
+    await assertMovable(newRelative);
 
     // Verify destination does NOT exist
     try {
@@ -1033,7 +1035,7 @@ export async function createHandlers({ vaultPath: rawVaultPath, templateRegistry
 
   async function handleUpdateFrontmatter(args) {
     const filePath = await safe(args.path);
-    assertWritableNote(args.path);
+    await writableNote(args.path);
     let content;
     try {
       content = await fs.readFile(filePath, "utf-8");
@@ -1064,7 +1066,7 @@ export async function createHandlers({ vaultPath: rawVaultPath, templateRegistry
 
     // Exact path only — destructive operation
     const absPath = await safe(filePath);
-    assertWritableNote(filePath);
+    await writableNote(filePath);
     let content;
     try {
       content = await fs.readFile(absPath, "utf-8");

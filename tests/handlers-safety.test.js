@@ -170,6 +170,7 @@ describe("write tools only accept .md notes outside dot-folders", () => {
     ["notes/x.css", "notes/new.css"],
     [".trash/x.md", ".trash/new.md"],
     ["notes/.hidden/x.md", "notes/.hidden/new.md"],
+    [".obsidian\\x.md", ".obsidian\\new.md"],
   ];
   const WRITE_TOOLS = [
     ["vault_write", (_existing, fresh) => ({ template: "note", path: fresh })],
@@ -254,6 +255,7 @@ describe("vault_trash and folders", () => {
     ["into a dot-folder", { old_path: "folder-a", new_path: ".trash/folder-a" }],
     ["out of a dot-folder", { old_path: ".obsidian", new_path: "obsidian-copy" }],
     ["the vault root", { old_path: "", new_path: "root-copy" }],
+    ["into a dot-folder via a backslash", { old_path: "folder-a", new_path: ".trash\\folder-a" }],
   ];
   for (const [label, args] of BAD_FOLDER_MOVES) {
     it(`vault_move refuses moving a folder ${label}`, async () => {
@@ -318,4 +320,65 @@ describe("vault root normalisation", () => {
       await fs.rm(tmpDir, { recursive: true, force: true });
     }
   });
+});
+
+// ─── backslash and symlinked write targets ────────────────────────────
+
+describe("write rules judge the path that is actually written", () => {
+  it("a backslash '..' payload cannot reach into a dot-folder (vault_write)", async () => {
+    const v = await makeVault();
+    try {
+      await v.handlers.get("vault_write")({ template: "note", path: ".obsidian/x\\..\\..\\y.md" });
+      assert.deepEqual(await fs.readdir(path.join(v.root, ".obsidian")), ["x.md"]);
+      assert.ok(await fs.readFile(path.join(v.root, "y.md"), "utf-8"));
+    } finally {
+      await v.cleanup();
+    }
+  });
+
+  it("a backslash '..' payload cannot move a folder into a dot-folder", async () => {
+    const v = await makeVault();
+    try {
+      await v.handlers.get("vault_move")({ old_path: "folder-a", new_path: ".obsidian/plugins/evil\\..\\..\\..\\fa" });
+      assert.deepEqual(await fs.readdir(path.join(v.root, ".obsidian")), ["x.md"]);
+      assert.ok(await fs.readFile(path.join(v.root, "fa", "inside.md"), "utf-8"));
+    } finally {
+      await v.cleanup();
+    }
+  });
+});
+
+describe("write tools refuse in-vault symlinks whose real target is not a writable note", () => {
+  const SKIP = IS_WIN && "file symlinks need privileges on Windows";
+  const LINKS = [
+    ["a file symlink into .git/", async (root) => fs.symlink(path.join(root, ".git", "config"), path.join(root, "notes", "gitlink.md")), "notes/gitlink.md", "notes/gitlink.md"],
+    ["a directory symlink to .obsidian", async (root) => fs.symlink(path.join(root, ".obsidian"), path.join(root, "obs-alias"), DIR_LINK), "obs-alias/x.md", "obs-alias/new.md"],
+    ["a note symlink whose real target is not .md", async (root) => fs.symlink(path.join(root, "notes", "x.css"), path.join(root, "notes", "csslink.md")), "notes/csslink.md", "notes/csslink.md"],
+  ];
+  const TOOLS = [
+    ["vault_write", (_e, fresh) => ({ template: "note", path: fresh })],
+    ["vault_append", (e) => ({ path: e, content: "pwned" })],
+    ["vault_edit", (e) => ({ path: e, old_string: "marker", new_string: "pwned" })],
+    ["vault_update_frontmatter", (e) => ({ path: e, fields: { status: "pwned" } })],
+    ["vault_add_links", (e) => ({ path: e, links: [{ target: "notes/b.md" }] })],
+    ["vault_trash", (e) => ({ path: e })],
+    ["vault_move", (e) => ({ old_path: e, new_path: "notes/moved.md" })],
+    ["vault_move", (_e, fresh) => ({ old_path: "notes/b.md", new_path: fresh })],
+  ];
+  for (const [linkLabel, mk, existing, fresh] of LINKS) {
+    for (const [tool, argsFor] of TOOLS) {
+      const writesFresh = tool === "vault_write" || (tool === "vault_move" && argsFor("a", "b").new_path === "b");
+      it(`${tool} refuses ${linkLabel}${writesFresh ? " (new file)" : ""}`, { skip: SKIP }, async () => {
+        const v = await makeVault();
+        try {
+          await mk(v.root);
+          const before = await snapshot(v.root);
+          await assert.rejects(() => v.handlers.get(tool)(argsFor(existing, fresh)), /Write tools only accept \.md notes outside dot-folders/);
+          assert.deepEqual(await snapshot(v.root), before);
+        } finally {
+          await v.cleanup();
+        }
+      });
+    }
+  }
 });

@@ -23,6 +23,9 @@ export function normalizeVaultRoot(vaultPath) {
   return path.resolve(String(vaultPath));
 }
 
+const noteRuleError = (rel) => new Error(`Write tools only accept .md notes outside dot-folders: ${rel}`);
+const folderRuleError = (rel) => new Error(`vault_move only moves folders outside dot-folders, and never the vault root: ${rel}`);
+
 function isInside(target, root) {
   return target === root || target.startsWith(root + path.sep);
 }
@@ -36,7 +39,8 @@ function isInside(target, root) {
  */
 export function resolveLexical(rel, root) {
   const base = normalizeVaultRoot(root);
-  const resolved = path.resolve(base, rel);
+  // Backslashes are separators for toVaultRel and the write rules, so path.resolve must read them the same way on POSIX.
+  const resolved = path.resolve(base, String(rel).replace(/\\/g, "/"));
   if (!isInside(resolved, base)) throw new Error(ESCAPE_MESSAGE);
   return resolved;
 }
@@ -84,12 +88,20 @@ export async function resolveSafe(rel, root) {
 
 /**
  * @param {string} rel
+ * @returns {boolean} true if any segment of the normalised path starts with "."
+ */
+export function hasDotSegment(rel) {
+  return toVaultRel(rel).split("/").some((s) => s.startsWith("."));
+}
+
+/**
+ * @param {string} rel
  * @throws {Error} unless rel is a .md path with no segment starting with "."
  */
 export function assertWritableNote(rel) {
   const r = toVaultRel(rel);
-  if (!r.endsWith(".md") || r.split("/").some((s) => s.startsWith("."))) {
-    throw new Error(`Write tools only accept .md notes outside dot-folders: ${rel}`);
+  if (!r.endsWith(".md") || hasDotSegment(r)) {
+    throw noteRuleError(rel);
   }
 }
 
@@ -99,8 +111,35 @@ export function assertWritableNote(rel) {
  */
 export function assertWritableFolder(rel) {
   const r = toVaultRel(rel);
-  if (r === "" || r.split("/").some((s) => s.startsWith("."))) {
-    throw new Error(`vault_move only moves folders outside dot-folders, and never the vault root: ${rel}`);
+  if (r === "" || hasDotSegment(r)) {
+    throw folderRuleError(rel);
   }
 }
 
+
+/**
+ * The write rules applied to where the target really lives: symlinks inside the
+ * vault must not let a write tool reach a dot-folder or a non-.md file.
+ * @param {string} rel
+ * @param {string} root
+ * @param {"note"|"folder"} [kind]
+ * @throws {Error} the write-rule error for `kind`
+ */
+export async function assertWritableReal(rel, root, kind = "note") {
+  const assertLexical = kind === "folder" ? assertWritableFolder : assertWritableNote;
+  assertLexical(rel);
+  const abs = resolveLexical(rel, root);
+  const realRoot = await fs.realpath(normalizeVaultRoot(root));
+  const realTarget = await realpathOfNearestExisting(abs);
+  // For a new file this is the real nearest ancestor; the missing tail was checked lexically above.
+  const realRel = path.relative(realRoot, realTarget).split(path.sep).join("/");
+  let exists = true;
+  try {
+    await fs.lstat(abs);
+  } catch {
+    exists = false;
+  }
+  const badDot = realRel !== "" && hasDotSegment(realRel);
+  const badExt = kind === "note" && exists && !realTarget.endsWith(".md");
+  if (badDot || badExt) throw (kind === "folder" ? folderRuleError(rel) : noteRuleError(rel));
+}
