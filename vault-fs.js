@@ -161,7 +161,7 @@ export async function getAllMarkdownFiles(dir, baseDir = dir) {
     if (entry.isDirectory() && !entry.name.startsWith(".")) {
       files.push(...await getAllMarkdownFiles(fullPath, baseDir));
     } else if (entry.isFile() && entry.name.endsWith(".md")) {
-      files.push(path.relative(baseDir, fullPath));
+      files.push(toVaultRel(path.relative(baseDir, fullPath)));
     }
   }
   return files;

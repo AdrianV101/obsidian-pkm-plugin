@@ -244,14 +244,14 @@ export async function createHandlers({ vaultPath: rawVaultPath, templateRegistry
     const hasExplicitMode = args.heading !== undefined || args.tail !== undefined ||
       args.tail_sections !== undefined || args.chunk !== undefined || args.lines !== undefined;
     if (!hasExplicitMode && !args.force && content.length > AUTO_REDIRECT_THRESHOLD) {
-      const relativePath = path.relative(vaultPath, filePath);
+      const relativePath = toVaultRel(path.relative(vaultPath, filePath));
       const peekData = computePeek(content, relativePath);
       return { content: [{ type: "text", text: formatPeek(peekData, { redirected: true, formatPath: linkFor }) }] };
     }
 
     // Force hard cap
     if (args.force && content.length > FORCE_HARD_CAP) {
-      const relativePath = path.relative(vaultPath, filePath);
+      const relativePath = toVaultRel(path.relative(vaultPath, filePath));
       const peekData = computePeek(content, relativePath);
       const text = formatPeek(peekData, { redirected: true, formatPath: linkFor }) +
         `\n\n**Hard cap reached.** File is ${content.length.toLocaleString()} chars, exceeding the ~400k char limit even with force=true. Use heading, chunk, or lines params to read portions.`;
@@ -311,7 +311,7 @@ export async function createHandlers({ vaultPath: rawVaultPath, templateRegistry
       if (e.code === "ENOENT") throw new Error(`File not found: ${args.path}`, { cause: e });
       throw e;
     }
-    const relativePath = path.relative(vaultPath, filePath);
+    const relativePath = toVaultRel(path.relative(vaultPath, filePath));
     const peekData = computePeek(content, relativePath);
     return { content: [{ type: "text", text: formatPeek(peekData, { formatPath: linkFor }) }] };
   }
@@ -429,7 +429,7 @@ export async function createHandlers({ vaultPath: rawVaultPath, templateRegistry
 
   async function handleSearch(args) {
     const searchDir = args.folder ? await resolveFolder(args.folder) : vaultPath;
-    const folderPrefix = args.folder ? path.relative(vaultPath, searchDir) : "";
+    const folderPrefix = args.folder ? toVaultRel(path.relative(vaultPath, searchDir)) : "";
     const files = await getAllMarkdownFiles(searchDir);
     const results = [];
     const query = args.query.toLowerCase();
@@ -453,7 +453,7 @@ export async function createHandlers({ vaultPath: rawVaultPath, templateRegistry
           .slice(0, 3);
 
         results.push({
-          path: folderPrefix ? path.join(folderPrefix, file) : file,
+          path: folderPrefix ? path.posix.join(folderPrefix, file) : file,
           matches: matchingLines.map(m => `L${m.num}: ${m.line.trim().slice(0, 100)}`)
         });
       }
@@ -494,7 +494,7 @@ export async function createHandlers({ vaultPath: rawVaultPath, templateRegistry
   async function handleList(args) {
     const inputPath = args.path || "";
     const listPath = inputPath ? await resolveFolder(inputPath) : vaultPath;
-    const relativePath = inputPath ? path.relative(vaultPath, listPath) : "";
+    const relativePath = inputPath ? toVaultRel(path.relative(vaultPath, listPath)) : "";
     let entries;
     try {
       entries = await fs.readdir(listPath, { withFileTypes: true });
@@ -507,12 +507,12 @@ export async function createHandlers({ vaultPath: rawVaultPath, templateRegistry
     for (const entry of entries) {
       if (entry.name.startsWith(".")) continue;
 
-      const itemPath = path.join(relativePath, entry.name);
+      const itemPath = path.posix.join(relativePath, entry.name);
       if (entry.isDirectory()) {
         items.push(`[dir] ${itemPath}/`);
         if (args.recursive) {
           const subItems = await getAllMarkdownFiles(path.join(listPath, entry.name));
-          items.push(...subItems.map(f => `  ${linkFor(path.join(itemPath, f))}`));
+          items.push(...subItems.map(f => `  ${linkFor(path.posix.join(itemPath, f))}`));
         }
       } else if (!args.pattern || globMatch(args.pattern, entry.name)) {
         items.push(linkFor(itemPath));
@@ -524,7 +524,7 @@ export async function createHandlers({ vaultPath: rawVaultPath, templateRegistry
 
   async function handleRecent(args) {
     const searchDir = args.folder ? await resolveFolder(args.folder) : vaultPath;
-    const folderPrefix = args.folder ? path.relative(vaultPath, searchDir) : "";
+    const folderPrefix = args.folder ? toVaultRel(path.relative(vaultPath, searchDir)) : "";
     const files = await getAllMarkdownFiles(searchDir);
     const limit = positiveInt(args.limit, 10);
 
@@ -532,7 +532,7 @@ export async function createHandlers({ vaultPath: rawVaultPath, templateRegistry
       files.map(async (file) => {
         try {
           const stat = await fs.stat(path.join(searchDir, file));
-          return { path: folderPrefix ? path.join(folderPrefix, file) : file, mtime: stat.mtime };
+          return { path: folderPrefix ? path.posix.join(folderPrefix, file) : file, mtime: stat.mtime };
         } catch (e) {
           if (e.code === "ENOENT") return null;
           throw e;
@@ -843,7 +843,7 @@ export async function createHandlers({ vaultPath: rawVaultPath, templateRegistry
   async function handleSemanticSearch(args) {
     await requireSemantic("Semantic search");
 
-    const resolvedFolder = args.folder ? path.relative(vaultPath, await resolveFolder(args.folder)) : undefined;
+    const resolvedFolder = args.folder ? toVaultRel(path.relative(vaultPath, await resolveFolder(args.folder))) : undefined;
 
     // --- Anchor blending (Tier 3) ---
     if (args.anchor) {
@@ -909,7 +909,7 @@ export async function createHandlers({ vaultPath: rawVaultPath, templateRegistry
   async function handleSuggestLinks(args) {
     await requireSemantic("Link suggestions");
 
-    const resolvedFolder = args.folder ? path.relative(vaultPath, await resolveFolder(args.folder)) : undefined;
+    const resolvedFolder = args.folder ? toVaultRel(path.relative(vaultPath, await resolveFolder(args.folder))) : undefined;
 
     let inputText = args.content;
     const sourcePath = args.path;
@@ -1015,7 +1015,7 @@ export async function createHandlers({ vaultPath: rawVaultPath, templateRegistry
     const linkingFiles = await findFilesLinkingTo(resolvedRelative, vaultPath, allFiles, resolver);
 
     // Determine trash destination: .trash/<original-relative-path>
-    let trashRelative = path.join(".trash", resolvedRelative);
+    let trashRelative = path.posix.join(".trash", toVaultRel(resolvedRelative));
     let trashAbsolute = path.join(vaultPath, trashRelative);
 
     // Handle collision: append timestamp suffix
@@ -1025,7 +1025,7 @@ export async function createHandlers({ vaultPath: rawVaultPath, templateRegistry
       const ext = path.extname(resolvedRelative);
       const base = resolvedRelative.slice(0, -ext.length);
       const timestamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
-      trashRelative = path.join(".trash", `${base}.${timestamp}${ext}`);
+      trashRelative = path.posix.join(".trash", toVaultRel(`${base}.${timestamp}${ext}`));
       trashAbsolute = path.join(vaultPath, trashRelative);
     } catch (e) {
       if (e.code !== "ENOENT") throw e;
@@ -1293,8 +1293,8 @@ export async function createHandlers({ vaultPath: rawVaultPath, templateRegistry
     let scopedFiles;
     if (args.folder) {
       const resolvedFolder = await resolveFolder(args.folder);
-      const relFolder = path.relative(vaultPath, resolvedFolder);
-      scopedFiles = allFilesList.filter(f => f.startsWith(relFolder + "/") || f.startsWith(relFolder + path.sep));
+      const relFolder = toVaultRel(path.relative(vaultPath, resolvedFolder));
+      scopedFiles = allFilesList.filter(f => f.startsWith(relFolder + "/"));
     } else {
       scopedFiles = allFilesList;
     }

@@ -16,6 +16,11 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest]
         node-version: [20, 22, 24]
+        include:
+          # Node 22 only: npm runs scripts via cmd.exe, which does not expand
+          # the tests/*.test.js glob; Node >= 21's test runner expands it itself.
+          - os: windows-latest
+            node-version: 22
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:

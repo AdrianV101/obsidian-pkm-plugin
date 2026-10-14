@@ -14,6 +14,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **`markdown.js`**: one dependency-free markdown parser (CRLF-aware frontmatter split, ATX headings outside fenced code, exact heading lookup with ambiguity errors, code masking) that later fixes adopt; hooks can import it.
 - **Dependabot**: weekly npm and monthly GitHub Actions updates, with minor and patch updates grouped.
 - **`obsidian-pkm doctor`** reads `VAULT_PATH` and the OpenAI key from the `env` block of `~/.claude/settings.json` when the shell environment lacks them, and says which source each value came from (the resolved key variable name is reported). It warns when the environment and `settings.json` hold different values (naming both sources, never the values), and never echoes `settings.json` content when the file fails to parse.
+- CI runs on `windows-latest` x Node 22.
 
 ### Changed
 - **Session-start context is capped at 8,000 characters** (it was ~190 KB for a large vault). The index is cut to 2,500 characters with Overview and Current Status first and Key Links and Related dropped; the devlog shows the three newest entries by the date in their heading (not the oldest, as before for newest-first devlogs), each capped at 1,500; tasks are titles only, active first then by priority and due date, at most 10 plus a `+N more` pointer. Truncated parts end with a `vault_read` marker. A `compact` session (after `/compact`) gets only the project path and task titles. The session summary line and `obsidian-pkm doctor` show semantic index health (status, disabled reason and date, stale notes).
@@ -64,6 +65,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - A note whose filename is stored in a different Unicode normalisation (macOS NFD vs NFC) is found by either spelling.
 - Moving a folder with `vault_move` re-keys the notes inside it in the index instead of indexing the folder as a note, so they stay readable, linkable and trashable. `vault_move` and `vault_trash` index, trash and rewrite links using the normalised path when given backslash paths.
 - The write rules no longer lose a dot-folder segment when a symlink's real target is a dot-folder entry whose name contains backslashes.
+- **Windows**: vault-relative paths in tool output, folder filters and the semantic index always use `/` (`toVaultRel` at the filesystem boundary), and starting the server directly with `node index.js` works on Windows and in paths with spaces.
 
 ### Security
 - `vault-explorer` and `link-auditor` now run with an explicit `tools:` allowlist (the 12 read-only vault tools plus Read, Grep and Glob; `link-auditor` also gets `vault_add_links`), so the allowlists enforce what each agent's prompt already said. Neither can call `vault_write`, `vault_move`, `vault_trash` or `vault_activity` (whose `clear` deletes log rows).

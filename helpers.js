@@ -494,7 +494,7 @@ export function buildBasenameMap(allFiles) {
   const basenameMap = new Map();
   const allFilesSet = new Set(allFiles);
   for (const filePath of allFiles) {
-    const basename = path.basename(filePath, ".md").toLowerCase();
+    const basename = path.posix.basename(filePath, ".md").toLowerCase();
     if (!basenameMap.has(basename)) {
       basenameMap.set(basename, []);
     }
@@ -519,10 +519,10 @@ export function resolveFuzzyFolder(folder, allFiles) {
   // Collect all unique directory paths from the file list
   const dirs = new Set();
   for (const file of allFiles) {
-    let dir = path.dirname(file);
+    let dir = path.posix.dirname(file);
     while (dir && dir !== ".") {
       dirs.add(dir);
-      dir = path.dirname(dir);
+      dir = path.posix.dirname(dir);
     }
   }
 

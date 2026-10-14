@@ -114,7 +114,7 @@ describe("getAllMarkdownFiles", () => {
 
     // Create a symlink inside the vault pointing to the outside directory
     const symlinkPath = path.join(tmpDir, "escape-link");
-    await fs.symlink(outsideDir, symlinkPath);
+    await fs.symlink(outsideDir, symlinkPath, process.platform === "win32" ? "junction" : "dir");
 
     const files = await getAllMarkdownFiles(tmpDir);
     const hasEscaped = files.some(f => f.includes("secret.md"));

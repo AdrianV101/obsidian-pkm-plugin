@@ -230,7 +230,7 @@ describe("dirSize", () => {
     assert.equal(size, 0);
   });
 
-  it("skips symlinks", async () => {
+  it("skips symlinks", { skip: process.platform === "win32" && "file symlinks need privileges on Windows" }, async () => {
     await fs.writeFile(path.join(tmpDir, "real.txt"), "data"); // 4 bytes
     await fs.symlink(path.join(tmpDir, "real.txt"), path.join(tmpDir, "link.txt"));
     const size = await dirSize(tmpDir);

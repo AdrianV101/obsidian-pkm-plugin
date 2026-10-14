@@ -9,6 +9,7 @@ import crypto from "crypto";
 import os from "os";
 import path from "path";
 import { createRequire } from "module";
+import { pathToFileURL } from "url";
 import fs from "fs/promises";
 import { SemanticIndex } from "./embeddings.js";
 import { describeHealth } from "./semantic-health.js";
@@ -181,8 +182,20 @@ export async function startServer() {
   });
 }
 
+/**
+ * Whether the module at `metaUrl` is the script node was started with.
+ * @param {string} metaUrl - import.meta.url of the module
+ * @param {string|undefined} argv1 - process.argv[1]
+ * @param {{ windows?: boolean }} [options]
+ * @returns {boolean}
+ */
+export function isMainModule(metaUrl, argv1, { windows = process.platform === "win32" } = {}) {
+  if (!argv1) return false;
+  return pathToFileURL(argv1, { windows }).href === metaUrl;
+}
+
 // Auto-start when run directly (backward compat: existing users may have
 // "args": ["/path/to/index.js"] in their settings.json)
-if (process.argv[1] && import.meta.url === `file://${process.argv[1]}`) {
+if (isMainModule(import.meta.url, process.argv[1])) {
   startServer();
 }
