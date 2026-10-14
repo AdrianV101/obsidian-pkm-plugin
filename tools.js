@@ -13,6 +13,7 @@ const LINK_FORMAT_NOTE = " Paths in this tool's output are formatted as markdown
  * @returns {Array<Object>} MCP tool definitions
  */
 export function createToolsList(templateDescriptions, templateNames, hasSemanticIndex) {
+  /** @type {Array<Object>} */
   const tools = [
     {
       name: "vault_read",

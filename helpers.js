@@ -110,6 +110,7 @@ export function resolvePath(relativePath, vaultPath) {
  * @param {string[]} [filters.tags_any] - ANY must be present
  * @param {string} [filters.created_after] - YYYY-MM-DD lower bound
  * @param {string} [filters.created_before] - YYYY-MM-DD upper bound
+ * @param {Object<string, *>} [filters.custom_fields] - exact match per frontmatter field (compared as strings); null means the field must be absent
  * @returns {boolean}
  */
 export function matchesFilters(metadata, filters) {
@@ -779,7 +780,7 @@ export function computePeek(content, relativePath) {
  * Format peek data into a human-readable string.
  *
  * @param {{ path: string, sizeChars: number, sizeLines: number, frontmatter: Object|null, headings: Array, preview: string, totalChunks: number }} peekData
- * @param {{ redirected?: boolean }} options
+ * @param {{ redirected?: boolean, formatPath?: (p: string) => string }} [options]
  * @returns {string}
  */
 export function formatPeek(peekData, { redirected = false, formatPath } = {}) {
