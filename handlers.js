@@ -141,6 +141,15 @@ export async function createHandlers({ vaultPath: rawVaultPath, templateRegistry
 
   const fileIndex = await FileIndex.build(vaultPath);
 
+  /** The note's on-disk spelling, which is what the semantic index stores (Unicode form, case). */
+  const onDiskPath = async (rel) => {
+    try {
+      return await fileIndex.resolveFuzzy(rel);
+    } catch {
+      return toVaultRel(rel);
+    }
+  };
+
   /**
    * Resolve a read-tool note path. The input is containment-checked as typed, so a
    * symlink out of the vault is refused as an escape instead of reported missing.
@@ -327,7 +336,7 @@ export async function createHandlers({ vaultPath: rawVaultPath, templateRegistry
     }
 
     fileIndex.add(outputPath);
-    semanticIndex?.notifyChanged?.(toVaultRel(outputPath));
+    semanticIndex?.notifyChanged?.(await onDiskPath(outputPath));
 
     const fm = validation.frontmatter;
     const createdStr = fm.created instanceof Date
@@ -355,7 +364,7 @@ export async function createHandlers({ vaultPath: rawVaultPath, templateRegistry
       }
       throw relError(e, args.path);
     }
-    semanticIndex?.notifyChanged?.(toVaultRel(args.path));
+    semanticIndex?.notifyChanged?.(await onDiskPath(args.path));
     return { content: [{ type: "text", text: `Appended to ${linkFor(args.path)}${args.position ? ` (${args.position})` : ""}` }] };
   }
 
@@ -394,7 +403,7 @@ export async function createHandlers({ vaultPath: rawVaultPath, templateRegistry
       };
     }
 
-    semanticIndex?.notifyChanged?.(toVaultRel(args.path));
+    semanticIndex?.notifyChanged?.(await onDiskPath(args.path));
     return { content: [{ type: "text", text: `Successfully edited ${linkFor(args.path)}` }] };
   }
 
@@ -1005,13 +1014,15 @@ export async function createHandlers({ vaultPath: rawVaultPath, templateRegistry
       // No collision — use original path
     }
 
+    const indexedPath = await onDiskPath(resolvedRelative);
+
     // Create trash directory and move file
     await fs.mkdir(path.dirname(trashAbsolute), { recursive: true });
     if (stat.isDirectory()) await fs.rename(filePath, trashAbsolute);
     else await withNoteLock(filePath, () => fs.rename(filePath, trashAbsolute));
 
     fileIndex.remove(resolvedRelative);
-    await semanticIndex?.notifyRemoved?.(resolvedRelative);
+    await semanticIndex?.notifyRemoved?.(indexedPath);
 
     // Build output
     let text = `Trashed ${resolvedRelative} → ${linkFor(trashRelative)}`;
@@ -1073,6 +1084,8 @@ export async function createHandlers({ vaultPath: rawVaultPath, templateRegistry
     const basenameUnique = afterResolution.status === "resolved" && afterResolution.path === newRelative;
     const newLinkTarget = basenameUnique ? newBasename : newRelative.replace(/\.md$/, "");
 
+    const indexedOldPath = sourceStat.isDirectory() ? oldRelative : await onDiskPath(oldRelative);
+
     // Create destination directory and move file
     await fs.mkdir(path.dirname(newAbsolute), { recursive: true });
     const renameNote = async () => {
@@ -1097,7 +1110,7 @@ export async function createHandlers({ vaultPath: rawVaultPath, templateRegistry
     }
 
     fileIndex.rename(oldRelative, newRelative);
-    semanticIndex?.notifyMoved?.(oldRelative, newRelative);
+    semanticIndex?.notifyMoved?.(indexedOldPath, newRelative);
 
     // Rewrite wikilinks in referring files, and in the moved note itself for its self-links
     let updatedCount = 0;
@@ -1154,7 +1167,7 @@ export async function createHandlers({ vaultPath: rawVaultPath, templateRegistry
       throw relError(e, args.path);
     }
 
-    semanticIndex?.notifyChanged?.(toVaultRel(args.path));
+    semanticIndex?.notifyChanged?.(await onDiskPath(args.path));
     const lines = Object.entries(frontmatter).map(([k, v]) => {
       const display = Array.isArray(v) ? `[${v.join(", ")}]` : String(v);
       return `${k}: ${display}`;
@@ -1238,7 +1251,7 @@ export async function createHandlers({ vaultPath: rawVaultPath, templateRegistry
       throw relError(e, filePath);
     }
 
-    if (added.length > 0) semanticIndex?.notifyChanged?.(toVaultRel(filePath));
+    if (added.length > 0) semanticIndex?.notifyChanged?.(await onDiskPath(filePath));
     if (added.length === 0 && skipped.length > 0) {
       const skipSummary = skipped.map(s => `${path.basename(s.target, ".md")} (${s.reason})`).join(", ");
       return {

@@ -1539,4 +1539,148 @@ describe("SemanticIndex freshness", () => {
     await assert.rejects(() => idx.reindexFile("a.md"), (err) => err.kind === "too_large");
     assert.ok(fake.calls.length - before <= 10, `requests: ${fake.calls.length - before}`);
   });
+
+  it("shutdown during a folder reconcile sends no request after the current batch", async () => {
+    const vault = await vaultWith({ "a.md": "Alpha body." });
+    fake = installFakeOpenAI();
+    const watcher = fakeWatch();
+    const idx = await openIndex(vault, { watch: watcher.watch });
+    const before = fake.calls.length;
+    for (let i = 0; i < 25; i++) {
+      await fs.mkdir(path.join(vault, "drop"), { recursive: true });
+      await fs.writeFile(path.join(vault, "drop", `n${i}.md`), `Dropped ${i}.`);
+    }
+    const gate = deferred();
+    fake.handler = async (inputs) => {
+      await gate.promise;
+      return embeddingsResponse(inputs);
+    };
+
+    watcher.emit("drop");
+    while (fake.calls.length - before < 10) await new Promise(r => setTimeout(r, 5));
+    const stopping = idx.shutdown();
+    gate.resolve();
+    await stopping;
+
+    assert.equal(fake.calls.length - before, 10, "only the batch that was already running is sent");
+  });
+
+  it("a note whose mtime moved but whose content did not is neither updated nor stale at startup", async () => {
+    const vault = await vaultWith({ "a.md": "Alpha body.", "b.md": "Beta body." });
+    fake = installFakeOpenAI();
+    const idx = await openIndex(vault);
+    await idx.shutdown();
+    const touched = new Date("2026-10-01T10:00:00Z");
+    await fs.utimes(path.join(vault, "a.md"), touched, touched);
+    const before = fake.calls.length;
+
+    const reopened = await openIndex(vault);
+
+    assert.deepEqual(await reopened.whenSynced(), { updated: 0, failed: 0, skipped: 0 });
+    assert.equal(fake.calls.length, before);
+    assert.equal(reopened.health().staleFiles, 0);
+    assert.equal(reopened.db.prepare("SELECT mtime_ms FROM files WHERE path = 'a.md'").get().mtime_ms, touched.getTime());
+  });
+
+  it("while disabled, a note with only a new mtime is not counted as stale", async () => {
+    const vault = await vaultWith({ "a.md": "Alpha body.", "b.md": "Beta body." });
+    fake = installFakeOpenAI();
+    const idx = await openIndex(vault);
+    await idx.shutdown();
+    const statsPath = path.join(vault, ".obsidian", "semantic-stats.json");
+    const stats = JSON.parse(await fs.readFile(statsPath, "utf-8"));
+    await fs.writeFile(statsPath, JSON.stringify({ ...stats, status: "disabled", reason: "quota", since: "2026-10-01T00:00:00Z" }));
+    const touched = new Date("2026-10-02T10:00:00Z");
+    await fs.utimes(path.join(vault, "b.md"), touched, touched);
+    fake.handler = () => quotaResponse();
+
+    const reopened = await openIndex(vault);
+
+    assert.equal(reopened.health().status, "disabled");
+    assert.equal(reopened.health().staleFiles, 0);
+  });
+
+  it("a watcher restart that fails to start keeps backing off and ends with the give-up line", async (t) => {
+    const vault = await vaultWith({ "a.md": "Alpha body." });
+    fake = installFakeOpenAI();
+    const base = fakeWatch();
+    let starts = 0;
+    const watch = (...args) => {
+      starts++;
+      if (starts > 1) throw new Error("EMFILE: too many open files, watch");
+      return base.watch(...args);
+    };
+    const { delays, sleep } = recordingSleep();
+    const logs = t.mock.method(console, "error", () => {});
+    await openIndex(vault, { watch, sleep });
+
+    base.watchers[0].emit("error", new Error("boom"));
+    for (let i = 0; i < 10; i++) await new Promise(r => setTimeout(r, 0));
+
+    assert.deepEqual(delays, [1000, 2000, 4000, 8000, 16000]);
+    const lines = logs.mock.calls.map(call => String(call.arguments[0]));
+    assert.ok(lines.some(l => l.startsWith("File watcher: giving up after 5 restarts")));
+  });
+
+  it("a watcher restart pending at shutdown does not replace the watcher of a re-initialised instance", async () => {
+    const vault = await vaultWith({ "a.md": "Alpha body." });
+    fake = installFakeOpenAI();
+    const watcher = fakeWatch();
+    const gate = deferred();
+    let hold = false;
+    const sleep = async () => { if (hold) await gate.promise; };
+    const idx = await openIndex(vault, { watch: watcher.watch, sleep });
+
+    hold = true;
+    watcher.watchers[0].emit("error", new Error("boom"));
+    await idx.shutdown();
+    hold = false;
+    await idx.initialize();
+    await idx.whenIdle();
+    gate.resolve();
+    for (let i = 0; i < 5; i++) await new Promise(r => setTimeout(r, 0));
+
+    assert.equal(watcher.watchers.length, 2, "the stale restart started no third watcher");
+    assert.equal(idx.watcher, watcher.watchers[1]);
+    assert.equal(watcher.watchers[1].closed, false);
+  });
+
+  const splitPads = ["", "a"];
+  for (const pad of splitPads) {
+    it(`an oversize input is never split inside a surrogate pair (pad ${JSON.stringify(pad)})`, async () => {
+      const body = pad + "\u{1F600}".repeat(2500);
+      const vault = await vaultWith({ "emoji.md": body });
+      const lone = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
+      fake = installFakeOpenAI((inputs) => (inputs[0].length > 4000
+        ? errorResponse(400, "This model's maximum context length is 8192 tokens")
+        : embeddingsResponse(inputs)));
+      const idx = await openIndex(vault);
+
+      assert.equal(fake.calls.length, 3);
+      assert.ok(fake.calls.every(inputs => !lone.test(inputs[0])), "no request carries a lone surrogate");
+      assert.equal(idx.db.prepare("SELECT COUNT(*) AS n FROM chunks WHERE file_path = 'emoji.md'").get().n, 1);
+    });
+  }
+
+  it("folder-scoped search of a folder with fewer notes than the limit scores the folder directly", async () => {
+    const files = { "target/t1.md": "TARGET one.", "target/t2.md": "TARGET two." };
+    for (let i = 0; i < 60; i++) files[`other/o${i}.md`] = `OTHER note ${i}.`;
+    const vault = await vaultWith(files);
+    const embed = (text) => {
+      const vec = new Array(DIMS).fill(0);
+      if (text.includes("TARGET")) vec[1] = 1;
+      else vec[0] = 1;
+      return vec;
+    };
+    fake = installFakeOpenAI((inputs) => embeddingsResponse(inputs, embed));
+    const idx = await openIndex(vault);
+    let knnQueries = 0;
+    const knn = idx._knn.bind(idx);
+    idx._knn = (...args) => { knnQueries++; return knn(...args); };
+
+    const results = await idx.searchRaw({ query: "query", folder: "target", limit: 5 });
+
+    assert.deepEqual(results.map(r => r.path).sort(), ["target/t1.md", "target/t2.md"]);
+    assert.equal(knnQueries, 0, "no KNN widening for a folder smaller than the limit");
+  });
 });

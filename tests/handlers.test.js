@@ -3671,3 +3671,32 @@ describe("write tools notify the semantic index", () => {
     });
   }
 });
+
+describe("write tools notify with the on-disk spelling of the note", () => {
+  it("vault_append reports the stored (NFD) name when the request used the NFC spelling", async (t) => {
+    const nfd = "Cafe\u0301.md";
+    const nfc = "Caf\u00e9.md";
+    const vault = await makeVault({ "05-Templates/research-note.md": TEMPLATE_CONTENT, [`notes/${nfd}`]: "# Cafe\n\nBody.\n" });
+    try {
+      try {
+        await fs.access(path.join(vault, "notes", nfc));
+      } catch {
+        t.skip("this filesystem does not equate NFC and NFD names");
+        return;
+      }
+      const events = [];
+      const h = await createHandlers({
+        vaultPath: vault,
+        templateRegistry: await buildTemplateRegistry(vault),
+        semanticIndex: { isAvailable: false, notifyChanged: (p) => events.push(p) },
+        activityLog: null,
+        sessionId: "nfd",
+      });
+      const result = await h.get("vault_append")({ path: `notes/${nfc}`, content: "More." });
+      assert.ok(!result.isError, result.content?.[0]?.text);
+      assert.deepEqual(events, [`notes/${nfd}`]);
+    } finally {
+      await fs.rm(vault, { recursive: true, force: true });
+    }
+  });
+});

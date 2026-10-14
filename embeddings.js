@@ -144,6 +144,7 @@ export class SemanticIndex {
     this._pendingEvents = new Set(); // paths changed while a sync was running
     this._pathLocks = new Map(); // rel -> tail promise of that path's reindex queue
     this._watcherRestarts = 0;
+    this._lifecycle = 0; // bumped by initialize() and shutdown(); stale restart timers compare it
     this._initPromise = null;
     this._syncState = { syncing: false, total: 0, done: 0 };
     this._syncPromise = null;
@@ -187,6 +188,7 @@ export class SemanticIndex {
   async _initialize() {
     // A shut-down instance may be initialised again: start from a clean lifecycle.
     this._closing = false;
+    this._lifecycle++;
     this._syncState = { syncing: false, total: 0, done: 0 };
     this._syncPromise = null;
     this._scanned = false;
@@ -255,6 +257,7 @@ export class SemanticIndex {
 
   async shutdown() {
     this._closing = true;
+    this._lifecycle++;
     if (this._initPromise) await this._initPromise.catch(() => {});
     if (this._abortController) {
       this._abortController.abort();
@@ -473,6 +476,12 @@ export class SemanticIndex {
 
     // Folder-scoped: the folder's chunks may rank far down the global KNN list, so widen k
     // until enough of them pass the filter or k covers every chunk.
+    const folderFiles = this.db.prepare("SELECT COUNT(*) AS n FROM files WHERE substr(path, 1, ?) = ?").get(prefix.length, prefix).n;
+    if (folderFiles < limit) {
+      // The folder cannot fill the limit, so no amount of widening would end the search early:
+      // score its chunks directly.
+      return this._collectResults(this._folderScan(queryVec, prefix), { limit, threshold, excludeFiles, prefix });
+    }
     const totalChunks = this.db.prepare("SELECT COUNT(*) AS n FROM chunks").get().n;
     let k = Math.max(limit * 5, 50);
     for (;;) {
@@ -739,7 +748,7 @@ export class SemanticIndex {
   async _scan() {
     const vaultFiles = await getAllMarkdownFiles(this.vaultPath);
     const indexedFiles = new Map();
-    for (const row of this.db.prepare("SELECT path, mtime_ms FROM files").all()) {
+    for (const row of this.db.prepare("SELECT path, mtime_ms, content_hash FROM files").all()) {
       indexedFiles.set(row.path, row);
     }
     this._lastKnownVaultFiles = vaultFiles.length;
@@ -750,9 +759,19 @@ export class SemanticIndex {
       try {
         const stat = await fs.stat(path.resolve(this.vaultPath, relPath));
         const indexed = indexedFiles.get(relPath);
-        if (!indexed || Math.floor(stat.mtimeMs) !== indexed.mtime_ms) toReindex.push(relPath);
+        const mtimeMs = Math.floor(stat.mtimeMs);
+        if (indexed && mtimeMs === indexed.mtime_ms) continue;
+        if (indexed) {
+          // Only the mtime moved (touch, sync client)? Then the stored vectors are still right.
+          const content = await fs.readFile(path.resolve(this.vaultPath, relPath), "utf-8");
+          if (contentHash(content) === indexed.content_hash) {
+            this.db.prepare("UPDATE files SET mtime_ms = ? WHERE path = ?").run(mtimeMs, relPath);
+            continue;
+          }
+        }
+        toReindex.push(relPath);
       } catch {
-        // File disappeared between listing and stat
+        // File disappeared between listing and stat or read
       }
     }
     for (const indexedPath of indexedFiles.keys()) {
@@ -820,12 +839,15 @@ export class SemanticIndex {
     }
   }
 
+  /** @returns {Error|null} the error when the watcher could not be started */
   _startWatcher() {
     try {
       this.watcher = this._watch(this.vaultPath, { recursive: true }, (_eventType, filename) => this._onWatchEvent(filename));
       this.watcher.on("error", (err) => this._onWatcherError(err));
+      return null;
     } catch (err) {
       console.error(`Could not start file watcher: ${err.message}`);
+      return err;
     }
   }
 
@@ -853,9 +875,14 @@ export class SemanticIndex {
     this._watcherRestarts++;
     const delay = WATCHER_RESTART_BASE_MS * 2 ** (this._watcherRestarts - 1);
     console.error(`File watcher: restarting in ${delay}ms (restart ${this._watcherRestarts}/${MAX_WATCHER_RESTARTS})`);
+    const lifecycle = this._lifecycle;
     this._sleep(delay).then(() => {
-      if (this._closing || !this.db) return;
-      this._startWatcher();
+      if (this._closing || !this.db || lifecycle !== this._lifecycle) return;
+      const failure = this._startWatcher();
+      if (failure) {
+        this._onWatcherError(failure);
+        return;
+      }
       // Catch up on changes made while no watcher was running.
       this._startSync();
     });
@@ -938,6 +965,7 @@ export class SemanticIndex {
       }
     }
     for (let i = 0; i < changed.length; i += REINDEX_BATCH_SIZE) {
+      if (this._closing || this._abortController?.signal.aborted || this._disabled || this._pauseSync) break;
       await Promise.allSettled(changed.slice(i, i + REINDEX_BATCH_SIZE).map(rel => this.reindexFile(rel)));
     }
   }
@@ -1096,7 +1124,10 @@ async function embedAdaptive(texts, apiKey, opts) {
     }
     const text = texts[0];
     if (text.length < MIN_SPLIT_CHARS * 2) throw err;
-    const mid = Math.floor(text.length / 2);
+    let mid = Math.floor(text.length / 2);
+    // Never cut between the two halves of a surrogate pair.
+    const before = text.charCodeAt(mid - 1);
+    if (before >= 0xD800 && before <= 0xDBFF) mid--;
     const [first] = await embedAdaptive([text.slice(0, mid)], apiKey, opts);
     const [second] = await embedAdaptive([text.slice(mid)], apiKey, opts);
     return [combineEmbeddings([first, second], [mid, text.length - mid])];
