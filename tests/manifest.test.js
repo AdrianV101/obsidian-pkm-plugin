@@ -203,6 +203,8 @@ describe("plugin manifest contracts", () => {
         const result = spawnSync("sh", ["-c", command], {
           input: JSON.stringify({ cwd: tmp, session_id: "manifest-test", transcript_path: path.join(tmp, "t.jsonl") }),
           encoding: "utf-8",
+          // A home without .claude/settings.json, so the hook never reads the real one.
+          env: { ...process.env, HOME: tmp, USERPROFILE: tmp },
         });
         assert.equal(result.status, 0, result.stderr);
         assert.doesNotMatch(result.stderr, /Cannot find module/);

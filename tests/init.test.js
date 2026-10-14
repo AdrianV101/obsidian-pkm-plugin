@@ -25,21 +25,22 @@ describe("resolveInputPath", () => {
   it("resolves relative paths to absolute", () => {
     const result = resolveInputPath("my/vault");
     assert.ok(path.isAbsolute(result));
-    assert.ok(result.endsWith("my/vault"));
+    assert.ok(result.endsWith(path.join("my", "vault")));
   });
 
+  // POSIX-style inputs: on Windows path.resolve gives them the current drive, so expectations go through path.resolve too.
   it("strips trailing slashes", () => {
     const result = resolveInputPath("/tmp/vault/");
-    assert.equal(result, "/tmp/vault");
+    assert.equal(result, path.resolve("/tmp/vault"));
   });
 
   it("normalises double slashes", () => {
     const result = resolveInputPath("/tmp//vault///notes");
-    assert.equal(result, "/tmp/vault/notes");
+    assert.equal(result, path.resolve("/tmp/vault/notes"));
   });
 
   it("handles absolute paths unchanged (except normalisation)", () => {
-    assert.equal(resolveInputPath("/tmp/vault"), "/tmp/vault");
+    assert.equal(resolveInputPath("/tmp/vault"), path.resolve("/tmp/vault"));
   });
 
   it("expands multiple $HOME occurrences", () => {

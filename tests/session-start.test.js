@@ -6,10 +6,15 @@ import path from "path";
 import os from "os";
 
 const SCRIPT = path.join(import.meta.dirname, "..", "hooks", "session-start.js");
+// The hook reads ~/.claude/settings.json. A test's fake HOME is passed as USERPROFILE too (Windows
+// takes the home directory from there); without one the hook gets a home that does not exist, so
+// it never reads the real settings.
+const NO_HOME = path.join(os.tmpdir(), `pkm-ss-no-home-${process.pid}`);
 
 function runScript(args, env, stdinData) {
+  const home = env.HOME && env.HOME !== process.env.HOME ? env.HOME : NO_HOME;
   return new Promise((resolve, reject) => {
-    const child = spawn("node", args, { env, stdio: ["pipe", "pipe", "pipe"] });
+    const child = spawn("node", args, { env: { ...env, HOME: home, USERPROFILE: home }, stdio: ["pipe", "pipe", "pipe"] });
     let stdout = "";
     let stderr = "";
     child.stdout.on("data", (d) => { stdout += d; });

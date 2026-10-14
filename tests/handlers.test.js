@@ -2062,7 +2062,8 @@ describe("handlePeek", () => {
     const text = result.content[0].text;
     assert.ok(text.includes("Heading Outline"));
     assert.ok(text.includes("["), "should contain char counts in brackets");
-    assert.ok(!text.match(/L\d+/), "should not contain line number prefixes");
+    // Anchored to a line start: the obsidian:// link carries the random tmp vault name, which can contain "L<digit>".
+    assert.ok(!text.match(/^\s*L\d+\s/m), "should not contain line number prefixes");
   });
 
   it("supports fuzzy path resolution", async () => {

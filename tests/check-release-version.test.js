@@ -4,6 +4,7 @@ import { spawn } from "node:child_process";
 import fs from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
+import { pathToFileURL } from "node:url";
 import { checkReleaseVersion } from "../scripts/release-version.js";
 
 const SCRIPT = path.join(import.meta.dirname, "..", "scripts", "check-release-version.js");
@@ -79,7 +80,8 @@ describe("check-release-version CLI", () => {
   });
 
   it("never exits silently with 0: even when loaded rather than run as the entry point, a mismatch fails and a match prints the pass line", async () => {
-    const loader = ["-e", `import(${JSON.stringify(SCRIPT)})`];
+    // A file URL, not a path: import() reads "D:\..." as a URL with the scheme "d:" on Windows.
+    const loader = ["-e", `import(${JSON.stringify(pathToFileURL(SCRIPT).href)})`];
     const failure = await run({ GITHUB_REF_TYPE: "branch", GITHUB_REF_NAME: "master" }, loader);
     assert.equal(failure.code, 1, "mismatch must not pass");
     assert.match(failure.stderr, /must run on a tag/);

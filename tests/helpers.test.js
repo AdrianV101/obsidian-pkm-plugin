@@ -2,6 +2,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import fs from "fs/promises";
 import path from "path";
+import { fileURLToPath } from "node:url";
 import { extractFrontmatter, parseFrontmatterText } from "../frontmatter.js";
 import {
   resolvePath,
@@ -31,14 +32,15 @@ import {
 } from "../helpers.js";
 
 describe("resolvePath", () => {
+  // A POSIX-style root: on Windows path.resolve gives it the current drive, so expectations go through path.resolve too.
   const vault = "/home/user/vault";
 
   it("resolves a simple relative path", () => {
-    assert.equal(resolvePath("notes/hello.md", vault), path.join(vault, "notes/hello.md"));
+    assert.equal(resolvePath("notes/hello.md", vault), path.resolve(vault, "notes/hello.md"));
   });
 
   it("resolves empty string to vault root", () => {
-    assert.equal(resolvePath("", vault), vault);
+    assert.equal(resolvePath("", vault), path.resolve(vault));
   });
 
   it("throws on directory traversal with ../", () => {
@@ -56,12 +58,12 @@ describe("resolvePath", () => {
 
   it("allows nested path within vault", () => {
     const result = resolvePath("a/b/c/d.md", vault);
-    assert.equal(result, path.join(vault, "a/b/c/d.md"));
+    assert.equal(result, path.resolve(vault, "a/b/c/d.md"));
   });
 
   it("normalizes redundant separators", () => {
     const result = resolvePath("notes//hello.md", vault);
-    assert.ok(result.startsWith(vault));
+    assert.equal(result, path.resolve(vault, "notes", "hello.md"));
   });
 });
 
@@ -528,7 +530,7 @@ describe("validateFrontmatterStrict", () => {
 
 describe("template defaults", () => {
   it("note.md template has a non-empty default tag", async () => {
-    const templatePath = path.join(path.dirname(new URL(import.meta.url).pathname), "..", "templates", "note.md");
+    const templatePath = fileURLToPath(new URL("../templates/note.md", import.meta.url));
     const content = await fs.readFile(templatePath, "utf-8");
     const frontmatter = parseFrontmatterText(content.split("---")[1]);
     assert.ok(Array.isArray(frontmatter.tags), "tags should be an array");
