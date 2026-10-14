@@ -260,3 +260,56 @@ describe("doctor command", () => {
     assert.ok(stdout.includes("\u26A0"), "output should contain warning character");
   });
 });
+
+describe("doctor semantic health", () => {
+  let tmpDir;
+
+  beforeEach(async () => {
+    tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "pkm-doctor-health-"));
+    fakeHome = path.join(tmpDir, "home");
+    await fs.mkdir(fakeHome);
+  });
+
+  afterEach(async () => {
+    await fs.rm(tmpDir, { recursive: true, force: true });
+  });
+
+  const cases = [
+    {
+      name: "disabled index",
+      key: "sk-test",
+      stats: { indexed_files: 735, vault_files: 2469, status: "disabled", reason: "OpenAI quota exhausted. Add credits; it re-enables automatically.", since: "2026-07-03T09:12:00.000Z", last_success_at: null, stale_files: 1734 },
+      line: "⚠ Semantic index disabled since 2026-07-03 (OpenAI quota exhausted. Add credits; it re-enables automatically.), 1734 notes stale",
+    },
+    {
+      name: "healthy index",
+      key: "sk-test",
+      stats: { indexed_files: 50, vault_files: 50, status: "ok", reason: null, since: null, last_success_at: "2026-10-13T08:00:00.000Z", stale_files: 0 },
+      line: "✓ Semantic index ok (50/50 notes indexed, last success 2026-10-13T08:00:00.000Z)",
+    },
+    {
+      name: "no stats file yet",
+      key: "sk-test",
+      stats: null,
+      line: "⚠ Semantic index has not reported yet (no .obsidian/semantic-stats.json); start the MCP server once",
+    },
+    { name: "no API key", key: null, stats: { indexed_files: 1, vault_files: 1, status: "ok", stale_files: 0 }, line: null },
+  ];
+  for (const c of cases) {
+    it(`reports semantic health from semantic-stats.json: ${c.name}`, async () => {
+      const vaultPath = path.join(tmpDir, "vault");
+      await fs.mkdir(path.join(vaultPath, ".obsidian"), { recursive: true });
+      if (c.stats) await fs.writeFile(path.join(vaultPath, ".obsidian", "semantic-stats.json"), JSON.stringify(c.stats));
+      const env = { ...process.env, VAULT_PATH: vaultPath, };
+      delete env.VAULT_PKM_OPENAI_KEY;
+      delete env.OBSIDIAN_PKM_OPENAI_KEY;
+      delete env.OPENAI_API_KEY;
+      if (c.key) env.VAULT_PKM_OPENAI_KEY = c.key;
+
+      const { stdout } = await runDoctor(env);
+
+      if (c.line) assert.ok(stdout.includes(c.line), stdout);
+      else assert.ok(!stdout.includes("Semantic index"), stdout);
+    });
+  }
+});
