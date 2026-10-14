@@ -384,7 +384,11 @@ export class FileIndex {
 //
 // Guarantees:
 // - Plugin processes (any number of servers on one vault) are serialised per note by an
-//   in-process queue plus an O_EXCL lock file, so their updates never overwrite each other.
+//   in-process queue plus an O_EXCL lock file holding a token unique to its holder, and a
+//   holder only ever removes its own lock. A lock older than the stale timeout (left by a
+//   crashed process) is taken over by one waiter at a time. That takeover can still race with a
+//   holder that outlived the stale timeout releasing its own lock at the same instant; the
+//   mtime/size/inode re-check before the rename (below) is then the fallback against a lost update.
 // - Writers outside the plugin (Obsidian, sync clients) take no lock. They are detected by
 //   comparing mtime/size/inode just before the rename and the update is re-applied; a write
 //   landing in the few microseconds between that check and the rename can still be lost.
@@ -425,37 +429,88 @@ function conflict(message) {
   return Object.assign(new Error(message), { code: "ECONFLICT" });
 }
 
+const uniqueToken = () => `${process.pid} ${Date.now()} ${crypto.randomBytes(8).toString("hex")}`;
+
+/** Remove the lock file only while it still holds `token`: a holder never deletes another's lock. */
+async function releaseLockFile(lock, token) {
+  try {
+    if (await fs.readFile(lock, "utf-8") !== token) return;
+  } catch (e) {
+    if (e.code === "ENOENT") return;
+    throw e;
+  }
+  await fs.rm(lock, { force: true });
+}
+
+/** @returns {Promise<"gone"|"fresh"|"stale">} */
+async function lockState(file, staleLockMs) {
+  try {
+    return Date.now() - (await fs.stat(file)).mtimeMs > staleLockMs ? "stale" : "fresh";
+  } catch (e) {
+    if (e.code === "ENOENT") return "gone";
+    throw e;
+  }
+}
+
 /**
- * Take the cross-process lock for a note: an exclusively created `.<hash>.lock` file next to it.
- * A lock older than `staleLockMs` is treated as left by a crashed process and removed.
+ * Remove `lock` if it is stale (left by a crashed process). Waiters take turns through a second
+ * O_EXCL file, the guard, so of several waiters that find the same stale lock only one removes it,
+ * after re-checking it under the guard; the others go back to waiting. While the stale lock
+ * exists nobody can create a new one, so the re-checked lock is the one removed, unless its own
+ * holder, slower than `staleLockMs`, releases it in that instant and another process re-creates it.
+ * @returns {Promise<boolean>} true when the lock is gone (try to create it again at once)
+ */
+async function takeOverIfStale(lock, staleLockMs, beforeTakeover) {
+  const state = await lockState(lock, staleLockMs);
+  if (state !== "stale") return state === "gone";
+  if (beforeTakeover) await beforeTakeover();
+  const guard = `${lock}.takeover`;
+  const token = uniqueToken();
+  try {
+    await fs.writeFile(guard, token, { flag: "wx" });
+  } catch (e) {
+    if (e.code !== "EEXIST") throw e;
+    // A guard is held for a few system calls only; an old one was left by a crash mid-takeover.
+    if (await lockState(guard, staleLockMs) === "stale") await fs.rm(guard, { force: true });
+    return false;
+  }
+  try {
+    const again = await lockState(lock, staleLockMs);
+    if (again === "stale") await fs.rm(lock, { force: true });
+    return again !== "fresh";
+  } finally {
+    await releaseLockFile(guard, token);
+  }
+}
+
+/**
+ * Take the cross-process lock for a note: an exclusively created `.<hash>.lock` file next to it,
+ * holding a token unique to this holder. A lock older than `staleLockMs` is treated as left by a
+ * crashed process and taken over. Use withNoteLock; this is exported for tests.
+ * @param {string} target real path of the note
+ * @param {{
+ *   staleLockMs: number, lockTimeoutMs: number, sleep: (ms: number) => Promise<void>,
+ *   beforeTakeover?: () => Promise<void>,
+ * }} options `beforeTakeover` is a test seam, awaited after a lock is judged stale
  * @returns {Promise<() => Promise<void>>} release function
  */
-async function acquireLockFile(target, { staleLockMs, lockTimeoutMs, sleep }) {
+export async function acquireLockFile(target, { staleLockMs, lockTimeoutMs, sleep, beforeTakeover }) {
   const lock = lockPathFor(target);
+  const token = uniqueToken();
   let waited = 0;
   for (let i = 0; ; i++) {
     try {
-      await fs.writeFile(lock, `${process.pid} ${Date.now()}`, { flag: "wx" });
-      return () => fs.rm(lock, { force: true });
+      await fs.writeFile(lock, token, { flag: "wx" });
+      return () => releaseLockFile(lock, token);
     } catch (e) {
       if (e.code !== "EEXIST") throw e;
     }
-    try {
-      const st = await fs.stat(lock);
-      if (Date.now() - st.mtimeMs > staleLockMs) {
-        // Re-check so a lock another process just replaced is not removed.
-        const again = await fs.stat(lock);
-        if (again.mtimeMs === st.mtimeMs) await fs.rm(lock, { force: true });
-        continue;
-      }
-    } catch (e) {
-      if (e.code === "ENOENT") continue;
-      throw e;
-    }
+    if (await takeOverIfStale(lock, staleLockMs, beforeTakeover)) continue;
     if (waited >= lockTimeoutMs) {
       throw conflict(`Gave up updating ${path.basename(target)}: another process held its lock for ${waited} ms. Try again.`);
     }
-    const ms = Math.min(50, 1 + i);
+    // Jitter, so waiters that started together do not retry in lockstep.
+    const ms = Math.ceil(Math.min(50, 1 + i) * (0.5 + Math.random()));
     waited += ms;
     await sleep(ms);
   }

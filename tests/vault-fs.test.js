@@ -14,6 +14,7 @@ import {
   mutateFile,
   writeNew,
   withNoteLock,
+  acquireLockFile,
 } from "../vault-fs.js";
 
 const IS_WIN = process.platform === "win32";
@@ -435,7 +436,7 @@ describe("FileIndex", () => {
 // ─── mutateFile / writeNew ────────────────────────────────────────────
 
 async function tempNames(dir) {
-  return (await fs.readdir(dir)).filter((n) => n.endsWith(".tmp") || n.endsWith(".lock"));
+  return (await fs.readdir(dir)).filter((n) => n.endsWith(".tmp") || n.includes(".lock"));
 }
 
 describe("mutateFile", () => {
@@ -802,6 +803,63 @@ describe("mutateFile staging and locking", () => {
     await fs.writeFile(held, "99999999 0");
     const old = new Date(Date.now() - 60_000);
     await fs.utimes(held, old, old);
+    await mutateFile(p, (c) => c + "x", { staleLockMs: 10_000, sleep: async () => {} });
+    assert.equal(await fs.readFile(p, "utf-8"), "start\nx");
+    assert.deepEqual(await tempNames(d), []);
+  });
+
+  it("release leaves in place a lock that another process has taken over meanwhile", async () => {
+    const { d, p } = await sub();
+    let lock;
+    await withNoteLock(p, async () => {
+      lock = path.join(d, (await fs.readdir(d)).find((n) => n.endsWith(".lock")));
+      // Another process judged this lock stale and replaced it with its own.
+      await fs.writeFile(lock, "another holder's token");
+    });
+    assert.equal(await fs.readFile(lock, "utf-8"), "another holder's token");
+  });
+
+  it("of two waiters that find the same stale lock, only one takes it over; the other waits until it is released", async () => {
+    const { d, p } = await sub();
+    const lock = await lockPathFor(d, p);
+    await fs.writeFile(lock, "token of a crashed process");
+    const old = new Date(Date.now() - 60_000);
+    await fs.utimes(lock, old, old);
+    const target = await fs.realpath(p);
+
+    // Both waiters judge the lock stale before either acts on it; A takes it over first, then B acts on what it saw.
+    let bSawStale;
+    const bStale = new Promise((r) => { bSawStale = r; });
+    const a = acquireLockFile(target, {
+      staleLockMs: 10_000, lockTimeoutMs: 60_000, sleep: async () => {},
+      beforeTakeover: async () => { await bStale; },
+    });
+    let aReleased = false;
+    let bSleeps = 0;
+    const b = acquireLockFile(target, {
+      staleLockMs: 10_000, lockTimeoutMs: 60_000,
+      beforeTakeover: async () => { bSawStale(); await a; },
+      sleep: async () => {
+        if (++bSleeps === 3) {
+          aReleased = true;
+          await (await a)();
+        }
+      },
+    });
+    const releaseB = await b;
+    assert.equal(aReleased, true, "B got the lock while A still held it");
+    await releaseB();
+    assert.deepEqual(await tempNames(d), []);
+  });
+
+  it("a takeover guard left behind by a crash mid-takeover does not block the takeover of a stale lock", async () => {
+    const { d, p } = await sub();
+    const lock = await lockPathFor(d, p);
+    const old = new Date(Date.now() - 60_000);
+    for (const file of [lock, `${lock}.takeover`]) {
+      await fs.writeFile(file, "token of a crashed process");
+      await fs.utimes(file, old, old);
+    }
     await mutateFile(p, (c) => c + "x", { staleLockMs: 10_000, sleep: async () => {} });
     assert.equal(await fs.readFile(p, "utf-8"), "start\nx");
     assert.deepEqual(await tempNames(d), []);
