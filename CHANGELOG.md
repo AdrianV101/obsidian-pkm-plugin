@@ -30,6 +30,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - A fuzzy path that contains `/` must match the end of the real path (`research/findings` finds `projects/app/research/findings.md`; `wrong-folder/findings` no longer falls back to any `findings.md`). Ambiguity errors now say "pass the full path" instead of suggesting a `folder` parameter that read tools don't have.
 
 ### Fixed
+- **Wikilinks inside code are no longer treated as links.** Fenced code blocks and inline code spans are ignored by `vault_links`, `vault_neighborhood`, `vault_link_health`, `vault_add_links`, `vault_suggest_links`, `vault_trash` and `vault_move`.
+- **Escaped table links** `[[note\|alias]]` now resolve to `note`.
+- **One link resolver for every graph tool.** Paths match case-insensitively. `[[folder/note]]` resolves by path suffix and no longer falls back to any `note.md`. `vault_add_links` deduplicates by resolved note instead of by basename.
+- `vault_neighborhood` with `include_semantic` and `vault_tags` no longer fail on, or skip, notes whose `tags` is a single value.
 - `vault_query` no longer fails on notes whose `tags` is a single value (`tags: dev`, `tags: 2024`); a scalar counts as a one-element list. Result paths are always vault-relative, including when `folder` was matched fuzzily.
 - `vault_edit`'s "multiple matches" error lists the line number of each match (up to 10).
 - `vault_suggest_links` no longer suggests the source note itself when it is given by a short name.

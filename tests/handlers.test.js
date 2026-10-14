@@ -3237,3 +3237,130 @@ describe("heading lookup and vault_read output cap", () => {
     assert.equal(await fs.readFile(path.join(dir, "append-missing.md"), "utf-8"), "# T\nbody\n\nEnd");
   });
 });
+
+// ─── Shared link parser/resolver in graph tools ──────────────────────
+
+describe("graph tools use the shared link parser and resolver", () => {
+  /** Temp vault from { "rel/path.md": content } plus handlers bound to it. */
+  async function linkVault(files, semanticIndex = null) {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "resolver-handlers-"));
+    for (const [rel, content] of Object.entries(files)) {
+      await fs.mkdir(path.dirname(path.join(dir, rel)), { recursive: true });
+      await fs.writeFile(path.join(dir, rel), content);
+    }
+    const h = await createHandlers({
+      vaultPath: dir,
+      templateRegistry: new Map(),
+      semanticIndex,
+      activityLog: null,
+      sessionId: "resolver-test",
+    });
+    return { dir, h };
+  }
+
+  it("vault_links lists outgoing links outside code, with \\| treated as the alias separator", async () => {
+    const { dir, h } = await linkVault({
+      "beta.md": "# Beta\n",
+      "src.md": "| [[beta\\|B]] |\n```\n[[ghost]]\n```\n",
+    });
+    const text = (await h.get("vault_links")({ path: "src.md", direction: "outgoing" })).content[0].text;
+    assert.ok(text.includes("- [[beta]]"), text);
+    assert.ok(!text.includes("ghost"), text);
+    assert.ok(!text.includes("beta\\"), text);
+    await fs.rm(dir, { recursive: true });
+  });
+
+  it("vault_links does not count a link whose folder part doesn't match as incoming", async () => {
+    const { dir, h } = await linkVault({
+      "notes/target.md": "# Target\n",
+      "good.md": "[[notes/target]]\n",
+      "bad.md": "[[archive/target]]\n",
+    });
+    const text = (await h.get("vault_links")({ path: "notes/target.md", direction: "incoming" })).content[0].text;
+    assert.ok(text.includes("good.md"), text);
+    assert.ok(!text.includes("bad.md"), text);
+    await fs.rm(dir, { recursive: true });
+  });
+
+  it("vault_neighborhood does not follow links that appear only inside code", async () => {
+    const { dir, h } = await linkVault({
+      "hub.md": "[[real]]\n`[[hidden]]`\n",
+      "real.md": "# Real\n",
+      "hidden.md": "# Hidden\n",
+    });
+    const text = (await h.get("vault_neighborhood")({ path: "hub.md", depth: 1, direction: "outgoing" })).content[0].text;
+    assert.ok(text.includes("real.md"), text);
+    assert.ok(!text.includes("hidden.md"), text);
+    await fs.rm(dir, { recursive: true });
+  });
+
+  it("vault_link_health reports wrong-folder links as broken and ignores links inside code", async () => {
+    const { dir, h } = await linkVault({
+      "notes/good.md": "# Good\n",
+      "src.md": "[[archive/good]] and [[notes/good]]\n```\n[[code-ghost]]\n```\n",
+    });
+    const text = (await h.get("vault_link_health")({ checks: ["broken"] })).content[0].text;
+    assert.ok(text.includes("[[archive/good]]"), text);
+    assert.ok(!text.includes("[[notes/good]]"), text);
+    assert.ok(!text.includes("code-ghost"), text);
+    await fs.rm(dir, { recursive: true });
+  });
+
+  it("vault_add_links deduplicates by resolved note, not by basename", async () => {
+    const { dir, h } = await linkVault({
+      "a/dup.md": "# A\n",
+      "b/dup.md": "# B\n",
+      "src.md": "# Src\n\n## Related\n- [[a/dup]]\n",
+    });
+    const text = (await h.get("vault_add_links")({
+      path: "src.md",
+      links: [{ target: "a/dup.md" }, { target: "b/dup.md" }],
+    })).content[0].text;
+    assert.ok(text.includes("Added 1"), text);
+    assert.ok(text.includes("dup (already linked)"), text);
+    const content = await fs.readFile(path.join(dir, "src.md"), "utf-8");
+    assert.ok(content.includes("- [[b/dup]]"), content);
+    await fs.rm(dir, { recursive: true });
+  });
+
+  it("vault_suggest_links only filters notes the content's links actually resolve to", async () => {
+    const { dir, h } = await linkVault({
+      "notes/gamma.md": "# Gamma\n",
+      "notes/beta.md": "# Beta\n",
+    }, createMockSemanticIndex([
+      { path: "notes/gamma.md", score: 0.9, preview: "Gamma" },
+      { path: "notes/beta.md", score: 0.8, preview: "Beta" },
+    ]));
+    const text = (await h.get("vault_suggest_links")({ content: "See [[elsewhere/gamma]] and [[BETA]]." })).content[0].text;
+    assert.ok(text.includes("notes/gamma.md"), text);
+    assert.ok(!text.includes("notes/beta.md"), text);
+    await fs.rm(dir, { recursive: true });
+  });
+});
+
+describe("scalar frontmatter tags in graph and tag tools", () => {
+  async function scalarVault(semanticIndex = null) {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "scalar-tags-"));
+    await fs.writeFile(path.join(dir, "a.md"), "---\ntags: dev\n---\n# A\nSome body text.\n");
+    await fs.writeFile(path.join(dir, "b.md"), "---\ntype: note\ntags: dev\n---\n# B\nOther body.\n");
+    const h = await createHandlers({
+      vaultPath: dir, templateRegistry: new Map(), semanticIndex, activityLog: null, sessionId: "scalar-tags",
+    });
+    return { dir, h };
+  }
+
+  it("vault_neighborhood include_semantic lists a related note whose tags is a scalar", async () => {
+    const { dir, h } = await scalarVault(createMockSemanticIndex([{ path: "b.md", score: 0.9, preview: "B" }]));
+    const text = (await h.get("vault_neighborhood")({ path: "a.md", include_semantic: true })).content[0].text;
+    assert.ok(text.includes("Semantically related"), text);
+    assert.ok(text.includes("tags: dev"), text);
+    await fs.rm(dir, { recursive: true });
+  });
+
+  it("vault_tags counts notes whose tags is a scalar", async () => {
+    const { dir, h } = await scalarVault();
+    const text = (await h.get("vault_tags")({})).content[0].text;
+    assert.match(text, /dev \(2\)/);
+    await fs.rm(dir, { recursive: true });
+  });
+});

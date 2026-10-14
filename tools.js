@@ -326,7 +326,7 @@ Pass custom <%...%> variables via the 'variables' parameter.` + LINK_FORMAT_NOTE
     {
       name: "vault_add_links",
       description: "Add annotated wikilinks to a note's section (default: ## Related). " +
-        "Deduplicates by basename (skips links already present). " +
+        "Skips targets the note already links to (links are resolved like Obsidian: path, path suffix, then basename). " +
         "Creates the section if missing. Requires exact path." + LINK_FORMAT_NOTE,
       inputSchema: {
         type: "object",

@@ -20,8 +20,19 @@ import {
   AUTO_REDIRECT_THRESHOLD,
   FORCE_HARD_CAP,
   CHUNK_SIZE,
+  toTagList,
 } from "./helpers.js";
-import { exploreNeighborhood, formatNeighborhood, findFilesLinkingTo, rewriteWikilinks, extractWikilinks, resolveLink, buildIncomingIndex } from "./graph.js";
+import {
+  exploreNeighborhood,
+  formatNeighborhood,
+  findFilesLinkingTo,
+  rewriteWikilinks,
+  extractWikilinks,
+  buildIncomingIndex,
+  createLinkResolver,
+  collectLinkedPaths,
+  resolutionPaths,
+} from "./graph.js";
 import { getAllMarkdownFiles, extractFrontmatter } from "./utils.js";
 import { mutateFile, writeNew, withNoteLock, normalizeVaultRoot, resolveSafe, hasDotSegment, assertWritableReal, FileIndex, toVaultRel } from "./vault-fs.js";
 import { findSection, matchHeadings, parseHeadings, splitFrontmatter } from "./markdown.js";
@@ -147,6 +158,12 @@ export async function createHandlers({ vaultPath: rawVaultPath, templateRegistry
   };
 
   const SESSION_ID_DISPLAY_LEN = 8;
+
+  /** Fresh note listing plus the link resolver built from it (graph tools never use the startup snapshot). */
+  async function freshGraph() {
+    const allFiles = await fileIndex.listFresh();
+    return { allFiles, resolver: createLinkResolver(allFiles) };
+  }
 
   // ── File I/O ────────────────────────────────────────────────────────
 
@@ -500,8 +517,8 @@ export async function createHandlers({ vaultPath: rawVaultPath, templateRegistry
     }
 
     if (args.direction !== "outgoing") {
-      const allFilesList = await fileIndex.listFresh();
-      const linkingFiles = await findFilesLinkingTo(resolvedVaultRelative, vaultPath, allFilesList, fileIndex.basenameMap, new Set(allFilesList));
+      const { allFiles, resolver } = await freshGraph();
+      const linkingFiles = await findFilesLinkingTo(resolvedVaultRelative, vaultPath, allFiles, resolver);
       result.incoming = linkingFiles.map(({ file }) => file);
     }
 
@@ -521,9 +538,12 @@ export async function createHandlers({ vaultPath: rawVaultPath, templateRegistry
     const depth = Math.min(positiveInt(args.depth, 2), 5);
     const direction = args.direction || "both";
 
+    const { allFiles, resolver } = await freshGraph();
     const result = await exploreNeighborhood({
       startPath: resolvedPath,
       vaultPath,
+      allFiles,
+      resolver,
       depth,
       direction,
     });
@@ -566,7 +586,8 @@ export async function createHandlers({ vaultPath: rawVaultPath, templateRegistry
               const fm = extractFrontmatter(fc);
               const meta = [];
               if (fm?.type) meta.push(`type: ${fm.type}`);
-              if (fm?.tags?.length) meta.push(`tags: ${fm.tags.join(", ")}`);
+              const fmTags = toTagList(fm?.tags);
+              if (fmTags.length) meta.push(`tags: ${fmTags.join(", ")}`);
               if (meta.length > 0) line += `\n  ${meta.join(" | ")}`;
             } catch (e) { if (e.code !== "ENOENT") throw e; }
             text += line + "\n";
@@ -664,8 +685,8 @@ export async function createHandlers({ vaultPath: rawVaultPath, templateRegistry
       const fileTags = new Set();
 
       const metadata = extractFrontmatter(content);
-      if (metadata && Array.isArray(metadata.tags)) {
-        for (const tag of metadata.tags) {
+      if (metadata) {
+        for (const tag of toTagList(metadata.tags)) {
           if (tag) fileTags.add(String(tag).toLowerCase());
         }
       }
@@ -785,9 +806,12 @@ export async function createHandlers({ vaultPath: rawVaultPath, templateRegistry
         excludeFiles: new Set([resolvedAnchor])
       });
 
+      const { allFiles, resolver } = await freshGraph();
       const neighborhood = await exploreNeighborhood({
         startPath: resolvedAnchor,
         vaultPath,
+        allFiles,
+        resolver,
         depth: 3,
         direction: "both",
       });
@@ -843,9 +867,8 @@ export async function createHandlers({ vaultPath: rawVaultPath, templateRegistry
     const body = splitFrontmatter(inputText).body.trim();
     if (!body) throw new Error("No content to analyze");
 
-    const linkedNames = new Set(
-      extractWikilinks(inputText).map(t => path.basename(t, ".md").toLowerCase())
-    );
+    const { allFiles, resolver } = await freshGraph();
+    const linkedPaths = collectLinkedPaths(inputText, resolver);
 
     const excludeFiles = new Set();
     if (source) excludeFiles.add(source.rel);
@@ -863,8 +886,7 @@ export async function createHandlers({ vaultPath: rawVaultPath, templateRegistry
     const suggestions = [];
     for (const r of results) {
       if (suggestions.length >= candidateLimit) break;
-      const basename = path.basename(r.path, ".md").toLowerCase();
-      if (linkedNames.has(basename)) continue;
+      if (linkedPaths.has(r.path)) continue;
       suggestions.push(r);
     }
 
@@ -876,6 +898,8 @@ export async function createHandlers({ vaultPath: rawVaultPath, templateRegistry
       const neighborhood = await exploreNeighborhood({
         startPath: source.rel,
         vaultPath,
+        allFiles,
+        resolver,
         depth: 2,
         direction: "both",
       });
@@ -930,8 +954,8 @@ export async function createHandlers({ vaultPath: rawVaultPath, templateRegistry
     await writableNote(resolvedRelative);
 
     // Find incoming links for warning output
-    const allFilesList = await fileIndex.listFresh();
-    const linkingFiles = await findFilesLinkingTo(resolvedRelative, vaultPath, allFilesList, fileIndex.basenameMap, new Set(allFilesList));
+    const { allFiles, resolver } = await freshGraph();
+    const linkingFiles = await findFilesLinkingTo(resolvedRelative, vaultPath, allFiles, resolver);
 
     // Determine trash destination: .trash/<original-relative-path>
     let trashRelative = path.join(".trash", resolvedRelative);
@@ -997,9 +1021,9 @@ export async function createHandlers({ vaultPath: rawVaultPath, templateRegistry
     }
 
     // Find files linking to the source (before move)
-    const allFilesList = await fileIndex.listFresh();
+    const { allFiles, resolver } = await freshGraph();
     const linkingFiles = args.update_links !== false
-      ? await findFilesLinkingTo(oldRelative, vaultPath, allFilesList, fileIndex.basenameMap, new Set(allFilesList))
+      ? await findFilesLinkingTo(oldRelative, vaultPath, allFiles, resolver)
       : [];
 
     // Create destination directory and move file
@@ -1096,7 +1120,8 @@ export async function createHandlers({ vaultPath: rawVaultPath, templateRegistry
     // Exact path only — destructive operation
     const absPath = await safe(filePath);
     await writableNote(filePath);
-    await fileIndex.listFresh();
+    const { allFiles, resolver } = await freshGraph();
+    const noteSet = new Set(allFiles);
 
     let added = [];
     let skipped = [];
@@ -1106,35 +1131,33 @@ export async function createHandlers({ vaultPath: rawVaultPath, templateRegistry
         skipped = [];
         let content = original;
 
-        // Extract existing wikilinks for deduplication (case-insensitive basename)
-        const existingLinks = extractWikilinks(content).map(
-          l => path.basename(l.split("#")[0].split("^")[0].trim(), ".md").toLowerCase()
-        );
+        // Deduplicate against the notes the existing links resolve to (ambiguous links count for each candidate)
+        const alreadyLinked = collectLinkedPaths(content, resolver);
 
         for (const { target, annotation = "" } of links) {
           const targetWithExt = target.endsWith(".md") ? target : target + ".md";
-          const targetBasename = path.basename(target, ".md").toLowerCase();
 
-          if (!fileIndex.has(targetWithExt)) {
+          if (!noteSet.has(targetWithExt)) {
             skipped.push({ target, reason: "not found" });
             continue;
           }
 
-          if (existingLinks.includes(targetBasename)) {
+          if (alreadyLinked.has(targetWithExt)) {
             skipped.push({ target, reason: "already linked" });
             continue;
           }
 
-          // Use full path for disambiguation when basename is not unique
-          const candidates = fileIndex.basenameMap.get(targetBasename) || [];
-          const displayName = candidates.length > 1
-            ? targetWithExt.replace(/\.md$/, "")
-            : path.basename(target, ".md");
+          // Bare basename only when it resolves back to this exact note
+          const basename = path.posix.basename(targetWithExt, ".md");
+          const byBasename = resolver.resolve(basename);
+          const displayName = byBasename.status === "resolved" && byBasename.path === targetWithExt
+            ? basename
+            : targetWithExt.replace(/\.md$/, "");
           const entry = annotation
             ? `- [[${displayName}]] — ${annotation}`
             : `- [[${displayName}]]`;
           added.push(entry);
-          existingLinks.push(targetBasename);
+          alreadyLinked.add(targetWithExt);
         }
 
         if (added.length === 0) return original;
@@ -1178,8 +1201,7 @@ export async function createHandlers({ vaultPath: rawVaultPath, templateRegistry
 
   async function handleLinkHealth(args) {
     const { checks = ["orphans", "broken", "weak", "ambiguous"], limit = 20 } = args;
-    const allFilesList = await fileIndex.listFresh();
-    const allFilesSet = new Set(allFilesList);
+    const { allFiles: allFilesList, resolver } = await freshGraph();
 
     // Scope to folder if specified
     let scopedFiles;
@@ -1205,10 +1227,10 @@ export async function createHandlers({ vaultPath: rawVaultPath, templateRegistry
         throw e;
       }
       const outgoing = extractWikilinks(content);
-      const resolved = outgoing.map(link => ({
-        raw: link,
-        ...resolveLink(link, fileIndex.basenameMap, allFilesSet)
-      }));
+      const resolved = outgoing.map(link => {
+        const resolution = resolver.resolve(link);
+        return { raw: link, paths: resolutionPaths(resolution), ambiguous: resolution.status === "ambiguous" };
+      });
       const fm = extractFrontmatter(content);
       fileData.set(file, { resolved, frontmatter: fm });
     }
@@ -1216,7 +1238,7 @@ export async function createHandlers({ vaultPath: rawVaultPath, templateRegistry
     // Build incoming index once — O(M) instead of per-file findFilesLinkingTo O(N*M)
     const needsIncoming = checks.includes("orphans") || checks.includes("weak");
     const incomingIndex = needsIncoming
-      ? await buildIncomingIndex(vaultPath, allFilesList, fileIndex.basenameMap, allFilesSet)
+      ? await buildIncomingIndex(vaultPath, allFilesList, resolver)
       : null;
 
     if (checks.includes("orphans")) {
@@ -1242,7 +1264,7 @@ export async function createHandlers({ vaultPath: rawVaultPath, templateRegistry
         if (!data) continue;
         for (const r of data.resolved) {
           if (r.paths.length === 0) {
-            // Skip non-markdown targets (images, PDFs, etc.) — they aren't in allFilesSet by design
+            // Skip non-markdown targets (images, PDFs, etc.) — they aren't notes by design
             const raw = r.raw;
             const dotIdx = raw.lastIndexOf(".");
             if (dotIdx !== -1) {

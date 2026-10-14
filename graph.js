@@ -1,63 +1,148 @@
 import fs from "fs/promises";
 import path from "path";
-import { getAllMarkdownFiles, extractFrontmatter } from "./utils.js";
-import { buildBasenameMap } from "./helpers.js";
+import { extractFrontmatter } from "./utils.js";
+import { maskCode } from "./markdown.js";
 
-const WIKILINK_REGEX = /\[\[([^\]|]+)(?:\|[^\]]+)?\]\]/g;
+const WIKILINK_REGEX = /\[\[([^\]]+)\]\]/g;
 
-/** Extract all wikilink targets from markdown content. */
-export function extractWikilinks(content) {
+/**
+ * Split the inner text of a `[[...]]` link.
+ * `\|` is the alias separator Obsidian uses inside tables; it is kept verbatim in `separator`.
+ * @param {string} inner - text between the brackets
+ * @returns {{ target: string, fragment: string, separator: string, alias: string }}
+ *   target: note part; fragment: "#heading" / "#^block" / "^block" suffix; separator: "", "|" or "\\|"
+ */
+function parseLinkInner(inner) {
+  let linkPart = inner;
+  let separator = "";
+  let alias = "";
+  const pipe = inner.indexOf("|");
+  if (pipe !== -1) {
+    const escaped = pipe > 0 && inner[pipe - 1] === "\\";
+    linkPart = inner.slice(0, escaped ? pipe - 1 : pipe);
+    separator = escaped ? "\\|" : "|";
+    alias = inner.slice(pipe + 1);
+  }
+  const fragAt = linkPart.search(/[#^]/);
+  return {
+    target: fragAt === -1 ? linkPart : linkPart.slice(0, fragAt),
+    fragment: fragAt === -1 ? "" : linkPart.slice(fragAt),
+    separator,
+    alias,
+  };
+}
+
+/**
+ * Every wikilink outside fenced code and inline code spans, with its offsets in `content`.
+ * Embeds (`![[x]]`) are included; the "!" sits outside the reported range.
+ * @param {string} content
+ * @returns {Array<{ start: number, end: number, target: string, fragment: string, separator: string, alias: string }>}
+ */
+function findWikilinks(content) {
+  const masked = maskCode(content);
+  const regex = new RegExp(WIKILINK_REGEX.source, "g");
   const links = [];
-  const regex = new RegExp(WIKILINK_REGEX.source, WIKILINK_REGEX.flags);
   let match;
-  while ((match = regex.exec(content)) !== null) {
-    links.push(match[1]);
+  while ((match = regex.exec(masked)) !== null) {
+    const start = match.index;
+    const end = start + match[0].length;
+    const parts = parseLinkInner(content.slice(start + 2, end - 2));
+    if (!parts.target && !parts.fragment) continue;
+    links.push({ start, end, ...parts });
   }
   return links;
 }
 
+/**
+ * Extract wikilink targets (note part plus any #heading / ^block suffix, alias dropped).
+ * Links inside code are ignored; `[[a\|b]]` yields "a".
+ * @param {string} content
+ * @returns {string[]}
+ */
+export function extractWikilinks(content) {
+  return findWikilinks(content).map(l => l.target + l.fragment);
+}
+
+/** @typedef {{ status: "resolved", path: string } | { status: "ambiguous", candidates: string[] } | { status: "broken" }} LinkResolution */
 
 /**
- * Resolve a wikilink target to actual file paths.
- *
- * Resolution order:
- * 1. Try exact relative path match (e.g., "folder/note" -> "folder/note.md")
- * 2. Fall back to basename match (e.g., "note" -> any "note.md" in vault)
- *
- * @param {string} linkTarget - raw wikilink target text
- * @param {Map<string, string[]>} resolutionMap - from buildBasenameMap
- * @param {Set<string>} allFilesSet - vault-relative file paths as a Set (for O(1) exact path matching)
- * @returns {{ paths: string[], ambiguous: boolean }}
+ * Build the resolver shared by every graph feature. Matching is case-insensitive.
+ * Order: exact vault path (".md" optional); then, for targets containing "/", notes whose
+ * path ends with "/<target>.md"; otherwise notes with that basename. More than one match is ambiguous.
+ * `#heading` and `^block` suffixes are ignored.
+ * @param {string[]} allFiles - vault-relative note paths ("/" separators)
+ * @returns {{ resolve(target: string): LinkResolution }}
  */
-export function resolveLink(linkTarget, resolutionMap, allFilesSet) {
-  // Strip heading/block references: [[note#heading]] -> "note"
-  const cleaned = linkTarget.split("#")[0].split("^")[0].trim();
-  if (!cleaned) return { paths: [], ambiguous: false };
-
-  // 1. Try exact path match (with .md extension)
-  const withExt = cleaned.endsWith(".md") ? cleaned : cleaned + ".md";
-  if (allFilesSet.has(withExt)) {
-    return { paths: [withExt], ambiguous: false };
+export function createLinkResolver(allFiles) {
+  const byPath = new Map();
+  const byBasename = new Map();
+  for (const file of allFiles) {
+    const lower = file.toLowerCase();
+    if (!byPath.has(lower)) byPath.set(lower, []);
+    byPath.get(lower).push(file);
+    const base = path.posix.basename(lower, ".md");
+    if (!byBasename.has(base)) byBasename.set(base, []);
+    byBasename.get(base).push(file);
   }
 
-  // 2. Basename match
-  const basename = path.basename(cleaned, ".md").toLowerCase();
-  const matches = resolutionMap.get(basename) || [];
-  return { paths: matches, ambiguous: matches.length > 1 };
+  /** @param {string[]} candidates @returns {LinkResolution} */
+  const verdict = (candidates) => {
+    if (candidates.length === 0) return { status: "broken" };
+    if (candidates.length === 1) return { status: "resolved", path: candidates[0] };
+    return { status: "ambiguous", candidates: [...candidates] };
+  };
+
+  return {
+    resolve(target) {
+      const cleaned = String(target).split(/[#^]/)[0].trim().toLowerCase();
+      if (!cleaned) return { status: "broken" };
+      const withExt = cleaned.endsWith(".md") ? cleaned : cleaned + ".md";
+      const exact = byPath.get(withExt);
+      if (exact) return verdict(exact);
+      const sameBasename = byBasename.get(path.posix.basename(withExt, ".md")) || [];
+      if (!cleaned.includes("/")) return verdict(sameBasename);
+      const suffix = "/" + withExt;
+      return verdict(sameBasename.filter(f => f.toLowerCase().endsWith(suffix)));
+    },
+  };
 }
 
 /**
- * Find all files that contain wikilinks resolving to a given target path.
- * Returns file paths and their content for downstream processing (e.g., link rewriting).
+ * Every note a resolution may refer to: the resolved note, or all candidates of an ambiguous link.
+ * @param {LinkResolution} resolution
+ * @returns {string[]}
+ */
+export function resolutionPaths(resolution) {
+  if (resolution.status === "resolved") return [resolution.path];
+  if (resolution.status === "ambiguous") return resolution.candidates;
+  return [];
+}
+
+/**
+ * Notes that the links in `content` may point to (ambiguous links contribute every candidate).
+ * @param {string} content
+ * @param {{ resolve(target: string): LinkResolution }} resolver
+ * @returns {Set<string>}
+ */
+export function collectLinkedPaths(content, resolver) {
+  const linked = new Set();
+  for (const link of extractWikilinks(content)) {
+    for (const p of resolutionPaths(resolver.resolve(link))) linked.add(p);
+  }
+  return linked;
+}
+
+/**
+ * Find all files that contain wikilinks that may resolve to a given target path
+ * (ambiguous links count). Returns paths and their content.
  *
  * @param {string} targetPath - vault-relative path of the target file
  * @param {string} vaultPath - absolute vault root
  * @param {string[]} allFiles - all vault-relative file paths
- * @param {Map<string, string[]>} resolutionMap - from buildBasenameMap
- * @param {Set<string>} allFilesSet - all file paths as a Set
+ * @param {{ resolve(target: string): LinkResolution }} resolver - from createLinkResolver(allFiles)
  * @returns {Promise<Array<{file: string, content: string}>>}
  */
-export async function findFilesLinkingTo(targetPath, vaultPath, allFiles, resolutionMap, allFilesSet) {
+export async function findFilesLinkingTo(targetPath, vaultPath, allFiles, resolver) {
   const linking = [];
   for (const file of allFiles) {
     if (file === targetPath) continue;
@@ -68,13 +153,8 @@ export async function findFilesLinkingTo(targetPath, vaultPath, allFiles, resolu
       if (e.code === "ENOENT") continue; // File deleted between listing and reading
       throw e;
     }
-    const links = extractWikilinks(content);
-    for (const link of links) {
-      const resolved = resolveLink(link, resolutionMap, allFilesSet);
-      if (resolved.paths.includes(targetPath)) {
-        linking.push({ file, content });
-        break;
-      }
+    if (collectLinkedPaths(content, resolver).has(targetPath)) {
+      linking.push({ file, content });
     }
   }
   return linking;
@@ -121,16 +201,15 @@ export function rewriteWikilinks(content, oldTarget, newTarget) {
 // --- Link Discovery ---
 
 /**
- * Build an incoming link index: for each resolved target file, which source files link to it.
- * Uses proper link resolution so ambiguous basenames are handled correctly.
+ * Build an incoming link index: for each target file, which source files link to it.
+ * An ambiguous link counts as incoming for every candidate. Self-links are skipped.
  *
  * @param {string} vaultPath - absolute vault path
  * @param {string[]} allFiles - vault-relative file paths
- * @param {Map<string, string[]>} resolutionMap - from buildBasenameMap
- * @param {Set<string>} allFilesSet - vault-relative file paths as a Set
+ * @param {{ resolve(target: string): LinkResolution }} resolver - from createLinkResolver(allFiles)
  * @returns {Promise<Map<string, Set<string>>>} targetPath -> Set<sourcePath>
  */
-export async function buildIncomingIndex(vaultPath, allFiles, resolutionMap, allFilesSet) {
+export async function buildIncomingIndex(vaultPath, allFiles, resolver) {
   const index = new Map(); // targetPath -> Set<sourcePath>
 
   for (const file of allFiles) {
@@ -141,16 +220,12 @@ export async function buildIncomingIndex(vaultPath, allFiles, resolutionMap, all
       if (e.code === "ENOENT") continue; // File deleted between listing and reading
       throw e;
     }
-    const links = extractWikilinks(content);
-    for (const link of links) {
-      const resolved = resolveLink(link, resolutionMap, allFilesSet);
-      for (const targetPath of resolved.paths) {
-        if (targetPath === file) continue; // skip self-links
-        if (!index.has(targetPath)) {
-          index.set(targetPath, new Set());
-        }
-        index.get(targetPath).add(file);
+    for (const targetPath of collectLinkedPaths(content, resolver)) {
+      if (targetPath === file) continue; // skip self-links
+      if (!index.has(targetPath)) {
+        index.set(targetPath, new Set());
       }
+      index.get(targetPath).add(file);
     }
   }
 
@@ -177,6 +252,8 @@ function getIncomingLinks(filePath, incomingIndex) {
  * @param {Object} options
  * @param {string} options.startPath - vault-relative path to the starting note
  * @param {string} options.vaultPath - absolute vault root path
+ * @param {string[]} options.allFiles - vault-relative note paths (fresh listing)
+ * @param {{ resolve(target: string): LinkResolution }} options.resolver - from createLinkResolver(allFiles)
  * @param {number} [options.depth=2] - maximum traversal depth
  * @param {"both"|"outgoing"|"incoming"} [options.direction="both"] - link direction to follow
  * @returns {Promise<NeighborhoodResult>}
@@ -197,6 +274,8 @@ function getIncomingLinks(filePath, incomingIndex) {
 export async function exploreNeighborhood({
   startPath,
   vaultPath,
+  allFiles,
+  resolver,
   depth: maxDepth = 2,
   direction = "both",
 }) {
@@ -212,13 +291,9 @@ export async function exploreNeighborhood({
     throw e;
   }
 
-  // Build indexes once
-  const allFiles = await getAllMarkdownFiles(vaultPath);
-  const { basenameMap: resolutionMap, allFilesSet } = buildBasenameMap(allFiles);
-
   const needIncoming = direction === "both" || direction === "incoming";
   const incomingIndex = needIncoming
-    ? await buildIncomingIndex(vaultPath, allFiles, resolutionMap, allFilesSet)
+    ? await buildIncomingIndex(vaultPath, allFiles, resolver)
     : null;
 
   // BFS state
@@ -265,15 +340,14 @@ export async function exploreNeighborhood({
       const needOutgoing = direction === "both" || direction === "outgoing";
 
       if (needOutgoing) {
-        const outgoing = extractWikilinks(content);
-        for (const link of outgoing) {
-          const resolved = resolveLink(link, resolutionMap, allFilesSet);
-          for (const targetPath of resolved.paths) {
+        for (const link of extractWikilinks(content)) {
+          const resolution = resolver.resolve(link);
+          for (const targetPath of resolutionPaths(resolution)) {
             if (!visited.has(targetPath)) {
               nextQueue.push({
                 path: targetPath,
                 depth: depth + 1,
-                ambiguous: resolved.ambiguous,
+                ambiguous: resolution.status === "ambiguous",
               });
             }
           }

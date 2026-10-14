@@ -63,7 +63,7 @@ export function compareFrontmatterValues(a, b, field) {
 export { resolveLexical as resolvePath };
 
 /** A frontmatter `tags` value as a list: a scalar is one tag, a missing value none. */
-function toTagList(tags) {
+export function toTagList(tags) {
   if (Array.isArray(tags)) return tags;
   if (tags === null || tags === undefined) return [];
   return [tags];
