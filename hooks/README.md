@@ -89,6 +89,10 @@ Both hooks are `type: "command"` hooks that read the hook JSON from stdin and wr
 - **`resolve-project.js`**: Maps the current working directory to a vault project path by reading the `# PKM:` annotation from the repo's `CLAUDE.md`
 - **`load-context.js`**: Reads the project index, recent devlog entries, and active tasks from the vault and formats them as a context block
 
+### Import rule
+
+Hooks run with plain `node` from the plugin cache, where `node_modules` may be missing. Every hook script, and every module it imports (directly or through re-exports), may only use relative (`./`, `../`) or `node:` specifiers. `tests/manifest.test.js` walks the import graph from `hooks/*.js` and fails on any bare specifier, including unprefixed builtins like `"path"`.
+
 ## Troubleshooting
 
 ### Hook not firing

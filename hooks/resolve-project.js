@@ -1,8 +1,9 @@
 // IMPORTANT: Hooks run via raw `node` from the installed plugin directory,
 // which has no node_modules. All functions here MUST be self-contained —
 // do NOT import from ../helpers.js or ../utils.js (they depend on js-yaml).
-import fs from "fs/promises";
-import path from "path";
+// Only relative and node: imports are allowed; tests/manifest.test.js enforces this.
+import fs from "node:fs/promises";
+import path from "node:path";
 
 function assertPathWithinVault(relativePath, vaultPath) {
   const resolved = path.resolve(vaultPath, relativePath);
