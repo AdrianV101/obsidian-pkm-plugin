@@ -105,6 +105,18 @@ describe("doctor command", () => {
       assert.ok(!stdout.includes("Could not read"), stdout);
     });
 
+    it("never echoes file content when settings.json fails to parse", async () => {
+      // An unquoted value makes V8's parse error embed a snippet of the source text.
+      await writeSettings('{"env": {"VAULT_PKM_OPENAI_KEY": sk-leak-canary-123456}}');
+
+      const { stdout, stderr } = await runDoctor(envWithout("VAULT_PATH"));
+      assert.ok(stdout.includes("⚠ Could not read ~/.claude/settings.json"), stdout);
+      for (const out of [stdout, stderr]) {
+        assert.ok(!out.includes("sk-leak"), "no file content in output");
+        assert.ok(!out.includes("123456"), "no file content in output");
+      }
+    });
+
     it("warns about an unparseable settings.json and still finishes the checklist", async () => {
       await writeSettings("{ not json");
 

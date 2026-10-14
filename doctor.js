@@ -24,7 +24,8 @@ async function readSettingsEnv(homeDir) {
     return { env, error: null };
   } catch (e) {
     if (e.code === "ENOENT") return { env: {}, error: null };
-    return { env: {}, error: e.message };
+    // JSON.parse messages can embed a snippet of the file, which may hold an API key.
+    return { env: {}, error: e instanceof SyntaxError ? "not valid JSON" : e.message };
   }
 }
 
@@ -121,7 +122,7 @@ export async function runDoctor() {
     }
   }
   if (apiKey) {
-    ok(`VAULT_PKM_OPENAI_KEY set (from ${apiKey.source}; semantic search enabled)`);
+    ok(`VAULT_PKM_OPENAI_KEY set (from ${apiKey.source}${keyName === KEY_NAMES[0] ? "" : ` as ${keyName}`}; semantic search enabled)`);
     passed++;
     if (keyName === "OBSIDIAN_PKM_OPENAI_KEY") {
       warn("OBSIDIAN_PKM_OPENAI_KEY is deprecated — rename to VAULT_PKM_OPENAI_KEY");
