@@ -21,13 +21,23 @@ function headingDate(text) {
   return m[2] === undefined ? m[1] : `${m[1]} ${m[2].padStart(2, "0")}:${m[3]}`;
 }
 
-/** Cut `text` at a line boundary so the result, marker included, fits `budget`. */
+/**
+ * Cut `text` so the result, marker included, fits `budget`: at a line boundary, or, when the
+ * last one is in the first half of the room (a long paragraph), at the last space before the
+ * budget, so the paragraph is not lost.
+ */
 function truncateAtLine(text, budget, marker) {
   if (text.length <= budget) return text;
   const room = budget - marker.length - 1;
   if (room <= 0) return marker.length <= budget ? marker : "";
   let cut = text.lastIndexOf("\n", room);
-  if (cut <= 0) cut = room;
+  if (cut < room / 2) {
+    const space = text.lastIndexOf(" ", room);
+    cut = space >= room / 2 ? space : room;
+    // Never split a surrogate pair.
+    const before = text.charCodeAt(cut - 1);
+    if (before >= 0xD800 && before <= 0xDBFF) cut--;
+  }
   return text.slice(0, cut).trimEnd() + "\n" + marker;
 }
 

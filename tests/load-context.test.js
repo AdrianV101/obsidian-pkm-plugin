@@ -294,6 +294,41 @@ describe("loadProjectContext budgets", () => {
     assert.ok(second.includes("short"));
   });
 
+  // A part that is one long line has no line break to cut at near the budget: it is cut at the last
+  // space instead of being reduced to its heading.
+  const LONG_LINE = [
+    {
+      name: "a devlog entry",
+      files: {
+        "development/devlog.md": FM + "## Sessions\n\n### 2026-10-14 10:00 — Work\n" + "Implemented the thing. ".repeat(80) + "\n\n### 2026-10-13 09:00 — Older\n- short bullet\n",
+        "_index.md": "# Big\n\n## Overview\nShort.\n",
+      },
+      part: (context) => context.split("### Recent Development Activity\n")[1].split("\n\n### 2026-10-13")[0],
+      budget: ENTRY_BUDGET,
+      marker: "[truncated — vault_read 01-Projects/Big/development/devlog.md]",
+      body: "Implemented the thing. ",
+    },
+    {
+      name: "the index Overview",
+      files: { "_index.md": "---\ntype: project\n---\n# Big\n\n## Overview\n" + "Long overview sentence. ".repeat(150) + "\n" },
+      part: (context) => context.split("### Project Index\n")[1].split("\n\n### ")[0],
+      budget: INDEX_BUDGET,
+      marker: "[truncated — vault_read 01-Projects/Big/_index.md]",
+      body: "Long overview sentence. ",
+    },
+  ];
+  for (const c of LONG_LINE) {
+    it(`${c.name} that is one long paragraph keeps its text up to the budget, cut at a word boundary`, async () => {
+      for (const [rel, content] of Object.entries(c.files)) await write(rel, content);
+      const part = c.part((await loadProjectContext(vaultPath, projectPath)).context);
+      assert.ok(part.length <= c.budget, `${part.length} chars`);
+      assert.ok(part.endsWith("\n" + c.marker), part.slice(-120));
+      const kept = part.slice(part.indexOf("\n") + 1, -(c.marker.length + 1));
+      assert.ok(kept.length > c.budget * 0.8, `only ${kept.length} chars of body kept`);
+      assert.ok((c.body.repeat(200)).startsWith(kept + " "), `cut mid-word: …${kept.slice(-30)}`);
+    });
+  }
+
   it("tasks: active before pending, then priority, then due; titles only, at most MAX_TASKS, then +N more", async () => {
     const specs = [
       ["P low", "pending", "low"], ["P urgent", "pending", "urgent"], ["A normal late", "active", "normal", "2026-12-01"],
