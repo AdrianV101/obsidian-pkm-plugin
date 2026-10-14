@@ -28,13 +28,24 @@ npm test
 
 # Run linter
 npm run lint
+
+# Type-check JSDoc (tsc + jsconfig.json)
+npm run typecheck
 ```
+
+## Branching and Releases
+
+- `next` is the integration branch. Branch work from `next` and open draft PRs against `next`; a PR merges once CI passes and a review signs off.
+- `master` changes only through a single `next` → `master` release PR that Adrian reviews. Never push to, or merge into, `master` directly.
+- No release without Adrian's explicit agreement: no version bumps, tags, GitHub releases or npm publishes. Record changes under `## [Unreleased]` in `CHANGELOG.md`.
+- Commits use the repo-local AdrianV101 no-reply identity. Pushes and PR operations take the AdrianV101 token per command (`GH_TOKEN="$(gh auth token --user AdrianV101)" <command>`). Never run `gh auth switch`.
+- npm publishing happens only through `.github/workflows/publish.yml` on a published GitHub release. The workflow refuses unless the tag is `v<version>` and `package.json` and `.claude-plugin/plugin.json` both carry that version.
 
 ## Architecture
 
 The project consists of three parts:
 
-**MCP Server**: A Node.js ES module server implementing the Model Context Protocol. The main entry point is `index.js` (tool definitions and request routing), with pure helper functions extracted to `helpers.js`. It provides 20 tools for vault interaction:
+**MCP Server**: A Node.js ES module server implementing the Model Context Protocol. The main entry point is `index.js` (server setup and request routing); tool definitions live in `tools.js`, handlers in `handlers.js`, and pure helper functions in `helpers.js`. It provides 20 tools for vault interaction:
 - `vault_read` - Read note contents (supports pagination: `heading`, `tail`, `tail_sections` [with optional `section_level` param, default: 2], `chunk`, `lines`; auto-redirects to peek data for files >80k chars; `force` bypasses redirect)
 - `vault_peek` - Inspect file metadata/structure without reading full content (size, frontmatter, indented heading tree, preview)
 - `vault_write` - Create new notes from templates (enforces frontmatter; settable fields: `status`, `priority`, `project`, `deciders`, `due`, `source`; `variables` param for custom `<%...%>` substitution in template body)
@@ -83,7 +94,7 @@ Finds conceptually related notes even when they use different terminology. For e
 vault_semantic_search({ query: "cache eviction strategies", anchor: "research/caching.md", graph_weight: 0.3 })
 ```
 
-The semantic index is a regenerable cache — deleting `semantic-index.db` triggers a full re-embed on next startup. The DB syncs across machines via Obsidian Sync (stored in `.obsidian/`).
+The semantic index is a regenerable cache — deleting `semantic-index.db` triggers a full re-embed on next startup. The DB lives in `.obsidian/` but is local to each machine: Obsidian Sync does not carry it, so every machine builds its own index.
 
 ### vault_write (Template-Based Note Creation)
 
@@ -242,10 +253,10 @@ The plugin provides 3 specialized agents (visible in `/agents`). Delegate to the
 | Agent | When to Delegate | Mode |
 |---|---|---|
 | `vault-explorer` | Before creating notes on a topic, when researching existing knowledge | Foreground |
-| `pkm-capture` | After git commits (automatic via hook), after significant work blocks, before session ends | Background |
+| `pkm-capture` | When a PR is opened (automatic via PostToolUse hook after a successful `gh pr create`), after significant work blocks, before session ends | Background |
 | `link-auditor` | After creating/modifying multiple vault notes, periodic health checks | Background |
 
-**pkm-capture context:** When delegating, include whether this is the first capture this session or a subsequent one (with previous entry timestamp). The agent discovers the transcript path itself. It handles both devlog entries and knowledge capture (decisions, research, tasks, bugs) in one pass. Conservative — most exchanges produce nothing worth capturing beyond the devlog entry.
+**pkm-capture context:** When delegating, include whether this is the first capture this session or a subsequent one (with previous entry timestamp). Pass `transcript_path` and `session_id` when known (the capture hook supplies both); otherwise the agent derives the transcript location itself. It runs on haiku. It handles both devlog entries and knowledge capture (decisions, research, tasks, bugs) in one pass. Conservative — most exchanges produce nothing worth capturing beyond the devlog entry.
 
 **Templates** (`templates/`): Obsidian note templates for project documentation:
 - `project-index.md` - Project overview with YAML frontmatter
@@ -301,7 +312,7 @@ Vault/
 - Project index files: `_index.md`
 - All notes use YAML frontmatter with `type`, `status`, `created` fields
 - Paths passed to MCP tools are relative to vault root
-- **Version bumps must update BOTH files**: `package.json` AND `.claude-plugin/plugin.json`. The plugin system reads version from `plugin.json`, not `package.json` — forgetting `plugin.json` causes updates to appear stuck.
+- **Version bumps must update BOTH files**: `package.json` AND `.claude-plugin/plugin.json`. The plugin system reads version from `plugin.json`, not `package.json` — forgetting `plugin.json` causes updates to appear stuck. `tests/manifest.test.js` and the publish workflow both fail when the two versions differ.
 
 ## Metadata Schema
 
@@ -326,7 +337,7 @@ Common types: `fleeting`, `research`, `adr`, `bug`, `planning`, `transcript`, `p
 - **Vault project**: `01-Projects/Obsidian-MCP/`
 - **MCP Server**: `vault-pkm` plugin
 
-Document decisions, research findings, and debugging sessions as you work. The `pkm-capture` agent captures devlog entries and PKM-worthy content in the background (triggered automatically after git commits), or use the `vault-pkm:pkm-write` skill for structured notes with linking.
+Document decisions, research findings, and debugging sessions as you work. The `pkm-capture` agent captures devlog entries and PKM-worthy content in the background (triggered automatically when a PR is created with `gh pr create`), or use the `vault-pkm:pkm-write` skill for structured notes with linking.
 
 Use `vault-pkm:pkm-explore` to research what the vault already knows about a topic before creating new content.
 

@@ -8,7 +8,6 @@
   <a href="https://github.com/AdrianV101/obsidian-pkm-plugin/stargazers"><img src="https://img.shields.io/github/stars/AdrianV101/obsidian-pkm-plugin?style=flat" alt="GitHub stars"></a>
   <a href="https://opensource.org/licenses/MIT"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT"></a>
   <a href="https://github.com/AdrianV101/obsidian-pkm-plugin/actions/workflows/ci.yml"><img src="https://github.com/AdrianV101/obsidian-pkm-plugin/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
-  <a href="https://github.com/AdrianV101/obsidian-pkm-plugin/actions/workflows/ci.yml"><img src="https://img.shields.io/badge/tests-574%20passing-brightgreen" alt="Tests"></a>
 </p>
 
 # Vault PKM
@@ -109,7 +108,7 @@ Without this, knowledge stays fragmented across per-project memory files and cha
 | Agent | Purpose |
 |-------|---------|
 | `vault-explorer` | Research existing knowledge before creating notes |
-| `pkm-capture` | Devlog entries + knowledge capture after commits and work blocks |
+| `pkm-capture` | Devlog entries + knowledge capture when a PR is opened and after work blocks |
 | `link-auditor` | Audit vault link health after bulk note changes |
 
 **Skills** (6) are guided workflows triggered by slash commands:
@@ -132,10 +131,10 @@ Without this, knowledge stays fragmented across per-project memory files and cha
 
 ## Prerequisites
 
-- **Node.js >= 20** (Node 18 is EOL; uses native `fetch` and ES modules)
+- **Node.js >= 20** (uses native `fetch` and ES modules). Node 20 reached end-of-life in April 2026, so Node 22 or 24 is recommended; CI tests 20, 22 and 24.
 - **An MCP-compatible client** such as [Claude Code](https://claude.ai/code)
 
-Prebuilt native binaries are included for Node 20/22 on Linux x64, macOS (x64/arm64), and Windows x64. Most users need nothing else. If the prebuilt fails, you'll need C++ build tools — see [Troubleshooting](#better-sqlite3-build-fails-during-install).
+The two native dependencies normally install without a compiler: `better-sqlite3` downloads a prebuilt binary at install time when one exists for your Node version and platform, and `sqlite-vec` ships prebuilt packages for macOS (x64/arm64), Linux (x64/arm64) and Windows x64. If no prebuilt `better-sqlite3` binary matches, npm compiles it from source, which needs C++ build tools — see [Troubleshooting](#troubleshooting).
 
 ## Quick Start
 
@@ -269,6 +268,7 @@ Module dependencies:
 graph LR
     CC[Claude Code] -->|MCP protocol| IDX[index.js]
     IDX --> HND[handlers.js]
+    IDX --> T[tools.js]
     IDX --> E[embeddings.js]
     IDX --> A[activity.js]
     HND --> H[helpers.js]
@@ -283,25 +283,32 @@ graph LR
 File layout:
 
 ```
-├── index.js          # MCP server setup, tool registration, lifecycle
+├── index.js          # MCP server setup, request routing, lifecycle
+├── tools.js          # MCP tool definitions (names, descriptions, input schemas)
 ├── handlers.js       # Tool handler implementations
 ├── helpers.js        # Pure functions (path security, filtering, templates, frontmatter)
 ├── graph.js          # Wikilink resolution and BFS graph traversal
 ├── embeddings.js     # Semantic index (OpenAI embeddings, SQLite + sqlite-vec)
 ├── activity.js       # Activity log (session tracking, SQLite)
 ├── utils.js          # Shared utilities (frontmatter parsing, file listing)
-├── cli.js            # CLI entry point (routes `init` subcommand or starts server)
+├── cli.js            # CLI entry point (routes `init` / `doctor` subcommands or starts the server)
 ├── init.js           # Vault scaffolding wizard (templates, PARA folders)
+├── doctor.js         # `obsidian-pkm doctor` setup diagnostics
 ├── .claude-plugin/   # Plugin packaging
-│   └── plugin.json   # Plugin manifest (identity, components, permissions)
-├── hooks/            # Claude Code hooks (context loading, project resolution, session start)
+│   └── plugin.json   # Plugin manifest (identity, version, MCP server launch config)
+├── hooks/            # Claude Code hooks
+│   ├── hooks.json          # Hook registrations (SessionStart, PostToolUse)
+│   ├── session-start.js    # Loads project context at session start
+│   ├── resolve-project.js  # Maps the working directory to a vault project
+│   ├── load-context.js     # Reads index, devlog and tasks for the context block
+│   └── capture-reminder.js # Prompts pkm-capture after a successful `gh pr create`
 ├── agents/           # Specialized agents (vault-explorer, pkm-capture, link-auditor)
 ├── skills/           # PKM workflow skills (pkm-write, pkm-explore, pkm-session-end, add-task, triage-tasks, tackle-task)
 ├── commands/         # Slash commands (setup, init-project)
 ├── templates/        # Obsidian note templates
+├── scripts/          # Release tooling (publish-time tag/version check)
 ├── tests/            # Test suite (Node.js built-in test runner)
-├── sample-project/   # Sample CLAUDE.md for your repos
-└── docs/             # Supplementary documentation
+└── sample-project/   # Sample CLAUDE.md for your repos
 ```
 
 `index.js` initializes the semantic index and activity log, then injects them into `createHandlers()`. All paths passed to tools are relative to vault root. The server includes path security to prevent directory traversal.
@@ -312,20 +319,20 @@ File layout:
 
 **Knowledge creation** is template-based. `vault_write` loads templates from `05-Templates/`, substitutes Templater-compatible variables (`<% tp.date.now("YYYY-MM-DD") %>`, `<% tp.file.title %>`), and validates required frontmatter fields (`type`, `created`, `tags`). This ensures every note in your vault has consistent metadata — making it queryable, sortable, and discoverable from day one. Task notes enforce enum validation on `status` and `priority`; other types accept `project`, `deciders`, `due`, and `source`.
 
-**Knowledge discovery** works at two levels. Keyword search (`vault_search`) finds exact terms. Semantic search embeds notes using OpenAI and finds conceptually related content — so "managing overwhelm" surfaces notes about "cognitive load" even if those exact words never appear together. The semantic index watches for file changes in real-time and syncs across machines via Obsidian Sync.
+**Knowledge discovery** works at two levels. Keyword search (`vault_search`) finds exact terms. Semantic search embeds notes using OpenAI and finds conceptually related content — so "managing overwhelm" surfaces notes about "cognitive load" even if those exact words never appear together. The semantic index watches for file changes in real time. It lives in `.obsidian/` but stays on each machine (Obsidian Sync does not carry it), so each machine builds its own index on first start.
 
 **Knowledge connections** are maintained through Obsidian's `[[wikilink]]` graph. `vault_neighborhood` traverses links via BFS to discover related notes by proximity, while `vault_suggest_links` recommends connections you haven't made yet. `vault_move` rewrites wikilinks across the vault when you reorganize, and `vault_trash` warns about links that would break.
 
 **Session memory** records every tool call with timestamps and session IDs, so Claude can recall what was read, written, or searched in previous conversations. This turns ephemeral chat sessions into a continuous thread of work.
 
-**Knowledge capture** uses the `pkm-capture` agent to update the project devlog and persist PKM-worthy content from a session (decisions, research findings, tasks, bug root causes) in one pass. It is triggered automatically after git commits via a PreToolUse hook, or can be dispatched manually after significant work blocks. Runs in the background without interrupting the coding flow.
+**Knowledge capture** uses the `pkm-capture` agent to update the project devlog and persist PKM-worthy content from a session (decisions, research findings, tasks, bug root causes) in one pass. It is triggered automatically when you open a pull request: a PostToolUse hook watches for a successful `gh pr create` and hands Claude the PR URL, transcript path and session ID for the capture. You can also dispatch it manually after significant work blocks. It runs in the background on Haiku without interrupting the coding flow.
 
 **Fuzzy path resolution** lets read-only tools accept short names instead of full vault paths. `vault_read({ path: "devlog" })` resolves to `01-Projects/MyApp/development/devlog.md` automatically (`.md` extension optional). Folder-scoped tools like `vault_list`, `vault_search`, and `vault_query` accept partial folder names — `folder: "MyApp"` resolves to `01-Projects/MyApp`. Ambiguous matches return an error listing candidates. Write/destructive tools always require exact paths.
 
 ## Troubleshooting
 
 **`better-sqlite3` build fails during install**
-You need C++ build tools. See [Prerequisites](#prerequisites) for your platform. On Linux, `sudo apt install build-essential python3` usually fixes it.
+npm fell back to compiling `better-sqlite3` because no prebuilt binary matched your Node version and platform, and compiling needs C++ build tools: on macOS run `xcode-select --install`; on Debian/Ubuntu `sudo apt install build-essential python3`; on Windows install Visual Studio Build Tools with the "Desktop development with C++" workload. Then reinstall.
 
 **Server starts but all tool calls fail with ENOENT**
 Your `VAULT_PATH` is wrong or missing. The server validates this at startup and exits with a clear error. Run `/vault-pkm:setup` to reconfigure the vault path.
@@ -343,7 +350,7 @@ Run `claude mcp list` to check. If `vault-pkm` is missing, reinstall the plugin:
 Check your Node version with `node -v`. The file watcher uses `fs.watch({ recursive: true })` which requires Node.js >= 20.
 
 **Not sure if everything is set up correctly?**
-Run `npx obsidian-pkm doctor` for a diagnostic checklist that validates your Node version, vault path, templates, API keys, and native dependencies.
+Run `npx obsidian-pkm doctor` for a diagnostic checklist that validates your Node version, vault path, templates, API keys, and native dependencies. It reads `VAULT_PATH` and the OpenAI key from your shell environment or, failing that, from the `env` block of `~/.claude/settings.json`, and says which source it used.
 
 ## Contributing
 
