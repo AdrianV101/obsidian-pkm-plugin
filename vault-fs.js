@@ -132,14 +132,212 @@ export async function assertWritableReal(rel, root, kind = "note") {
   const realRoot = await fs.realpath(normalizeVaultRoot(root));
   const realTarget = await realpathOfNearestExisting(abs);
   // For a new file this is the real nearest ancestor; the missing tail was checked lexically above.
-  const realRel = path.relative(realRoot, realTarget).split(path.sep).join("/");
+  // Split on the platform separator only: a real entry name may itself contain backslashes.
+  const realSegments = path.relative(realRoot, realTarget).split(path.sep);
   let exists = true;
   try {
     await fs.lstat(abs);
   } catch {
     exists = false;
   }
-  const badDot = realRel !== "" && hasDotSegment(realRel);
+  const badDot = realSegments.some((s) => s.startsWith("."));
   const badExt = kind === "note" && exists && !realTarget.endsWith(".md");
   if (badDot || badExt) throw (kind === "folder" ? folderRuleError(rel) : noteRuleError(rel));
+}
+
+/**
+ * Recursively list .md files under `dir`, skipping symlinks and dot-directories.
+ * @param {string} dir
+ * @param {string} [baseDir]
+ * @returns {Promise<string[]>} "/"-separated paths relative to baseDir
+ */
+export async function getAllMarkdownFiles(dir, baseDir = dir) {
+  const entries = await fs.readdir(dir, { withFileTypes: true });
+  const files = [];
+  for (const entry of entries) {
+    if (entry.isSymbolicLink()) continue;
+    const fullPath = path.join(dir, entry.name);
+    if (entry.isDirectory() && !entry.name.startsWith(".")) {
+      files.push(...await getAllMarkdownFiles(fullPath, baseDir));
+    } else if (entry.isFile() && entry.name.endsWith(".md")) {
+      files.push(path.relative(baseDir, fullPath));
+    }
+  }
+  return files;
+}
+
+const RESCAN_THROTTLE_MS = 2000;
+const keyOf = (rel) => rel.normalize("NFC");
+const baseKeyOf = (rel) => path.posix.basename(rel, ".md").normalize("NFC").toLowerCase();
+
+/** Same rule as getAllMarkdownFiles: a .md file not inside a dot-directory. */
+function isIndexable(rel) {
+  if (!rel.endsWith(".md")) return false;
+  return !rel.split("/").slice(0, -1).some((s) => s.startsWith("."));
+}
+
+/**
+ * Live index of the vault's markdown notes. Keys are NFC-normalised so a note
+ * stored under an NFD name (macOS) is found by its NFC spelling; values are the
+ * on-disk spelling, which is what callers must use to open the file.
+ */
+export class FileIndex {
+  #root;
+  #now;
+  #realRoot = null;
+  #byKey = new Map();
+  #byBase = new Map();
+  #lastRescan = -Infinity;
+
+  /**
+   * @param {string} root
+   * @param {{ now?: () => number }} [options]
+   */
+  constructor(root, { now = Date.now } = {}) {
+    this.#root = normalizeVaultRoot(root);
+    this.#now = now;
+  }
+
+  /**
+   * @param {string} root
+   * @param {{ now?: () => number }} [options]
+   * @returns {Promise<FileIndex>}
+   */
+  static async build(root, options) {
+    const index = new FileIndex(root, options);
+    await index.listFresh();
+    return index;
+  }
+
+  /** @param {string} rel */
+  has(rel) {
+    return this.#byKey.has(keyOf(toVaultRel(rel)));
+  }
+
+  /** @param {string} rel */
+  async exists(rel) {
+    return (await this.#lookup(toVaultRel(rel))) !== null;
+  }
+
+  /**
+   * Resolve a full, partial or bare note name to its vault-relative path.
+   * @param {string} input
+   * @returns {Promise<string>}
+   */
+  async resolveFuzzy(input) {
+    const rel = toVaultRel(input);
+    const direct = (await this.#lookup(rel)) ?? (rel.endsWith(".md") ? null : await this.#lookup(rel + ".md"));
+    if (direct !== null) return direct;
+
+    let matches = this.#fuzzyMatches(rel);
+    if (matches.length === 0 && this.#now() - this.#lastRescan >= RESCAN_THROTTLE_MS) {
+      this.#lastRescan = this.#now();
+      await this.listFresh();
+      matches = this.#fuzzyMatches(rel);
+    }
+    if (matches.length === 1) return matches[0];
+    if (matches.length === 0) {
+      throw new Error(`File not found: "${input}". No matching file in vault.`);
+    }
+    const list = matches.map((p) => `  - ${p}`).join("\n");
+    throw new Error(`"${input}" matches ${matches.length} files:\n${list}\nUse a more specific path (pass the full path).`);
+  }
+
+  /** @param {string} rel */
+  add(rel) {
+    const r = toVaultRel(rel);
+    const key = keyOf(r);
+    if (this.#byKey.has(key)) return;
+    this.#byKey.set(key, r);
+    const base = baseKeyOf(r);
+    const group = this.#byBase.get(base);
+    if (group) group.push(r);
+    else this.#byBase.set(base, [r]);
+  }
+
+  /** @param {string} rel */
+  remove(rel) {
+    const key = keyOf(toVaultRel(rel));
+    const stored = this.#byKey.get(key);
+    if (stored === undefined) return;
+    this.#byKey.delete(key);
+    const base = baseKeyOf(stored);
+    const remaining = (this.#byBase.get(base) ?? []).filter((p) => p !== stored);
+    if (remaining.length > 0) this.#byBase.set(base, remaining);
+    else this.#byBase.delete(base);
+  }
+
+  /**
+   * @param {string} oldRel
+   * @param {string} newRel
+   */
+  rename(oldRel, newRel) {
+    const oldR = toVaultRel(oldRel);
+    const newR = toVaultRel(newRel);
+    if (this.#byKey.has(keyOf(oldR))) {
+      this.remove(oldR);
+      this.add(newR);
+      return;
+    }
+    // A folder move: re-key every note under the old prefix; the folder itself is never indexed.
+    const prefix = keyOf(oldR) + "/";
+    for (const [key, stored] of [...this.#byKey]) {
+      if (!key.startsWith(prefix)) continue;
+      this.remove(stored);
+      this.add(newR + "/" + stored.slice(oldR.length + 1));
+    }
+  }
+
+  /** @returns {string[]} */
+  list() {
+    return [...this.#byKey.values()];
+  }
+
+  /** @returns {Promise<string[]>} */
+  async listFresh() {
+    const files = await getAllMarkdownFiles(this.#root);
+    this.#byKey = new Map();
+    this.#byBase = new Map();
+    for (const f of files) this.add(f);
+    return this.list();
+  }
+
+  /** @returns {Map<string, string[]>} lowercase basename (no .md) -> paths */
+  get basenameMap() {
+    return this.#byBase;
+  }
+
+  #fuzzyMatches(rel) {
+    const needle = keyOf(rel).toLowerCase();
+    if (needle.includes("/")) {
+      const suffixes = needle.endsWith(".md") ? ["/" + needle] : ["/" + needle, "/" + needle + ".md"];
+      return this.list().filter((f) => {
+        const hay = "/" + keyOf(f).toLowerCase();
+        return suffixes.some((s) => hay.endsWith(s));
+      });
+    }
+    return [...(this.#byBase.get(baseKeyOf(needle)) ?? [])];
+  }
+
+  /** Cached lookup, else fs.stat; a hit is cached under its real, on-disk spelling. */
+  async #lookup(rel) {
+    const cached = this.#byKey.get(keyOf(rel));
+    if (cached !== undefined) return cached;
+    if (!isIndexable(rel)) return null;
+    const abs = resolveLexical(rel, this.#root);
+    let real;
+    try {
+      if (!(await fs.stat(abs)).isFile()) return null;
+      real = await fs.realpath(abs);
+    } catch (e) {
+      if (e.code === "ENOENT" || e.code === "ENOTDIR") return null;
+      throw e;
+    }
+    if (this.#realRoot === null) this.#realRoot = await fs.realpath(this.#root);
+    if (!isInside(real, this.#realRoot)) return null;
+    const realRel = path.relative(this.#realRoot, real).split(path.sep).join("/");
+    if (!isIndexable(realRel)) return null;
+    this.add(realRel);
+    return this.#byKey.get(keyOf(realRel));
+  }
 }

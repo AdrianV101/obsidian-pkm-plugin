@@ -27,6 +27,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **Publish workflow** refuses to publish unless it runs on a tag named `v<version>` matching both `package.json` and `plugin.json` (manual runs included), and the publish job no longer installs dependencies (`npm publish --provenance --access public --ignore-scripts`).
 - Hook helpers import Node builtins with the `node:` prefix.
 - Projects set up earlier with `/vault-pkm:init-project` keep the old "after git commits" capture wording in their own `CLAUDE.md`; edit it by hand to say capture happens when a pull request is created.
+- A fuzzy path that contains `/` must match the end of the real path (`research/findings` finds `projects/app/research/findings.md`; `wrong-folder/findings` no longer falls back to any `findings.md`). Ambiguity errors now say "pass the full path" instead of suggesting a `folder` parameter that read tools don't have.
 
 ### Fixed
 - A `VAULT_PATH` with a trailing slash no longer makes every path look like it escapes the vault (server and session-start hook).
@@ -39,6 +40,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **SessionStart hook command quotes its paths**, so a plugin root or vault path containing spaces (for example an iCloud vault under `Mobile Documents`) reaches `session-start.js` as one argument.
 - Stale JSDoc that `tsc` flagged: `formatPath` on `formatPeek`/`formatNeighborhood`, `custom_fields` on `matchesFilters`, the `createHandlers` return type.
 - Docs: removed the hard-coded test-count badge; corrected the Node EOL, prebuilt-binary and Obsidian Sync claims; fixed the README project structure (no `docs/`; adds `tools.js`, `doctor.js`, the hooks), the broken troubleshooting anchor, and the claim that `plugin.json` holds permissions; CONTRIBUTING now points tool definitions at `tools.js` and documents the `next` branching policy.
+- Notes created after the server started (by Obsidian, sync or another session) are now found by exact path and by name. Exact lookups fall back to the filesystem, and a fuzzy miss triggers a rescan at most every 2 s. `vault_move`, `vault_trash`, `vault_add_links`, `vault_links` and `vault_link_health` list notes fresh from disk instead of using the startup snapshot.
+- A note whose filename is stored in a different Unicode normalisation (macOS NFD vs NFC) is found by either spelling.
+- Moving a folder with `vault_move` re-keys the notes inside it in the index instead of indexing the folder as a note, so they stay readable, linkable and trashable. `vault_move` and `vault_trash` index, trash and rewrite links using the normalised path when given backslash paths.
+- The write rules no longer lose a dot-folder segment when a symlink's real target is a dot-folder entry whose name contains backslashes.
 
 ### Security
 - Every tool now resolves paths through their real location: a symlink inside the vault that points outside it can no longer be read or written through (`vault-fs.js` `resolveSafe`).

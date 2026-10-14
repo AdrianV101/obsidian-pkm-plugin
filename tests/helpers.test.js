@@ -1,4 +1,4 @@
-import { before, describe, it } from "node:test";
+import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import fs from "fs/promises";
 import path from "path";
@@ -16,7 +16,6 @@ import {
   findTailSections,
   capReadOutput,
   buildBasenameMap,
-  resolveFuzzyPath,
   resolveFuzzyFolder,
   computePeek,
   formatPeek,
@@ -766,67 +765,6 @@ describe("buildBasenameMap", () => {
   it("is case-insensitive for basenames", () => {
     const { basenameMap } = buildBasenameMap(["notes/MyNote.md"]);
     assert.deepStrictEqual(basenameMap.get("mynote"), ["notes/MyNote.md"]);
-  });
-});
-
-describe("resolveFuzzyPath", () => {
-  const files = [
-    "01-Projects/MyApp/devlog.md",
-    "01-Projects/Other/devlog.md",
-    "notes/unique-note.md",
-    "research/deep-dive.md",
-  ];
-  let basenameMap, allFilesSet;
-
-  before(() => {
-    ({ basenameMap, allFilesSet } = buildBasenameMap(files));
-  });
-
-  it("returns exact path unchanged when it exists in file set", () => {
-    const result = resolveFuzzyPath("notes/unique-note.md", basenameMap, allFilesSet);
-    assert.equal(result, "notes/unique-note.md");
-  });
-
-  it("resolves basename without extension", () => {
-    const result = resolveFuzzyPath("unique-note", basenameMap, allFilesSet);
-    assert.equal(result, "notes/unique-note.md");
-  });
-
-  it("resolves basename with .md extension", () => {
-    const result = resolveFuzzyPath("unique-note.md", basenameMap, allFilesSet);
-    assert.equal(result, "notes/unique-note.md");
-  });
-
-  it("throws on ambiguous basename", () => {
-    assert.throws(
-      () => resolveFuzzyPath("devlog", basenameMap, allFilesSet),
-      (err) => {
-        assert.match(err.message, /matches 2 files/);
-        assert.match(err.message, /01-Projects\/MyApp\/devlog\.md/);
-        assert.match(err.message, /01-Projects\/Other\/devlog\.md/);
-        return true;
-      }
-    );
-  });
-
-  it("throws on no match", () => {
-    assert.throws(
-      () => resolveFuzzyPath("nonexistent", basenameMap, allFilesSet),
-      (err) => {
-        assert.match(err.message, /not found/i);
-        return true;
-      }
-    );
-  });
-
-  it("resolves ambiguous basename when scoped to a folder", () => {
-    const result = resolveFuzzyPath("devlog", basenameMap, allFilesSet, "01-Projects/MyApp");
-    assert.equal(result, "01-Projects/MyApp/devlog.md");
-  });
-
-  it("resolves exact path with .md added", () => {
-    const result = resolveFuzzyPath("notes/unique-note", basenameMap, allFilesSet);
-    assert.equal(result, "notes/unique-note.md");
   });
 });
 

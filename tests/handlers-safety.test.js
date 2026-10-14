@@ -382,3 +382,20 @@ describe("write tools refuse in-vault symlinks whose real target is not a writab
     }
   }
 });
+
+describe("write rules see the real on-disk entry name, not a normalised copy", () => {
+  it("vault_append refuses a symlink whose real entry sits in a dot-folder under a name containing backslash '..'", { skip: IS_WIN && "backslashes are separators on Windows" }, async () => {
+    const v = await makeVault();
+    try {
+      const real = path.join(v.root, ".obsidian", "x\\..\\..\\y.md");
+      await fs.writeFile(real, note("Planted"));
+      await fs.symlink(real, path.join(v.root, "notes", "planted.md"));
+      const before = await snapshot(v.root);
+      await assert.rejects(() => v.handlers.get("vault_append")({ path: "notes/planted.md", content: "pwned" }), /Write tools only accept \.md notes outside dot-folders/);
+      assert.deepEqual(await snapshot(v.root), before);
+    } finally {
+      await v.cleanup();
+    }
+  });
+});
+
