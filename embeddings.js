@@ -134,6 +134,10 @@ export class SemanticIndex {
     this._lastSuccessAt = null;
     this._stale = new Set();
     this._probePromise = null;
+    this._closing = false;
+    this._pauseSync = false; // a long rate limit stops the current sync; files stay stale
+    this._scanned = false;
+    this._staleCarry = 0; // persisted stale count, reported until the first scan completes
   }
 
   get isAvailable() {
@@ -150,7 +154,7 @@ export class SemanticIndex {
       status,
       reason: this._disabled?.reason ?? null,
       since: this._disabled?.since ?? null,
-      staleFiles: this._stale.size,
+      staleFiles: this._scanned ? this._stale.size : this._staleCarry,
       lastSuccessAt: this._lastSuccessAt,
     };
   }
@@ -197,6 +201,8 @@ export class SemanticIndex {
     if (persisted?.status === "disabled" && persisted.reason && persisted.since) {
       this._disabled = { reason: persisted.reason, since: persisted.since };
     }
+    this._staleCarry = Number(persisted?.stale_files) || 0;
+    this._lastKnownVaultFiles = Number(persisted?.vault_files) || 0;
     this._lastSuccessAt = persisted?.last_success_at
       ?? this.db.prepare("SELECT MAX(updated_at) AS t FROM files").get().t
       ?? null;
@@ -212,6 +218,7 @@ export class SemanticIndex {
   }
 
   async shutdown() {
+    this._closing = true;
     if (this._abortController) {
       this._abortController.abort();
       this._abortController = null;
@@ -265,7 +272,7 @@ export class SemanticIndex {
       this._disabled = null;
       console.error("Semantic index: re-enabled after a successful probe");
       this._writeStats();
-      this._startSync();
+      if (!this._closing) this._startSync();
     }
     return true;
   }
@@ -276,7 +283,15 @@ export class SemanticIndex {
 
   _noteFailure(err) {
     if (!(err instanceof EmbeddingError) || !DISABLING_KINDS.has(err.kind)) return;
-    if (this._disabled) return;
+    if (this._disabled) {
+      // Keep the original date; the cause may have changed (quota, then an invalid key).
+      const reason = disabledReason(err);
+      if (reason !== this._disabled.reason) {
+        this._disabled.reason = reason;
+        this._writeStats();
+      }
+      return;
+    }
     this._disabled = { reason: disabledReason(err), since: new Date().toISOString() };
     console.error(`Semantic index: ${formatDisabledMessage(this.health())}`);
     this._writeStats();
@@ -447,6 +462,9 @@ export class SemanticIndex {
     } catch (err) {
       this._stale.add(relativePath);
       this._noteFailure(err);
+      if (err instanceof EmbeddingError && err.kind === "rate_limit" && (err.retryAfterMs ?? 0) > MAX_RETRY_WAIT_MS) {
+        this._pauseSync = true;
+      }
       throw err;
     }
     this._noteSuccess();
@@ -547,7 +565,7 @@ export class SemanticIndex {
   }
 
   _startSync() {
-    if (!this.db) return Promise.resolve(null);
+    if (!this.db || this._closing) return Promise.resolve(null);
     if (!this._syncState.syncing) {
       this._syncPromise = this._startupSync().catch(err => {
         console.error(`Semantic index startup sync error: ${err.message}`);
@@ -581,11 +599,13 @@ export class SemanticIndex {
       if (!vaultFileSet.has(indexedPath)) this.removeFile(indexedPath);
     }
     this._stale = new Set(toReindex);
+    this._scanned = true;
     return toReindex;
   }
 
   async _startupSync() {
     this._syncState.syncing = true;
+    this._pauseSync = false;
     const summary = { updated: 0, failed: 0, skipped: 0 };
 
     try {
@@ -606,11 +626,15 @@ export class SemanticIndex {
       console.error(`Semantic index: syncing ${toReindex.length} files...`);
 
       for (let i = 0; i < toReindex.length; i += REINDEX_BATCH_SIZE) {
-        if (this._abortController?.signal.aborted) {
+        if (this._closing || this._abortController?.signal.aborted) {
           console.error("Semantic index: startup sync aborted");
           break;
         }
         if (this._disabled) break;
+        if (this._pauseSync) {
+          console.error("Semantic index: sync paused, OpenAI rate limit resets too far ahead; notes stay stale until the next sync");
+          break;
+        }
         const batch = toReindex.slice(i, i + REINDEX_BATCH_SIZE);
         const results = await Promise.allSettled(batch.map(f => this._trackedReindex(f)));
         for (const r of results) {

@@ -3572,3 +3572,32 @@ describe("anchored semantic search footer", () => {
     assert.ok(result.content[0].text.endsWith("*2 notes have changed since last indexed; results may be stale.*"), result.content[0].text);
   });
 });
+
+describe("vault_neighborhood when quota runs out during its own semantic search", () => {
+  it("keeps the graph output and appends the skipped note", async () => {
+    const vault = await makeVault({ "a.md": "Alpha body. [[b]]", "b.md": "Beta body." });
+    const fake = installFakeOpenAI((inputs) => embeddingsResponse(inputs));
+    const idx = new SemanticIndex({
+      vaultPath: vault,
+      openaiApiKey: "test-key",
+      dbPath: path.join(vault, ".obsidian", "test-index.db"),
+      sleep: async () => {},
+    });
+    try {
+      await idx.initialize();
+      await idx.whenSynced();
+      const h = await createHandlers({
+        vaultPath: vault, templateRegistry: new Map(), semanticIndex: idx, activityLog: null, sessionId: "nb-quota",
+      });
+      fake.handler = () => quotaResponse();
+      const result = await h.get("vault_neighborhood")({ path: "a.md", include_semantic: true });
+      const text = result.content[0].text;
+      assert.ok(text.includes("b.md"), text);
+      assert.ok(text.includes("(Semantic expansion skipped: Semantic search disabled since "), text);
+    } finally {
+      await idx.shutdown();
+      fake.restore();
+      await fs.rm(vault, { recursive: true, force: true });
+    }
+  });
+});

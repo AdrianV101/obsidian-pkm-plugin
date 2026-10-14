@@ -1096,3 +1096,91 @@ describe("SemanticIndex health", () => {
     assert.ok((await idx.search({ query: "note" })).endsWith(footer));
   });
 });
+
+describe("SemanticIndex health: fix round", () => {
+  let fake;
+  const opened = [];
+  const vaults = [];
+
+  async function vaultWith(files) {
+    const dir = await makeVault(files);
+    vaults.push(dir);
+    return dir;
+  }
+
+  async function openIndex(vaultPath) {
+    const idx = new SemanticIndex({
+      vaultPath,
+      openaiApiKey: "test-key",
+      dbPath: path.join(vaultPath, ".obsidian", "test-index.db"),
+      sleep: async () => {},
+    });
+    opened.push(idx);
+    await idx.initialize();
+    return idx;
+  }
+
+  afterEach(async () => {
+    for (const idx of opened.splice(0)) await idx.shutdown();
+    fake?.restore();
+    fake = null;
+    for (const dir of vaults.splice(0)) await fs.rm(dir, { recursive: true, force: true });
+  });
+
+  it("shutdown during the first sync batch stops the sync: at most one batch is sent", async () => {
+    const vault = await vaultWith(manyNotes(25));
+    let release;
+    const gate = new Promise(r => { release = r; });
+    fake = installFakeOpenAI(async (inputs) => { await gate; return embeddingsResponse(inputs); });
+    const idx = await openIndex(vault);
+    while (fake.calls.length === 0) await new Promise(r => setTimeout(r, 5));
+    const closing = idx.shutdown();
+    release();
+    await closing;
+    assert.ok(fake.calls.length <= 10, `got ${fake.calls.length} requests`);
+  });
+
+  it("initialize keeps the persisted stale_files and vault_files until the scan completes", async () => {
+    const vault = await vaultWith(manyNotes(3));
+    await fs.mkdir(path.join(vault, ".obsidian"), { recursive: true });
+    const statsPath = path.join(vault, ".obsidian", "semantic-stats.json");
+    await fs.writeFile(statsPath, JSON.stringify({
+      indexed_files: 0, vault_files: 3, status: "disabled", reason: "OpenAI quota exhausted. Add credits; it re-enables automatically.",
+      since: "2026-07-03T09:12:00.000Z", last_success_at: null, stale_files: 3, updated_at: "2026-07-03T09:12:00.000Z",
+    }));
+    let release;
+    const gate = new Promise(r => { release = r; });
+    fake = installFakeOpenAI(async () => { await gate; return quotaResponse(); });
+    await openIndex(vault);
+    const stats = JSON.parse(await fs.readFile(statsPath, "utf-8"));
+    assert.equal(stats.stale_files, 3);
+    assert.equal(stats.vault_files, 3);
+    release();
+  });
+
+  it("a rate limit longer than the retry cap stops the sync without disabling the index", async () => {
+    const vault = await vaultWith(manyNotes(25));
+    fake = installFakeOpenAI(() => errorResponse(429, "{}", { "x-ratelimit-reset-requests": "6h0m0s" }));
+    const idx = await openIndex(vault);
+    const summary = await idx.whenSynced();
+    assert.ok(fake.calls.length <= 10, `got ${fake.calls.length} requests`);
+    assert.equal(summary.updated, 0);
+    assert.ok(summary.skipped >= 15);
+    assert.equal(idx.health().status, "ok");
+    assert.equal(idx.health().staleFiles, 25);
+  });
+
+  it("a disabled index whose key later becomes invalid keeps its since and updates the reason", async () => {
+    const vault = await vaultWith(manyNotes(1));
+    fake = installFakeOpenAI(() => quotaResponse());
+    const idx = await openIndex(vault);
+    await idx.whenSynced();
+    const { since } = idx.health();
+    fake.handler = () => errorResponse(401, "{}");
+    assert.equal(await idx.probe(), false);
+    assert.equal(idx.health().since, since);
+    assert.match(idx.health().reason, /^OpenAI rejected the API key \(HTTP 401\)/);
+    const stats = JSON.parse(await fs.readFile(path.join(vault, ".obsidian", "semantic-stats.json"), "utf-8"));
+    assert.match(stats.reason, /^OpenAI rejected the API key/);
+  });
+});

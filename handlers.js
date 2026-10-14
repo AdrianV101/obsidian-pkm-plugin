@@ -37,9 +37,10 @@ import {
 import { getAllMarkdownFiles, extractFrontmatter } from "./utils.js";
 import { formatDisabledMessage, formatStaleFooter } from "./semantic-health.js";
 
-const NO_SEMANTIC_KEY = "VAULT_PKM_OPENAI_KEY not set";
 import { mutateFile, writeNew, withNoteLock, normalizeVaultRoot, resolveSafe, hasDotSegment, assertWritableReal, FileIndex, toVaultRel } from "./vault-fs.js";
 import { findSection, matchHeadings, parseHeadings, splitFrontmatter } from "./markdown.js";
+
+const NO_SEMANTIC_KEY = "VAULT_PKM_OPENAI_KEY not set";
 
 function positiveInt(value, fallback) {
   const n = Math.floor(Number(value));
@@ -590,11 +591,18 @@ export async function createHandlers({ vaultPath: rawVaultPath, templateRegistry
 
       if (body) {
         const semanticLimit = args.semantic_limit || 5;
-        const semanticResults = await semanticIndex.searchRaw({
-          query: body.slice(0, 8000),
-          limit: semanticLimit * 2,
-          excludeFiles: new Set([resolvedPath])
-        });
+        let semanticResults = [];
+        try {
+          semanticResults = await semanticIndex.searchRaw({
+            query: body.slice(0, 8000),
+            limit: semanticLimit * 2,
+            excludeFiles: new Set([resolvedPath])
+          });
+        } catch (e) {
+          // Quota ran out during this very call: keep the graph output, say why semantics are missing.
+          if (semanticIndex.health?.().status !== "disabled") throw e;
+          text += `\n(Semantic expansion skipped: ${e.message})\n`;
+        }
 
         // Every linked node counts, including those beyond max_nodes
         const unlinked = semanticResults.filter(r => !result.discovered.has(r.path)).slice(0, semanticLimit);
