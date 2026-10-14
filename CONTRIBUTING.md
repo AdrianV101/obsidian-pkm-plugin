@@ -52,6 +52,7 @@ tools.js        - MCP tool definitions (names, descriptions, input schemas)
 handlers.js     - Tool handler implementations (all 20 handlers)
 helpers.js      - Pure helper functions (path resolution, filtering, templates, fuzzy matching, peek/redirect)
 markdown.js     - Dependency-free markdown parsing (frontmatter split, ATX headings, fenced/inline code masking); hooks import it
+frontmatter.js  - YAML frontmatter parsing, rendering and byte-preserving updates (yaml package)
 graph.js        - Wikilink resolution and BFS graph traversal
 embeddings.js   - Semantic search (OpenAI embeddings, SQLite + sqlite-vec)
 activity.js     - Activity logging (session tracking, SQLite)

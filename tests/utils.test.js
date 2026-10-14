@@ -28,7 +28,7 @@ describe("extractFrontmatter", () => {
 
   it("returns null for invalid YAML", () => {
     const content = "---\n: : : invalid\n---\n";
-    // js-yaml may or may not throw on various invalid YAML; just ensure no crash
+    // Invalid YAML must not crash extraction
     const result = extractFrontmatter(content);
     // Result is either null or an object, but should not throw
     assert.ok(result === null || typeof result === "object");
@@ -50,7 +50,7 @@ describe("extractFrontmatter", () => {
   it("handles date values", () => {
     const content = "---\ncreated: 2025-06-15\n---\n";
     const fm = extractFrontmatter(content);
-    // js-yaml may parse dates as Date objects or strings
+    // Dates parse as strings (core schema has no timestamp type)
     assert.ok(fm.created !== undefined);
   });
 
@@ -61,7 +61,7 @@ describe("extractFrontmatter", () => {
   });
 
   it("does not instantiate YAML type attacks (!!js/regexp)", () => {
-    // With JSON_SCHEMA, !!js/regexp should not produce a RegExp object
+    // Unknown tags such as !!js/regexp must not produce a RegExp object
     const content = "---\npattern: !!js/regexp /malicious/gi\n---\n";
     const fm = extractFrontmatter(content);
     // Should either return null (parse error) or a non-RegExp value

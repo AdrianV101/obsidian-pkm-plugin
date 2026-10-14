@@ -1,6 +1,6 @@
 // IMPORTANT: Hooks run via raw `node` from the installed plugin directory,
 // which has no node_modules. All functions here MUST be self-contained —
-// do NOT import from ../helpers.js or ../utils.js (they depend on js-yaml).
+// do NOT import from ../helpers.js, ../utils.js or ../frontmatter.js (they depend on the yaml package).
 // Only relative and node: imports are allowed; tests/manifest.test.js enforces this.
 import fs from "node:fs/promises";
 import path from "node:path";

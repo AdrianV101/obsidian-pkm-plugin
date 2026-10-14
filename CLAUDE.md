@@ -150,6 +150,7 @@ Safely updates YAML frontmatter fields in an existing note without touching the 
 - Set fields to new values, add new fields, or remove fields by setting to `null`
 - Protected fields (`type`, `created`, `tags`) cannot be removed (only updated)
 - Arrays (like `tags`) are replaced wholesale
+- Only the changed keys' lines are rewritten: comments, quoting, inline lists, number formats such as `1.10`, CRLF and every other field are preserved byte for byte; removing a key removes only its lines
 - Enum validation: task `status` must be one of `pending`, `active`, `done`, `cancelled`; task `priority` must be one of `low`, `normal`, `high`, `urgent` — non-task types are unconstrained
 - Requires exact path (no fuzzy resolution — destructive operation)
 
@@ -166,7 +167,7 @@ vault_update_frontmatter({
 })
 ```
 
-Implementation: `updateFrontmatter` pure function in `helpers.js`, handler in `handlers.js`
+Implementation: `updateFrontmatter` in `frontmatter.js` (YAML via the `yaml` package, core schema), handler in `handlers.js`
 
 ### vault_add_links (Atomic Link Insertion)
 

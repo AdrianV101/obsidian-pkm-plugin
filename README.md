@@ -288,6 +288,7 @@ File layout:
 ├── handlers.js       # Tool handler implementations
 ├── helpers.js        # Pure functions (path security, filtering, templates, frontmatter)
 ├── markdown.js       # Dependency-free markdown parsing (frontmatter split, headings, code masking), shared with hooks
+├── frontmatter.js    # YAML frontmatter parse/render/byte-preserving update (yaml package)
 ├── graph.js          # Wikilink resolution and BFS graph traversal
 ├── embeddings.js     # Semantic index (OpenAI embeddings, SQLite + sqlite-vec)
 ├── activity.js       # Activity log (session tracking, SQLite)

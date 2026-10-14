@@ -1,7 +1,8 @@
 import fs from "fs/promises";
 import path from "path";
-import yaml from "js-yaml";
-import { extractFrontmatter } from "./utils.js";
+import { DANGEROUS_KEYS, extractFrontmatter, validateFieldEnum } from "./frontmatter.js";
+
+export { updateFrontmatter, validateFieldEnum } from "./frontmatter.js";
 
 // Large-file thresholds (character counts, ~4 chars per token)
 export const AUTO_REDIRECT_THRESHOLD = 80_000;  // ~20k tokens
@@ -10,40 +11,6 @@ export const CHUNK_SIZE = 80_000;                 // chars per chunk
 
 const PRIORITY_RANKS = { urgent: 3, high: 2, normal: 1, low: 0 };
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
-const DANGEROUS_KEYS = new Set(["__proto__", "constructor", "prototype"]);
-
-// Canonical frontmatter field constraints, keyed by note type.
-// Used by vault_write (template-based) and vault_update_frontmatter (existing files).
-const FIELD_ENUMS = {
-  status: {
-    task: ["pending", "active", "done", "cancelled"],
-  },
-  priority: {
-    task: Object.keys(PRIORITY_RANKS),  // low, normal, high, urgent
-  },
-};
-
-/**
- * Validate a frontmatter field value against FIELD_ENUMS for a given note type.
- * Throws if the value is not in the allowed set.
- *
- * @param {string} fieldName - the frontmatter field (e.g. "status")
- * @param {*} value - the value being set
- * @param {string} noteType - the note's type field (e.g. "task")
- */
-export function validateFieldEnum(fieldName, value, noteType) {
-  if (value === null || value === undefined) return;
-  const enumsByType = FIELD_ENUMS[fieldName];
-  if (!enumsByType) return;
-  const allowed = enumsByType[noteType];
-  if (!allowed) return;
-  const strValue = String(value);
-  if (!allowed.includes(strValue)) {
-    throw new Error(
-      `Invalid ${fieldName} "${strValue}" for type "${noteType}". Allowed values: ${allowed.join(", ")}`
-    );
-  }
-}
 
 /**
  * Compare two frontmatter values for sorting.
@@ -831,74 +798,6 @@ export function formatPeek(peekData, { redirected = false, formatPath } = {}) {
   }
 
   return parts.join("\n");
-}
-
-/**
- * Update YAML frontmatter fields in a markdown file's content.
- * Parses existing frontmatter, merges changes, re-serializes.
- *
- * @param {string} content - full file content with frontmatter
- * @param {Object} fields - fields to update (null value = delete, non-null = set/create)
- * @returns {{ content: string, frontmatter: Object }} updated content and resulting frontmatter
- * @throws {Error} if no frontmatter, protected field deletion, invalid key, or empty tags
- */
-export function updateFrontmatter(content, fields) {
-  if (!content.startsWith("---")) {
-    throw new Error("No frontmatter found in file");
-  }
-  const endIndex = content.indexOf("\n---", 3);
-  if (endIndex === -1) {
-    throw new Error("No frontmatter found in file (unclosed)");
-  }
-
-  const yamlStr = content.slice(4, endIndex);
-  const body = content.slice(endIndex + 4);
-
-  let parsed;
-  try {
-    parsed = yaml.load(yamlStr, { schema: yaml.JSON_SCHEMA });
-  } catch (e) {
-    throw new Error(`Failed to parse frontmatter: ${e.message}`, { cause: e });
-  }
-  if (!parsed || typeof parsed !== "object") {
-    parsed = {};
-  }
-
-  const PROTECTED_FIELDS = ["type", "created", "tags"];
-  const KEY_REGEX = /^[a-zA-Z][a-zA-Z0-9_-]*$/;
-
-  for (const [key, value] of Object.entries(fields)) {
-    if (DANGEROUS_KEYS.has(key)) {
-      throw new Error(`Disallowed frontmatter key: "${key}"`);
-    }
-    if (!KEY_REGEX.test(key)) {
-      throw new Error(`Invalid frontmatter key: "${key}". Keys must start with a letter and contain only letters, digits, hyphens, or underscores.`);
-    }
-
-    if (value === null) {
-      if (PROTECTED_FIELDS.includes(key)) {
-        throw new Error(`Cannot remove required field: "${key}". Protected fields: ${PROTECTED_FIELDS.join(", ")}`);
-      }
-      delete parsed[key];
-    } else {
-      if (key === "tags") {
-        if (!Array.isArray(value) || value.filter(Boolean).length === 0) {
-          throw new Error("tags must be a non-empty array");
-        }
-      }
-      // Use the file's existing type (or the new type if being changed) for enum validation
-      const effectiveType = key === "type" ? undefined : (fields.type || parsed.type);
-      if (effectiveType) {
-        validateFieldEnum(key, value, String(effectiveType));
-      }
-      parsed[key] = value;
-    }
-  }
-
-  const newYaml = yaml.dump(parsed, { lineWidth: -1, noRefs: true, sortKeys: false, schema: yaml.JSON_SCHEMA });
-  const newContent = "---\n" + newYaml + "---" + body;
-
-  return { content: newContent, frontmatter: { ...parsed } };
 }
 
 /**

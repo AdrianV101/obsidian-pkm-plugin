@@ -1,19 +1,7 @@
 import fs from "fs/promises";
 import path from "path";
-import yaml from "js-yaml";
 
-/** Extract YAML frontmatter from markdown content. */
-export function extractFrontmatter(content) {
-  if (!content.startsWith("---")) return null;
-  const endIndex = content.indexOf("\n---", 3);
-  if (endIndex === -1) return null;
-  const yamlContent = content.slice(4, endIndex);
-  try {
-    return yaml.load(yamlContent, { schema: yaml.JSON_SCHEMA });
-  } catch {
-    return null;
-  }
-}
+export { extractFrontmatter } from "./frontmatter.js";
 
 /** Recursively get all markdown files in a directory (skips dotfiles/dirs). */
 export async function getAllMarkdownFiles(dir, baseDir = dir) {

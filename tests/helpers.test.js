@@ -2,7 +2,7 @@ import { before, describe, it } from "node:test";
 import assert from "node:assert/strict";
 import fs from "fs/promises";
 import path from "path";
-import yaml from "js-yaml";
+import { parseFrontmatterText } from "../frontmatter.js";
 import {
   resolvePath,
   matchesFilters,
@@ -446,7 +446,7 @@ describe("template defaults", () => {
   it("note.md template has a non-empty default tag", async () => {
     const templatePath = path.join(path.dirname(new URL(import.meta.url).pathname), "..", "templates", "note.md");
     const content = await fs.readFile(templatePath, "utf-8");
-    const frontmatter = yaml.load(content.split("---")[1], { schema: yaml.JSON_SCHEMA });
+    const frontmatter = parseFrontmatterText(content.split("---")[1]);
     assert.ok(Array.isArray(frontmatter.tags), "tags should be an array");
     assert.ok(frontmatter.tags.length > 0, "tags should not be empty — validateFrontmatterStrict requires at least one tag");
   });
