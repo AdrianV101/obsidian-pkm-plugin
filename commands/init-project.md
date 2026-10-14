@@ -76,7 +76,7 @@ The section content (substitute the actual project path):
 - **Vault project**: `01-Projects/<name>/`
 - **MCP Server**: `vault-pkm` plugin
 
-Document decisions, research findings, and debugging sessions as you work. The `pkm-capture` agent captures devlog entries and PKM-worthy content in the background (triggered automatically after git commits), or use the `vault-pkm:pkm-write` skill for structured notes with linking.
+Document decisions, research findings, and debugging sessions as you work. The `pkm-capture` agent captures devlog entries and PKM-worthy content in the background (triggered automatically when a pull request is created with `gh pr create`), or use the `vault-pkm:pkm-write` skill for structured notes with linking.
 
 Use `vault-pkm:pkm-explore` to research what the vault already knows about a topic before creating new content.
 
