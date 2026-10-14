@@ -13,6 +13,7 @@ import {
   FileIndex,
   mutateFile,
   writeNew,
+  withNoteLock,
 } from "../vault-fs.js";
 
 const IS_WIN = process.platform === "win32";
@@ -361,7 +362,7 @@ describe("FileIndex", () => {
 // ─── mutateFile / writeNew ────────────────────────────────────────────
 
 async function tempNames(dir) {
-  return (await fs.readdir(dir)).filter((n) => n.endsWith(".tmp"));
+  return (await fs.readdir(dir)).filter((n) => n.endsWith(".tmp") || n.endsWith(".lock"));
 }
 
 describe("mutateFile", () => {
@@ -531,5 +532,191 @@ describe("writeNew", () => {
     await assert.rejects(() => writeNew(p, "again", noLinks), { code: "EEXIST" });
     assert.equal(await fs.readFile(p, "utf-8"), "copied");
     assert.deepEqual(await tempNames(dir), []);
+  });
+});
+
+// ─── mutateFile: staging order, cross-process lock, metadata ─────────────
+
+describe("mutateFile staging and locking", () => {
+  let dir;
+
+  before(async () => {
+    dir = await tmp("mutate-lock-");
+  });
+
+  after(async () => {
+    await fs.rm(dir, { recursive: true, force: true });
+  });
+
+  async function sub(content = "start\n", name = "n.md") {
+    const d = await fs.mkdtemp(path.join(dir, "case-"));
+    const p = path.join(d, name);
+    await fs.writeFile(p, content);
+    return { d, p };
+  }
+
+  // The lock file's name is derived from the note's name; learn it by observing one update.
+  async function lockPathFor(d, p) {
+    let lockName;
+    await mutateFile(p, async (c) => {
+      lockName = (await fs.readdir(d)).find((n) => n.endsWith(".lock"));
+      return c;
+    });
+    return path.join(d, lockName);
+  }
+
+  it("re-checks the file after staging the new version, so a write landing during staging is not overwritten", async () => {
+    const { d, p } = await sub();
+    let staged = 0;
+    let calls = 0;
+    await mutateFile(p, (c) => { calls++; return c + "ours\n"; }, {
+      afterStage: async () => { if (++staged === 1) await fs.appendFile(p, "external\n"); },
+    });
+    assert.equal(calls, 2);
+    assert.equal(await fs.readFile(p, "utf-8"), "start\nexternal\nours\n");
+    assert.deepEqual(await tempNames(d), []);
+  });
+
+  it("removes the staged temp and the lock when the check keeps failing", async () => {
+    const { d, p } = await sub();
+    await assert.rejects(
+      () => mutateFile(p, (c) => c + "x", { maxAttempts: 2, afterStage: () => fs.appendFile(p, "e") }),
+      { code: "ECONFLICT" }
+    );
+    assert.deepEqual(await tempNames(d), []);
+  });
+
+  it("removes the staged temp and the lock when the rename fails", async () => {
+    const { d, p } = await sub();
+    await assert.rejects(
+      () => mutateFile(p, (c) => c + "x", { rename: async () => { throw Object.assign(new Error("denied"), { code: "EACCES" }); } }),
+      { code: "EACCES" }
+    );
+    assert.equal(await fs.readFile(p, "utf-8"), "start\n");
+    assert.deepEqual(await tempNames(d), []);
+  });
+
+  it("holds a lock file for the critical section and releases it afterwards", async () => {
+    const { d, p } = await sub();
+    let during;
+    await mutateFile(p, async (c) => {
+      during = (await fs.readdir(d)).filter((n) => n.endsWith(".lock"));
+      return c + "x";
+    });
+    assert.equal(during.length, 1);
+    assert.match(during[0], /^\.[0-9a-f]{16}\.lock$/);
+    assert.deepEqual(await tempNames(d), []);
+  });
+
+  it("waits for a lock held by another process using the injected sleep, then proceeds once it is released", async () => {
+    const { d, p } = await sub();
+    const held = await lockPathFor(d, p);
+    await fs.writeFile(held, `${process.pid} ${Date.now()}`);
+    let sleeps = 0;
+    await mutateFile(p, (c) => c + "x", {
+      sleep: async () => { if (++sleeps === 3) await fs.rm(held); },
+    });
+    assert.equal(sleeps, 3);
+    assert.equal(await fs.readFile(p, "utf-8"), "start\nx");
+    assert.deepEqual(await tempNames(d), []);
+  });
+
+  it("gives up with ECONFLICT when a fresh lock is never released, leaving the other holder's lock alone", async () => {
+    const { d, p } = await sub();
+    const held = await lockPathFor(d, p);
+    await fs.writeFile(held, `${process.pid} ${Date.now()}`);
+    let slept = 0;
+    await assert.rejects(
+      () => mutateFile(p, (c) => c + "x", { lockTimeoutMs: 100, sleep: async (ms) => { slept += ms; } }),
+      (err) => {
+        assert.equal(err.code, "ECONFLICT");
+        assert.match(err.message, /n\.md/);
+        assert.ok(!err.message.includes(d));
+        return true;
+      }
+    );
+    assert.ok(slept >= 100);
+    assert.equal(await fs.readFile(p, "utf-8"), "start\n");
+    assert.equal((await fs.readdir(d)).includes(path.basename(held)), true);
+  });
+
+  it("removes a stale lock (older than staleLockMs) and proceeds", async () => {
+    const { d, p } = await sub();
+    const held = await lockPathFor(d, p);
+    await fs.writeFile(held, "99999999 0");
+    const old = new Date(Date.now() - 60_000);
+    await fs.utimes(held, old, old);
+    await mutateFile(p, (c) => c + "x", { staleLockMs: 10_000, sleep: async () => {} });
+    assert.equal(await fs.readFile(p, "utf-8"), "start\nx");
+    assert.deepEqual(await tempNames(d), []);
+  });
+
+  it("withNoteLock runs its function under the same lock, so an update queued behind a rename cannot recreate the old path", async () => {
+    const { d, p } = await sub();
+    const moved = path.join(d, "moved.md");
+    let release;
+    const gate = new Promise((r) => { release = r; });
+    let started;
+    const hasStarted = new Promise((r) => { started = r; });
+    const holder = withNoteLock(p, async () => {
+      started();
+      await gate;
+      await fs.rename(p, moved);
+    });
+    await hasStarted;
+    const update = mutateFile(p, (c) => c + "late\n");
+    release();
+    await holder;
+    await assert.rejects(() => update, { code: "ENOENT" });
+    await assert.rejects(() => fs.access(p), { code: "ENOENT" });
+    assert.equal(await fs.readFile(moved, "utf-8"), "start\n");
+    assert.deepEqual(await tempNames(d), []);
+  });
+
+  it("refuses to modify a note without write permission, leaving it unchanged", { skip: IS_WIN && "POSIX permission bits" }, async () => {
+    const { d, p } = await sub("locked\n");
+    await fs.chmod(p, 0o444);
+    await assert.rejects(() => mutateFile(p, (c) => c + "x"), (err) => {
+      assert.equal(err.code, "EACCES");
+      assert.match(err.message, /read-only/);
+      return true;
+    });
+    assert.equal(await fs.readFile(p, "utf-8"), "locked\n");
+    assert.deepEqual(await tempNames(d), []);
+  });
+
+  it("keeps the note's creation time", { skip: process.platform !== "darwin" && "birthtime is only settable on macOS" }, async () => {
+    const { p } = await sub("old\n");
+    const old = new Date("2021-06-01T12:00:00Z");
+    await fs.utimes(p, old, old);
+    const before = await fs.stat(p);
+    await mutateFile(p, (c) => c + "new\n");
+    const after = await fs.stat(p);
+    assert.equal(after.birthtime.toISOString(), before.birthtime.toISOString());
+    assert.ok(Date.now() - after.mtimeMs < 60_000);
+  });
+
+  it("handles a 240-byte note name (temp and lock names stay short)", async () => {
+    const { d, p } = await sub("x\n", "a".repeat(240) + ".md");
+    await mutateFile(p, (c) => c + "y\n");
+    assert.equal(await fs.readFile(p, "utf-8"), "x\ny\n");
+    assert.deepEqual(await tempNames(d), []);
+    const q = path.join(d, "b".repeat(240) + ".md");
+    await writeNew(q, "new\n");
+    assert.equal(await fs.readFile(q, "utf-8"), "new\n");
+  });
+
+  it("writeNew leaves no temp file when writing the temp fails midway", async () => {
+    const d = await fs.mkdtemp(path.join(dir, "wn-"));
+    const p = path.join(d, "x.md");
+    const failing = {
+      write: async (tmpPath) => {
+        await fs.writeFile(tmpPath, "partial");
+        throw Object.assign(new Error("disk full"), { code: "ENOSPC" });
+      },
+    };
+    await assert.rejects(() => writeNew(p, "content", failing), { code: "ENOSPC" });
+    assert.deepEqual(await tempNames(d), []);
+    await assert.rejects(() => fs.access(p), { code: "ENOENT" });
   });
 });

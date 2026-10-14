@@ -3,6 +3,9 @@ import assert from "node:assert/strict";
 import fs from "fs/promises";
 import path from "path";
 import os from "os";
+import { spawn } from "node:child_process";
+import { setImmediate } from "node:timers";
+import { fileURLToPath } from "node:url";
 import { createHandlers } from "../handlers.js";
 
 const IS_WIN = process.platform === "win32";
@@ -95,4 +98,110 @@ describe("note-modifying tools go through mutateFile", () => {
       }
     });
   }
+});
+
+const WORKER = fileURLToPath(new URL("./fixtures/append-worker.js", import.meta.url));
+
+function runWorker(file, tag, count) {
+  return new Promise((resolve, reject) => {
+    const cp = spawn(process.execPath, [WORKER, file, tag, String(count)], { stdio: ["ignore", "ignore", "pipe"] });
+    let err = "";
+    cp.stderr.on("data", (d) => { err += d; });
+    cp.on("exit", (code) => (code === 0 ? resolve() : reject(new Error(`worker ${tag} exited ${code}: ${err}`))));
+  });
+}
+
+const leaksPath = (text, root) => text.includes(root);
+
+describe("separate processes writing one note", () => {
+  it("every append from three real processes lands exactly once and no lock or temp file remains", async () => {
+    const v = await makeVault({ "notes/log.md": "" });
+    try {
+      const file = path.join(v.root, "notes", "log.md");
+      const N = 40;
+      await Promise.all(["a", "b", "c"].map((tag) => runWorker(file, tag, N)));
+      const lines = (await fs.readFile(file, "utf-8")).split("\n").filter(Boolean);
+      const expected = ["a", "b", "c"].flatMap((tag) => Array.from({ length: N }, (_, i) => `${tag}-${i}`));
+      assert.deepEqual([...lines].sort(), expected.sort());
+      assert.deepEqual((await fs.readdir(path.join(v.root, "notes"))).filter((n) => n !== "log.md"), []);
+    } finally {
+      await v.cleanup();
+    }
+  });
+});
+
+describe("vault_move races and write errors", () => {
+  it("vault_move never lets a racing vault_append recreate the old path", async () => {
+    for (let delay = 0; delay < 12; delay++) {
+      const v = await makeVault({ "notes/b.md": note("B") });
+      try {
+        const ticks = async () => { for (let i = 0; i < delay; i++) await new Promise((r) => setImmediate(r)); };
+        await Promise.allSettled([
+          v.handlers.get("vault_append")({ path: "notes/b.md", content: "APPENDED" }),
+          ticks().then(() => v.handlers.get("vault_move")({ old_path: "notes/b.md", new_path: "notes/c.md" })),
+        ]);
+        await assert.rejects(() => fs.access(path.join(v.root, "notes", "b.md")), { code: "ENOENT" });
+        await fs.access(path.join(v.root, "notes", "c.md"));
+      } finally {
+        await v.cleanup();
+      }
+    }
+  });
+
+  it("vault_move finishes the remaining rewrites and reports a referrer it could not update",
+    { skip: IS_WIN && "POSIX permission bits" }, async () => {
+      const v = await makeVault({
+        "notes/b.md": note("B"),
+        "notes/r1.md": note("R1", "See [[b]]."),
+        "notes/r2.md": note("R2", "See [[b]]."),
+      });
+      try {
+        await fs.chmod(path.join(v.root, "notes", "r1.md"), 0o444);
+        const res = await v.handlers.get("vault_move")({ old_path: "notes/b.md", new_path: "notes/c.md" });
+        const text = res.content[0].text;
+        assert.match(text, /Moved notes\/b\.md/);
+        assert.match(text, /could not update links in 1 file/i);
+        assert.match(text, /notes\/r1\.md/);
+        assert.match(await fs.readFile(path.join(v.root, "notes", "r2.md"), "utf-8"), /\[\[c\]\]/);
+        assert.equal(leaksPath(text, v.root), false);
+      } finally {
+        await v.cleanup();
+      }
+    });
+
+  it("vault_write into a missing folder reports a vault-relative message, not a temp file path", async () => {
+    const v = await makeVault({ "notes/a.md": note("A") });
+    try {
+      const templateRegistry = new Map([["t", { content: "---\ntype: note\ncreated: 2026-01-01\ntags:\n  - x\n---\n# {{title}}\n" }]]);
+      const h = await createHandlers({ vaultPath: v.root, templateRegistry, semanticIndex: null, activityLog: null, sessionId: "w" });
+      await assert.rejects(
+        () => h.get("vault_write")({ template: "t", path: "nope/new.md", createDirs: false }),
+        (err) => {
+          assert.equal(leaksPath(err.message, v.root), false);
+          assert.doesNotMatch(err.message, /\.tmp/);
+          assert.match(err.message, /nope/);
+          return true;
+        }
+      );
+    } finally {
+      await v.cleanup();
+    }
+  });
+
+  it("vault_append to a read-only note refuses without leaking the absolute path", { skip: IS_WIN && "POSIX permission bits" }, async () => {
+    const v = await makeVault({ "notes/ro.md": note("RO") });
+    try {
+      await fs.chmod(path.join(v.root, "notes", "ro.md"), 0o444);
+      await assert.rejects(
+        () => v.handlers.get("vault_append")({ path: "notes/ro.md", content: "x" }),
+        (err) => {
+          assert.match(err.message, /read-only/);
+          assert.equal(leaksPath(err.message, v.root), false);
+          return true;
+        }
+      );
+    } finally {
+      await v.cleanup();
+    }
+  });
 });

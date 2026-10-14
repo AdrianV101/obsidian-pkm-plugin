@@ -23,7 +23,7 @@ import {
 } from "./helpers.js";
 import { exploreNeighborhood, formatNeighborhood, findFilesLinkingTo, rewriteWikilinks, extractWikilinks, resolveLink, buildIncomingIndex } from "./graph.js";
 import { getAllMarkdownFiles, extractFrontmatter } from "./utils.js";
-import { mutateFile, writeNew, normalizeVaultRoot, resolveSafe, hasDotSegment, assertWritableReal, FileIndex, toVaultRel } from "./vault-fs.js";
+import { mutateFile, writeNew, withNoteLock, normalizeVaultRoot, resolveSafe, hasDotSegment, assertWritableReal, FileIndex, toVaultRel } from "./vault-fs.js";
 import { findSection, matchHeadings, parseHeadings, splitFrontmatter } from "./markdown.js";
 
 function positiveInt(value, fallback) {
@@ -65,6 +65,27 @@ function applyAppend(existing, args) {
     return existing.slice(0, range.afterHeading) + content + eol + existing.slice(range.afterHeading);
   }
   return existing + eol + content;
+}
+
+/**
+ * Rewrite a low-level fs error so its message names the vault-relative path instead of
+ * an absolute path or temp file name. Other errors pass through.
+ * @param {any} e
+ * @param {string} rel vault-relative path of the note being written
+ * @returns {any}
+ */
+function relError(e, rel) {
+  const message = {
+    ENOENT: `Cannot write ${rel}: its folder does not exist.`,
+    ENAMETOOLONG: `Cannot write ${rel}: the file name is too long.`,
+    EACCES: `Cannot write ${rel}: permission denied.`,
+    EPERM: `Cannot write ${rel}: permission denied.`,
+    EROFS: `Cannot write ${rel}: the file system is read-only.`,
+  }[e?.code];
+  if (!message) return e;
+  // mutateFile's own EACCES message already names only the note.
+  if (e.code === "EACCES" && /read-only/.test(e.message)) return e;
+  return Object.assign(new Error(message, { cause: e }), { code: e.code });
 }
 
 async function isDirectory(absPath) {
@@ -254,7 +275,7 @@ export async function createHandlers({ vaultPath: rawVaultPath, templateRegistry
       if (e.code === "EEXIST") {
         throw new Error(`File already exists: ${outputPath}. Use vault_edit or vault_append to modify existing files.`, { cause: e });
       }
-      throw e;
+      throw relError(e, outputPath);
     }
 
     fileIndex.add(outputPath);
@@ -283,7 +304,7 @@ export async function createHandlers({ vaultPath: rawVaultPath, templateRegistry
       if (e.code === "ENOENT") {
         throw new Error(`File not found: ${args.path}. Use vault_write to create new files.`, { cause: e });
       }
-      throw e;
+      throw relError(e, args.path);
     }
     return { content: [{ type: "text", text: `Appended to ${linkFor(args.path)}${args.position ? ` (${args.position})` : ""}` }] };
   }
@@ -305,7 +326,7 @@ export async function createHandlers({ vaultPath: rawVaultPath, templateRegistry
       if (e.code === "ENOENT") {
         throw new Error(`File not found: ${args.path}`, { cause: e });
       }
-      throw e;
+      throw relError(e, args.path);
     }
 
     if (count === 0) {
@@ -927,7 +948,8 @@ export async function createHandlers({ vaultPath: rawVaultPath, templateRegistry
 
     // Create trash directory and move file
     await fs.mkdir(path.dirname(trashAbsolute), { recursive: true });
-    await fs.rename(filePath, trashAbsolute);
+    if (stat.isDirectory()) await fs.rename(filePath, trashAbsolute);
+    else await withNoteLock(filePath, () => fs.rename(filePath, trashAbsolute));
 
     fileIndex.remove(resolvedRelative);
 
@@ -977,7 +999,15 @@ export async function createHandlers({ vaultPath: rawVaultPath, templateRegistry
 
     // Create destination directory and move file
     await fs.mkdir(path.dirname(newAbsolute), { recursive: true });
-    await fs.rename(oldAbsolute, newAbsolute);
+    const renameNote = () => fs.rename(oldAbsolute, newAbsolute);
+    // Under the note's lock, an in-flight append finishes first and a later one finds the old path gone.
+    try {
+      if (sourceStat.isDirectory()) await renameNote();
+      else await withNoteLock(oldAbsolute, renameNote);
+    } catch (e) {
+      if (e.code === "ENOENT") throw new Error(`ENOENT: File not found: ${oldRelative}`, { cause: e });
+      throw e;
+    }
 
     fileIndex.rename(oldRelative, newRelative);
 
@@ -994,6 +1024,7 @@ export async function createHandlers({ vaultPath: rawVaultPath, templateRegistry
 
     // Rewrite wikilinks in referring files
     let updatedCount = 0;
+    const failedRewrites = [];
     if (args.update_links !== false) {
       // Each rewrite is recomputed from the file's current content, not the scan-time copy.
       for (const { file } of linkingFiles) {
@@ -1002,7 +1033,8 @@ export async function createHandlers({ vaultPath: rawVaultPath, templateRegistry
           result = await mutateFile(path.join(vaultPath, file), (content) => rewriteWikilinks(content, oldLinkTarget, newLinkTarget));
         } catch (e) {
           if (e.code === "ENOENT") continue;
-          throw e;
+          failedRewrites.push(file);
+          continue;
         }
         if (result.after !== result.before) updatedCount++;
       }
@@ -1012,6 +1044,9 @@ export async function createHandlers({ vaultPath: rawVaultPath, templateRegistry
     let text = `Moved ${oldRelative} → ${linkFor(newRelative)}`;
     if (updatedCount > 0) {
       text += `\nUpdated wikilinks in ${updatedCount} file${updatedCount === 1 ? "" : "s"}`;
+    }
+    if (failedRewrites.length > 0) {
+      text += `\nCould not update links in ${failedRewrites.length} file${failedRewrites.length === 1 ? "" : "s"} (changing on disk, read-only or locked); fix by hand: ${failedRewrites.join(", ")}`;
     }
     if (isAmbiguous) {
       text += `\n\n**Note:** Basename "${path.basename(newRelative, ".md")}" is ambiguous (${newEntries.length} files). Links were rewritten using full paths.`;
@@ -1034,7 +1069,7 @@ export async function createHandlers({ vaultPath: rawVaultPath, templateRegistry
       if (e.code === "ENOENT") {
         throw new Error(`File not found: ${args.path}`, { cause: e });
       }
-      throw e;
+      throw relError(e, args.path);
     }
 
     const lines = Object.entries(frontmatter).map(([k, v]) => {
@@ -1118,7 +1153,7 @@ export async function createHandlers({ vaultPath: rawVaultPath, templateRegistry
       if (e.code === "ENOENT") {
         throw new Error(`File not found: ${filePath}. Use vault_write to create new files.`, { cause: e });
       }
-      throw e;
+      throw relError(e, filePath);
     }
 
     if (added.length === 0 && skipped.length > 0) {

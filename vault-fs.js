@@ -344,11 +344,22 @@ export class FileIndex {
 }
 
 // ── Atomic writes ────────────────────────────────────────────────────
+//
+// Guarantees:
+// - Plugin processes (any number of servers on one vault) are serialised per note by an
+//   in-process queue plus an O_EXCL lock file, so their updates never overwrite each other.
+// - Writers outside the plugin (Obsidian, sync clients) take no lock. They are detected by
+//   comparing mtime/size/inode just before the rename and the update is re-applied; a write
+//   landing in the few microseconds between that check and the rename can still be lost.
+// - Readers never see a partial note: the new content is staged in a temp file and renamed in.
+
+const DEFAULT_STALE_LOCK_MS = 10_000;
+const DEFAULT_LOCK_TIMEOUT_MS = 15_000;
 
 /** Per-file promise chains; module-level so every handler instance in the process shares them. */
 const fileQueues = new Map();
 
-function withFileLock(key, fn) {
+function queueByKey(key, fn) {
   const previous = fileQueues.get(key) ?? Promise.resolve();
   const run = previous.then(fn, fn);
   const tail = run.then(() => {}, () => {});
@@ -359,21 +370,85 @@ function withFileLock(key, fn) {
   return run;
 }
 
+const shortHash = (text, length) => crypto.createHash("sha1").update(text).digest("hex").slice(0, length);
+
+// Names built from a hash, not the note's name, so they stay short however long the note's name is.
 function tempPathFor(target) {
-  const suffix = `${process.pid}.${crypto.randomBytes(6).toString("hex")}.tmp`;
-  return path.join(path.dirname(target), `.${path.basename(target)}.${suffix}`);
+  const name = `.${shortHash(path.basename(target), 8)}.${process.pid}.${crypto.randomBytes(3).toString("hex")}.tmp`;
+  return path.join(path.dirname(target), name);
 }
 
-async function replaceFile(target, content, mode) {
-  const tmp = tempPathFor(target);
-  try {
-    await fs.writeFile(tmp, content, { encoding: "utf-8", flag: "wx", flush: true });
-    await fs.chmod(tmp, mode & 0o7777);
-    await fs.rename(tmp, target);
-  } catch (e) {
-    await fs.rm(tmp, { force: true });
-    throw e;
+function lockPathFor(target) {
+  return path.join(path.dirname(target), `.${shortHash(path.basename(target), 16)}.lock`);
+}
+
+const defaultSleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+function conflict(message) {
+  return Object.assign(new Error(message), { code: "ECONFLICT" });
+}
+
+/**
+ * Take the cross-process lock for a note: an exclusively created `.<hash>.lock` file next to it.
+ * A lock older than `staleLockMs` is treated as left by a crashed process and removed.
+ * @returns {Promise<() => Promise<void>>} release function
+ */
+async function acquireLockFile(target, { staleLockMs, lockTimeoutMs, sleep }) {
+  const lock = lockPathFor(target);
+  let waited = 0;
+  for (let i = 0; ; i++) {
+    try {
+      await fs.writeFile(lock, `${process.pid} ${Date.now()}`, { flag: "wx" });
+      return () => fs.rm(lock, { force: true });
+    } catch (e) {
+      if (e.code !== "EEXIST") throw e;
+    }
+    try {
+      const st = await fs.stat(lock);
+      if (Date.now() - st.mtimeMs > staleLockMs) {
+        // Re-check so a lock another process just replaced is not removed.
+        const again = await fs.stat(lock);
+        if (again.mtimeMs === st.mtimeMs) await fs.rm(lock, { force: true });
+        continue;
+      }
+    } catch (e) {
+      if (e.code === "ENOENT") continue;
+      throw e;
+    }
+    if (waited >= lockTimeoutMs) {
+      throw conflict(`Gave up updating ${path.basename(target)}: another process held its lock for ${waited} ms. Try again.`);
+    }
+    const ms = Math.min(50, 1 + i);
+    waited += ms;
+    await sleep(ms);
   }
+}
+
+/**
+ * Run `fn` while holding the note's in-process queue slot and cross-process lock file. Use it
+ * for operations on the note itself (e.g. renaming it) so a concurrent mutateFile cannot
+ * recreate the old path.
+ * @template T
+ * @param {string} absPath
+ * @param {(realPath: string) => Promise<T>} fn
+ * @param {{ staleLockMs?: number, lockTimeoutMs?: number, sleep?: (ms: number) => Promise<void> }} [options]
+ * @returns {Promise<T>}
+ * @throws ENOENT (as-is) when the note does not exist
+ */
+export async function withNoteLock(absPath, fn, {
+  staleLockMs = DEFAULT_STALE_LOCK_MS,
+  lockTimeoutMs = DEFAULT_LOCK_TIMEOUT_MS,
+  sleep = defaultSleep,
+} = {}) {
+  const target = await fs.realpath(absPath);
+  return queueByKey(target, async () => {
+    const release = await acquireLockFile(target, { staleLockMs, lockTimeoutMs, sleep });
+    try {
+      return await fn(target);
+    } finally {
+      await release();
+    }
+  });
 }
 
 function sameVersion(a, b) {
@@ -381,46 +456,103 @@ function sameVersion(a, b) {
 }
 
 /**
- * The only way to modify an existing note: serialised per file in this process,
- * re-applied when another writer changes the file mid-update, and swapped in by
- * rename so readers never see a partial file.
+ * Write the new content to a temp file beside the target with the target's permission bits,
+ * and, where the filesystem allows, its creation time (renaming a new file over the note would
+ * otherwise reset it).
+ */
+async function stageFile(tmp, content, before) {
+  await fs.writeFile(tmp, content, { encoding: "utf-8", flag: "wx", flush: true });
+  await fs.chmod(tmp, before.mode & 0o7777);
+  try {
+    // Setting an older mtime lowers the file's birthtime on macOS; then restore mtime to now.
+    if (before.birthtimeMs > 0 && before.birthtimeMs < Date.now()) {
+      await fs.utimes(tmp, before.atime, before.birthtime);
+    }
+    const now = new Date();
+    await fs.utimes(tmp, now, now);
+  } catch { /* timestamps are best effort */ }
+}
+
+/**
+ * The only way to modify an existing note. Per note: serialised across plugin processes by a
+ * lock file (plus an in-process queue), the new version is staged in a temp file, the note is
+ * re-checked for outside changes (mtime/size/inode), and the temp file is renamed into place so
+ * readers never see a partial file. If the note changed, the update is re-applied to the fresh
+ * content (up to `maxAttempts`). Writers outside the plugin take no lock, so a write landing
+ * between the final check and the rename (microseconds) can still be lost. A transform result
+ * identical to the input skips the write. Permission bits and (where supported) creation time
+ * are kept; extended attributes and hard-link aliases are not, since the note is replaced.
  * @param {string} absPath
  * @param {(content: string) => string | Promise<string>} transform
- * @param {{ maxAttempts?: number }} [options]
+ * @param {{
+ *   maxAttempts?: number, staleLockMs?: number, lockTimeoutMs?: number,
+ *   sleep?: (ms: number) => Promise<void>,
+ *   rename?: (from: string, to: string) => Promise<void>,
+ *   afterStage?: () => Promise<void> | void,
+ * }} [options] `sleep`, `rename` and `afterStage` are test seams
  * @returns {Promise<{ before: string, after: string }>}
- * @throws ENOENT (as-is) when the file does not exist
+ * @throws ENOENT (as-is) when the file does not exist; EACCES when it has no write permission;
+ *   ECONFLICT when it kept changing or its lock was never released
  */
-export async function mutateFile(absPath, transform, { maxAttempts = 3 } = {}) {
-  const target = await fs.realpath(absPath);
-  return withFileLock(target, async () => {
+export async function mutateFile(absPath, transform, {
+  maxAttempts = 3,
+  rename = (from, to) => fs.rename(from, to),
+  afterStage,
+  ...lockOptions
+} = {}) {
+  return withNoteLock(absPath, async (target) => {
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       const statBefore = await fs.stat(target);
+      if (!(statBefore.mode & 0o222)) {
+        throw Object.assign(new Error(`${path.basename(target)} is read-only; refusing to modify it.`), { code: "EACCES" });
+      }
       const before = await fs.readFile(target, "utf-8");
       const after = await transform(before);
       if (typeof after !== "string") throw new TypeError("mutateFile transform must return a string");
-      const statAfter = await fs.stat(target);
-      if (!sameVersion(statBefore, statAfter)) continue;
-      if (after !== before) await replaceFile(target, after, statBefore.mode);
+      if (after === before) {
+        if (!sameVersion(statBefore, await fs.stat(target))) continue;
+        return { before, after };
+      }
+      const tmp = tempPathFor(target);
+      try {
+        await stageFile(tmp, after, statBefore);
+        if (afterStage) await afterStage();
+        if (!sameVersion(statBefore, await fs.stat(target))) {
+          await fs.rm(tmp, { force: true });
+          continue;
+        }
+        await rename(tmp, target);
+      } catch (e) {
+        await fs.rm(tmp, { force: true });
+        throw e;
+      }
       return { before, after };
     }
-    const err = Object.assign(new Error(`Gave up updating ${path.basename(absPath)} after ${maxAttempts} attempts: it kept changing on disk. Try again.`), { code: "ECONFLICT" });
-    throw err;
-  });
+    throw conflict(`Gave up updating ${path.basename(target)} after ${maxAttempts} attempts: it kept changing on disk. Try again.`);
+  }, lockOptions);
 }
 
 const LINK_UNSUPPORTED = new Set(["EPERM", "ENOTSUP", "EOPNOTSUPP", "ENOSYS"]);
 
 /**
- * Create a file atomically; fails if it already exists.
+ * Create a file without ever replacing an existing one: the content is staged in a temp file and
+ * hard-linked into place (or exclusively copied where hard links are unsupported, which is not
+ * atomic for readers).
  * @param {string} absPath
  * @param {string} content
- * @param {{ link?: (from: string, to: string) => Promise<void> }} [options] link is a test seam
+ * @param {{
+ *   link?: (from: string, to: string) => Promise<void>,
+ *   write?: (tmp: string, content: string) => Promise<void>,
+ * }} [options] test seams
  * @throws {Error} code "EEXIST" when the target exists
  */
-export async function writeNew(absPath, content, { link = (from, to) => fs.link(from, to) } = {}) {
+export async function writeNew(absPath, content, {
+  link = (from, to) => fs.link(from, to),
+  write = (tmp, text) => fs.writeFile(tmp, text, { encoding: "utf-8", flag: "wx", flush: true }),
+} = {}) {
   const tmp = tempPathFor(absPath);
-  await fs.writeFile(tmp, content, { encoding: "utf-8", flag: "wx", flush: true });
   try {
+    await write(tmp, content);
     try {
       await link(tmp, absPath);
     } catch (e) {
@@ -430,8 +562,7 @@ export async function writeNew(absPath, content, { link = (from, to) => fs.link(
     }
   } catch (e) {
     if (e.code === "EEXIST") {
-      const err = Object.assign(new Error(`File already exists: ${absPath}`, { cause: e }), { code: "EEXIST" });
-      throw err;
+      throw Object.assign(new Error(`File already exists: ${absPath}`, { cause: e }), { code: "EEXIST" });
     }
     throw e;
   } finally {
