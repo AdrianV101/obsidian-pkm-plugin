@@ -15,6 +15,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **`obsidian-pkm doctor`** reads `VAULT_PATH` and the OpenAI key from the `env` block of `~/.claude/settings.json` when the shell environment lacks them, and says which source each value came from (the resolved key variable name is reported). It warns when the environment and `settings.json` hold different values (naming both sources, never the values), and never echoes `settings.json` content when the file fails to parse.
 
 ### Changed
+- **`vault_write` normalises the new note's frontmatter formatting** (block lists, `null` for empty fields), and keys are validated for every value type. A template whose frontmatter isn't valid YAML is now rejected with the parse error.
 - **YAML frontmatter is parsed with `yaml` (YAML 1.2 core schema) instead of `js-yaml`.** Dates stay strings as before. A read-only comparison across a large real-world vault found no parsing differences. Edge cases that now parse differently: binary-looking values such as `0b101` stay strings, frontmatter that is a bare scalar or list is treated as absent, and only a line that is exactly `---` closes frontmatter.
 - **Capture fires on pull request creation, not on commits.** The PreToolUse `git commit` reminder (`hooks/pre-commit-reminder.sh`) is replaced by `hooks/capture-reminder.js`, a dependency-free PostToolUse hook. It fires only after a real `gh pr create` whose output contains the PR URL, so mentions like `grep "gh pr create"` no longer trigger it, and it passes the PR URL, `transcript_path` and `session_id` to `pkm-capture`.
 - **`pkm-capture` runs on haiku** and locates the session transcript from `transcript_path`, falling back to `<session_id>.jsonl` in the project folder (every non-alphanumeric path character mapped to `-`, which also fixes worktree paths containing `.`).
@@ -24,6 +25,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Projects set up earlier with `/vault-pkm:init-project` keep the old "after git commits" capture wording in their own `CLAUDE.md`; edit it by hand to say capture happens when a pull request is created.
 
 ### Fixed
+- **`vault_write` builds the new note's frontmatter as YAML**, so values containing `: `, `#`, quotes or newlines produce valid frontmatter. Before, `topic: "Review fixes: ..."` failed with "No frontmatter found". Template variables are substituted literally, so `$$E=mc^2$$` and `$'` are no longer mangled. Placeholders inside template frontmatter values are substituted without breaking YAML quoting.
+- **`vault_write` keeps non-string frontmatter fields** (numbers, booleans, lists) instead of silently dropping them. Tags lose a leading `#`.
+- **Template date tokens use local time** instead of UTC.
 - **`vault_update_frontmatter` preserves untouched frontmatter byte for byte**: comments, quoting, inline lists, `version: 1.10`, `zip: 01234` and CRLF line endings. Only the changed keys are rewritten, and removing a key removes only its own lines. Frontmatter that isn't a key-value block is refused instead of being overwritten.
 - **SessionStart hook command quotes its paths**, so a plugin root or vault path containing spaces (for example an iCloud vault under `Mobile Documents`) reaches `session-start.js` as one argument.
 - Stale JSDoc that `tsc` flagged: `formatPath` on `formatPeek`/`formatNeighborhood`, `custom_fields` on `matchesFilters`, the `createHandlers` return type.

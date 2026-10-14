@@ -837,8 +837,9 @@ describe("handleWrite", () => {
     });
 
     const content = await fs.readFile(path.join(tmpDir, outPath), "utf-8");
-    // tp.date.now should be substituted with today's date
-    const today = new Date().toISOString().split("T")[0];
+    // tp.date.now should be substituted with today's local date
+    const now = new Date();
+    const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
     assert.ok(content.includes(today));
     // tp.file.title should be the filename without .md
     const expectedTitle = path.basename(outPath, ".md");

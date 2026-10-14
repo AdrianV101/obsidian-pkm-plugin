@@ -2,7 +2,7 @@ import { before, describe, it } from "node:test";
 import assert from "node:assert/strict";
 import fs from "fs/promises";
 import path from "path";
-import { parseFrontmatterText } from "../frontmatter.js";
+import { extractFrontmatter, parseFrontmatterText } from "../frontmatter.js";
 import {
   resolvePath,
   matchesFilters,
@@ -390,6 +390,93 @@ describe("substituteTemplateVariables", () => {
     });
     assert.ok(result.includes("status: reviewed"));
   });
+});
+
+describe("substituteTemplateVariables (YAML-safe rendering)", () => {
+  const RESEARCH = "---\ntype: research\ntopic:\nstatus: exploring\ncreated: <% tp.date.now(\"YYYY-MM-DD\") %>\ntags: [research]\n---\n# <% tp.file.title %>\n";
+  const TASK = "---\ntype: task\nstatus: pending\npriority: normal\ntags:\n  - task\n---\n# Task\n";
+
+  it("keeps a frontmatter value containing \": \" as that exact string in valid frontmatter (2026-10-13 live repro)", () => {
+    const result = substituteTemplateVariables(RESEARCH, {
+      title: "Review",
+      frontmatter: { topic: "Review fixes: release hygiene + correctness", tags: ["review"] },
+    });
+    assert.equal(validateFrontmatterStrict(result).valid, true);
+    assert.equal(extractFrontmatter(result).topic, "Review fixes: release hygiene + correctness");
+  });
+
+  for (const value of ["$$E=mc^2$$", "$'", "$&", "$`"]) {
+    it(`inserts ${JSON.stringify(value)} literally from the title and from custom variables`, () => {
+      const result = substituteTemplateVariables("# <% tp.file.title %>\n<% formula %>\n", {
+        title: value,
+        custom: { formula: value },
+      });
+      assert.equal(result, `# ${value}\n${value}\n`);
+    });
+  }
+
+  it("strips leading #s from tags", () => {
+    const result = substituteTemplateVariables(RESEARCH, { frontmatter: { tags: ["#dev", "##deep", "plain"] } });
+    assert.deepEqual(extractFrontmatter(result).tags, ["dev", "deep", "plain"]);
+  });
+
+  it("keeps non-string frontmatter fields with their types", () => {
+    const result = substituteTemplateVariables(RESEARCH, {
+      frontmatter: { resolved: true, count: 3, aliases: ["a", "b"] },
+    });
+    const fm = extractFrontmatter(result);
+    assert.deepEqual([fm.resolved, fm.count, fm.aliases], [true, 3, ["a", "b"]]);
+  });
+
+  it("keeps the template's key order and untouched fields, overrides in place, and appends new fields", () => {
+    const result = substituteTemplateVariables(RESEARCH, {
+      now: new Date(2026, 9, 13, 9, 30),
+      frontmatter: { project: "PKM", topic: "Parsers", tags: ["a"] },
+    });
+    assert.equal(
+      result,
+      "---\ntype: research\ntopic: Parsers\nstatus: exploring\ncreated: 2026-10-13\ntags:\n  - a\nproject: PKM\n---\n# Untitled\n"
+    );
+  });
+
+  it("renders date tokens in local time, not UTC", () => {
+    const previousTZ = process.env.TZ;
+    process.env.TZ = "Pacific/Kiritimati"; // UTC+14
+    try {
+      const now = new Date("2026-10-13T12:30:00Z"); // 2026-10-14 02:30 in Kiritimati
+      const result = substituteTemplateVariables(
+        "<% tp.date.now(\"YYYY-MM-DD\") %>|<% tp.date.now(\"YYYY-MM-DD HH:mm\") %>|<% tp.date.now(\"YYYY\") %>|<% tp.date.now(\"MM\") %>|<% tp.date.now(\"DD\") %>",
+        { now }
+      );
+      assert.equal(result, "2026-10-14|2026-10-14 02:30|2026|10|14");
+    } finally {
+      if (previousTZ === undefined) delete process.env.TZ;
+      else process.env.TZ = previousTZ;
+    }
+  });
+
+  it("substitutes placeholders inside template frontmatter values without breaking YAML", () => {
+    const template = "---\ntype: moc\ntopic: \"<% tp.file.title %>\"\ncreated: 2026-01-01\ntags: [moc]\n---\n";
+    const title = "He said \"hi\": #1";
+    const fm = extractFrontmatter(substituteTemplateVariables(template, { title }));
+    assert.equal(fm.topic, title);
+  });
+
+  it("rejects a template whose frontmatter is not valid YAML", () => {
+    assert.throws(
+      () => substituteTemplateVariables("---\ntype: [broken\n---\n# T\n", { frontmatter: {} }),
+      /^Error: Failed to parse frontmatter: /
+    );
+  });
+
+  for (const [name, frontmatter, pattern] of [
+    ["an invalid key with a number value", { "bad key": 3 }, /Invalid frontmatter key: "bad key"/],
+    ["a task status given as a number", { status: 5 }, /Invalid status "5" for type "task"/],
+  ]) {
+    it(`validates keys and enums for non-string values: ${name}`, () => {
+      assert.throws(() => substituteTemplateVariables(TASK, { frontmatter }), pattern);
+    });
+  }
 });
 
 describe("validateFrontmatterStrict", () => {

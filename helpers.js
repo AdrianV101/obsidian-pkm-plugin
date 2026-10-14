@@ -1,6 +1,14 @@
 import fs from "fs/promises";
 import path from "path";
-import { DANGEROUS_KEYS, extractFrontmatter, validateFieldEnum } from "./frontmatter.js";
+import {
+  DANGEROUS_KEYS,
+  assertSafeFrontmatterKey,
+  extractFrontmatter,
+  parseFrontmatterText,
+  renderFrontmatter,
+  validateFieldEnum,
+} from "./frontmatter.js";
+import { splitFrontmatter } from "./markdown.js";
 
 export { updateFrontmatter, validateFieldEnum } from "./frontmatter.js";
 
@@ -245,110 +253,90 @@ export async function loadTemplates(vaultPath) {
 }
 
 /**
+ * Local-time renderings of the date formats templates use.
+ *
+ * @param {Date} now
+ * @returns {Record<string, string>}
+ */
+function localDateFormats(now) {
+  const pad = (n) => String(n).padStart(2, "0");
+  const year = String(now.getFullYear());
+  const month = pad(now.getMonth() + 1);
+  const day = pad(now.getDate());
+  const date = `${year}-${month}-${day}`;
+  return {
+    "YYYY-MM-DD": date,
+    "YYYY-MM-DD HH:mm": `${date} ${pad(now.getHours())}:${pad(now.getMinutes())}`,
+    "YYYY": year,
+    "MM": month,
+    "DD": day,
+  };
+}
+
+/**
+ * Apply `substitute` to every string inside a parsed YAML value.
+ *
+ * @param {*} value
+ * @param {(text: string) => string} substitute
+ * @returns {*}
+ */
+function substituteInValue(value, substitute) {
+  if (typeof value === "string") return substitute(value);
+  if (Array.isArray(value)) return value.map(item => substituteInValue(item, substitute));
+  if (value && typeof value === "object") {
+    return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, substituteInValue(v, substitute)]));
+  }
+  return value;
+}
+
+/**
  * Substitute Templater-compatible variables and frontmatter fields in template content.
+ * The frontmatter is parsed, merged with `vars.frontmatter` and re-serialized as YAML,
+ * so values containing ": ", "#", quotes or newlines stay valid.
  *
  * @param {string} content - raw template content
  * @param {Object} vars
  * @param {string} [vars.title] - note title (for tp.file.title)
  * @param {Object} [vars.custom] - custom variable key-value pairs
- * @param {Object} [vars.frontmatter] - frontmatter fields to substitute
+ * @param {Object} [vars.frontmatter] - frontmatter fields to set (null/undefined keep the template value)
+ * @param {Date} [vars.now] - clock for date tokens (defaults to the current time)
  * @returns {string} content with variables replaced
+ * @throws {Error} on invalid template frontmatter, unsafe keys, or enum violations
  */
 export function substituteTemplateVariables(content, vars) {
-  const now = new Date();
-  const dateFormats = {
-    "YYYY-MM-DD": now.toISOString().split("T")[0],
-    "YYYY-MM-DD HH:mm": now.toISOString().replace("T", " ").slice(0, 16),
-    "YYYY": now.getFullYear().toString(),
-    "MM": String(now.getMonth() + 1).padStart(2, "0"),
-    "DD": String(now.getDate()).padStart(2, "0")
+  const dates = localDateFormats(vars.now ?? new Date());
+  const substitute = (text) => {
+    let result = text
+      .replace(/<%\s*tp\.date\.now\("([^"]+)"\)\s*%>/g, (_match, format) => dates[format] ?? dates["YYYY-MM-DD"])
+      .replace(/<%\s*tp\.file\.title\s*%>/g, () => vars.title || "Untitled");
+    for (const [key, value] of Object.entries(vars.custom ?? {})) {
+      const escaped = key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      result = result.replace(new RegExp(`<%\\s*${escaped}\\s*%>`, "g"), () => String(value));
+    }
+    return result;
   };
 
-  let result = content;
+  const { frontmatterText, bodyOffset } = splitFrontmatter(content);
+  if (frontmatterText === null) return substitute(content);
 
-  result = result.replace(/<%\s*tp\.date\.now\("([^"]+)"\)\s*%>/g, (match, format) => {
-    return dateFormats[format] || now.toISOString().split("T")[0];
-  });
-
-  result = result.replace(/<%\s*tp\.file\.title\s*%>/g, vars.title || "Untitled");
-
-  if (vars.custom) {
-    for (const [key, value] of Object.entries(vars.custom)) {
-      const escaped = key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      const regex = new RegExp(`<%\\s*${escaped}\\s*%>`, "g");
-      result = result.replace(regex, value);
+  const fields = substituteInValue(parseFrontmatterText(frontmatterText) ?? {}, substitute);
+  const noteType = typeof fields.type === "string" ? fields.type : null;
+  for (const [key, value] of Object.entries(vars.frontmatter ?? {})) {
+    assertSafeFrontmatterKey(key);
+    if (value === null || value === undefined) continue;
+    if (key === "tags") {
+      if (Array.isArray(value)) {
+        fields.tags = value.map(tag => (typeof tag === "string" ? tag.replace(/^#+/, "") : tag));
+      }
+      continue;
     }
+    if (noteType) validateFieldEnum(key, value, noteType);
+    fields[key] = value;
   }
 
-  if (vars.frontmatter && content.startsWith("---")) {
-    const endIndex = result.indexOf("\n---", 3);
-    if (endIndex !== -1) {
-      const frontmatterSection = result.slice(0, endIndex + 4);
-      const body = result.slice(endIndex + 4);
-
-      let updatedFrontmatter = frontmatterSection;
-
-      if (vars.frontmatter.tags && Array.isArray(vars.frontmatter.tags)) {
-        const tagsYaml = vars.frontmatter.tags.map(t => `  - ${t}`).join("\n");
-        let tagsReplaced = false;
-
-        if (updatedFrontmatter.match(/^tags:\s*\[.*\]/m)) {
-          updatedFrontmatter = updatedFrontmatter.replace(
-            /^tags:\s*\[.*\]/m,
-            `tags:\n${tagsYaml}`
-          );
-          tagsReplaced = true;
-        }
-
-        if (!tagsReplaced && updatedFrontmatter.match(/tags:\s*\n(?:\s+-[^\n]*\n?)*/)) {
-          updatedFrontmatter = updatedFrontmatter.replace(
-            /tags:\s*\n(?:\s+-[^\n]*\n?)*/,
-            `tags:\n${tagsYaml}\n`
-          );
-          tagsReplaced = true;
-        }
-
-        if (!tagsReplaced) {
-          updatedFrontmatter = updatedFrontmatter.replace(
-            /\n---$/,
-            `\ntags:\n${tagsYaml}\n---`
-          );
-        }
-      }
-
-      // Extract note type from template for enum validation
-      const typeMatch = frontmatterSection.match(/^type:\s*(.+)$/m);
-      const noteType = typeMatch ? typeMatch[1].trim() : null;
-
-      for (const [key, value] of Object.entries(vars.frontmatter)) {
-        if (key === "tags") continue;
-        if (DANGEROUS_KEYS.has(key)) {
-          throw new Error(`Disallowed frontmatter key: "${key}"`);
-        }
-        if (noteType && typeof value === "string") {
-          validateFieldEnum(key, value, noteType);
-        }
-        if (typeof value === "string") {
-          if (!/^[a-zA-Z][a-zA-Z0-9_-]*$/.test(key)) {
-            throw new Error(`Invalid frontmatter key: "${key}". Keys must start with a letter and contain only letters, digits, hyphens, or underscores.`);
-          }
-          const fieldRegex = new RegExp(`^${key}:.*$`, "m");
-          if (updatedFrontmatter.match(fieldRegex)) {
-            updatedFrontmatter = updatedFrontmatter.replace(fieldRegex, `${key}: ${value}`);
-          } else {
-            updatedFrontmatter = updatedFrontmatter.replace(
-              /\n---$/,
-              `\n${key}: ${value}\n---`
-            );
-          }
-        }
-      }
-
-      result = updatedFrontmatter + body;
-    }
-  }
-
-  return result;
+  const openingFence = content.slice(0, content.indexOf("\n") + 1);
+  const closingFence = content.slice(openingFence.length + frontmatterText.length, bodyOffset);
+  return openingFence + renderFrontmatter(fields) + closingFence + substitute(content.slice(bodyOffset));
 }
 
 /**
