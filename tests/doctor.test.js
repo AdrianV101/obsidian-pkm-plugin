@@ -6,11 +6,16 @@ import path from "path";
 import os from "os";
 
 const CLI = path.join(import.meta.dirname, "..", "cli.js");
+const KEY_VARS = ["VAULT_PKM_OPENAI_KEY", "OBSIDIAN_PKM_OPENAI_KEY", "OPENAI_API_KEY"];
+
+// Fresh per test. doctor reads ~/.claude/settings.json, so every run gets a fake
+// home: the developer's real settings must never leak into these assertions.
+let fakeHome;
 
 function runDoctor(env) {
   return new Promise((resolve, reject) => {
     const child = spawn("node", [CLI, "doctor"], {
-      env: env || process.env,
+      env: { ...(env || process.env), HOME: fakeHome, USERPROFILE: fakeHome },
       stdio: ["pipe", "pipe", "pipe"],
     });
     let stdout = "";
@@ -28,6 +33,86 @@ describe("doctor command", () => {
 
   beforeEach(async () => {
     tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "pkm-doctor-"));
+    fakeHome = path.join(tmpDir, "home");
+    await fs.mkdir(fakeHome);
+  });
+
+  async function writeSettings(settings) {
+    await fs.mkdir(path.join(fakeHome, ".claude"), { recursive: true });
+    await fs.writeFile(
+      path.join(fakeHome, ".claude", "settings.json"),
+      typeof settings === "string" ? settings : JSON.stringify(settings)
+    );
+  }
+
+  function envWithout(...names) {
+    const env = { ...process.env };
+    for (const name of names) delete env[name];
+    return env;
+  }
+
+  async function makeVault(name = "vault") {
+    const vaultPath = path.join(tmpDir, name);
+    await fs.mkdir(vaultPath, { recursive: true });
+    return vaultPath;
+  }
+
+  describe("settings.json fallback", () => {
+    it("reads a variable missing from the environment from ~/.claude/settings.json and names that source", async () => {
+      const vaultPath = await makeVault();
+
+      await writeSettings({ env: { VAULT_PATH: vaultPath } });
+      const fromSettingsPath = await runDoctor(envWithout("VAULT_PATH"));
+      assert.ok(
+        fromSettingsPath.stdout.includes(`✓ VAULT_PATH: ${vaultPath} (from ~/.claude/settings.json)`),
+        fromSettingsPath.stdout
+      );
+      assert.ok(fromSettingsPath.stdout.includes("✓ Vault is a directory"), "vault checks use the settings.json path");
+
+      await writeSettings({ env: { VAULT_PKM_OPENAI_KEY: "sk-from-settings" } });
+      const fromSettingsKey = await runDoctor({ ...envWithout(...KEY_VARS), VAULT_PATH: vaultPath });
+      assert.ok(
+        fromSettingsKey.stdout.includes("✓ VAULT_PKM_OPENAI_KEY set (from ~/.claude/settings.json"),
+        fromSettingsKey.stdout
+      );
+      assert.ok(!fromSettingsKey.stdout.includes("sk-from-settings"), "key value is never printed");
+    });
+
+    it("prefers the process environment over settings.json and says so", async () => {
+      const vaultPath = await makeVault();
+      const otherVault = await makeVault("other");
+      await writeSettings({ env: { VAULT_PATH: otherVault, VAULT_PKM_OPENAI_KEY: "sk-from-settings" } });
+
+      const { stdout } = await runDoctor({ ...envWithout(...KEY_VARS), VAULT_PATH: vaultPath, VAULT_PKM_OPENAI_KEY: "sk-from-env" });
+      assert.ok(stdout.includes(`✓ VAULT_PATH: ${vaultPath} (from environment)`), stdout);
+      assert.ok(stdout.includes("✓ VAULT_PKM_OPENAI_KEY set (from environment"), stdout);
+      assert.ok(!stdout.includes("sk-from-env") && !stdout.includes("sk-from-settings"), "key values are never printed");
+    });
+
+    it("applies the server's key-name precedence across sources: settings VAULT_PKM_OPENAI_KEY beats environment OPENAI_API_KEY", async () => {
+      const vaultPath = await makeVault();
+      await writeSettings({ env: { VAULT_PKM_OPENAI_KEY: "sk-from-settings" } });
+
+      const { stdout } = await runDoctor({ ...envWithout(...KEY_VARS), VAULT_PATH: vaultPath, OPENAI_API_KEY: "sk-shell" });
+      assert.ok(stdout.includes("✓ VAULT_PKM_OPENAI_KEY set (from ~/.claude/settings.json"), stdout);
+    });
+
+    it("treats a settings.json without an env block as providing nothing and says where it looked", async () => {
+      await writeSettings({ permissions: { allow: [] } });
+
+      const { stdout } = await runDoctor(envWithout("VAULT_PATH"));
+      assert.ok(stdout.includes("⚠ VAULT_PATH not set in the environment or ~/.claude/settings.json"), stdout);
+      assert.ok(!stdout.includes("Could not read"), stdout);
+    });
+
+    it("warns about an unparseable settings.json and still finishes the checklist", async () => {
+      await writeSettings("{ not json");
+
+      const { stdout } = await runDoctor(envWithout("VAULT_PATH"));
+      assert.ok(stdout.includes("⚠ Could not read ~/.claude/settings.json"), stdout);
+      assert.ok(stdout.includes("⚠ VAULT_PATH not set"), stdout);
+      assert.ok(stdout.includes("passed"), "summary line still printed");
+    });
   });
 
   afterEach(async () => {
