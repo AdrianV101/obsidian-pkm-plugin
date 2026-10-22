@@ -45,7 +45,7 @@ npm run typecheck
 
 The project consists of three parts:
 
-**MCP Server**: A Node.js ES module server implementing the Model Context Protocol. The main entry point is `index.js` (server setup and request routing); tool definitions live in `tools.js` and handlers in `handlers.js`. Shared modules: `vault-fs.js` (path containment, write-target rules, the live `FileIndex`, and `mutateFile`/`writeNew`, the only way notes are modified or created), `markdown.js` (dependency-free frontmatter splitting, heading parsing and section lookup; the hooks import it, so it must stay free of package imports), `frontmatter.js` (all YAML work, using `yaml`), `semantic-health.js` (dependency-free health formatting shared by the server, the hooks and doctor) and `helpers.js` (filtering, templates, peek). It provides 20 tools for vault interaction:
+**MCP Server**: A Node.js ES module server implementing the Model Context Protocol. The main entry point is `index.js` (server setup and request routing); tool definitions live in `tools.js` and handlers in `handlers.js`. `instructions.js` builds the server instructions (the vault rules every session receives, and the note routing table that `skills/pkm-write/SKILL.md` must match; `tests/instructions.test.js` keeps them equal), passed to the SDK in `index.js`. Shared modules: `vault-fs.js` (path containment, write-target rules, the live `FileIndex`, and `mutateFile`/`writeNew`, the only way notes are modified or created), `markdown.js` (dependency-free frontmatter splitting, heading parsing and section lookup; the hooks import it, so it must stay free of package imports), `frontmatter.js` (all YAML work, using `yaml`), `semantic-health.js` (dependency-free health formatting shared by the server, the hooks and doctor) and `helpers.js` (filtering, templates, peek). It provides 20 tools for vault interaction:
 - `vault_read` - Read note contents (supports pagination: `heading`, `tail`, `tail_sections` [with optional `section_level` param, default: 2], `chunk`, `lines`; auto-redirects to peek data for files >80k chars; `force` bypasses redirect; `heading` matches `## Foo` (level + text) or `Foo` (text at any level) and errors on duplicates; every mode's output is capped at 80k chars (400k with `force`) with a `[truncated: …; continue with lines: {start: N}]` marker)
 - `vault_peek` - Inspect file metadata/structure without reading full content (size, frontmatter, indented heading tree, preview)
 - `vault_write` - Create new notes from templates (enforces frontmatter; settable fields: `status`, `priority`, `project`, `deciders`, `due`, `source`; `variables` param for custom `<%...%>` substitution in template body)
@@ -258,11 +258,13 @@ The plugin provides 3 specialized agents (visible in `/agents`). Delegate to the
 
 | Agent | When to Delegate | Mode |
 |---|---|---|
-| `vault-explorer` | Before creating notes on a topic, when researching existing knowledge | Foreground |
+| `vault-explorer` | When researching what the vault already knows about a topic | Foreground |
 | `pkm-capture` | When a PR is opened (automatic via PostToolUse hook after a successful `gh pr create`), after significant work blocks, before session ends | Background |
 | `link-auditor` | After creating/modifying multiple vault notes, periodic health checks | Background |
 
-**pkm-capture context:** When delegating, include whether this is the first capture this session or a subsequent one (with previous entry timestamp). Pass `transcript_path` and `session_id` when known (the capture hook supplies both); otherwise the agent derives the transcript location itself. It runs on haiku. It handles both devlog entries and knowledge capture (decisions, research, tasks, bugs) in one pass. Conservative — most exchanges produce nothing worth capturing beyond the devlog entry.
+**pkm-capture context:** The prompt needs only an optional focus note and the PR URL. A SubagentStart hook (`hooks/capture-context.js`, matcher `^vault-pkm:pkm-capture$`) gives the agent its project, the session and a delta file with the condensed session activity since the previous capture, and records the capture position (`hooks/capture-state.js`) when the agent starts, because a stop hook receives no final message to judge success by. The agent ends with a `Status:` line. It runs on haiku with user-scoped memory (the other agents have none). It handles both devlog entries and knowledge capture (decisions, research, tasks, bugs) in one pass. Conservative — most exchanges produce nothing worth capturing beyond the devlog entry. See `hooks/README.md` for the hook details.
+
+**Project resolution** (`hooks/resolve-project.js`): a `# PKM:` annotation in `CLAUDE.local.md`/`CLAUDE.md`/`.claude/CLAUDE.md`, then a `repos:` list in a project's `_index.md` matched against normalised git remotes, then the main checkout's folder name. `/vault-pkm:init-project` links a repo by adding its remote to `repos:` (or writes a `CLAUDE.local.md` line when there is no remote) and never edits `CLAUDE.md`. `npx obsidian-pkm doctor` reports the project for the current folder.
 
 **Templates** (`templates/`): Obsidian note templates for project documentation:
 - `project-index.md` - Project overview with YAML frontmatter
@@ -279,7 +281,7 @@ The plugin provides 3 specialized agents (visible in `/agents`). Delegate to the
 - `task.md` - Structured task notes with status, priority, due date, project, and source fields
 - `note.md` - Minimal generic note
 
-**Sample CLAUDE.md** (`sample-project/CLAUDE.md`): Template for code repositories to specify PKM integration paths, context loading, and documentation rules.
+**Sample CLAUDE.md** (`sample-project/CLAUDE.md`): An 8-line optional template for code repositories: a `# PKM:` line for repos without a remote, and a place for repo-specific notes. The vault rules come from the server instructions, not from the repo.
 
 ## Claude Code Configuration
 
