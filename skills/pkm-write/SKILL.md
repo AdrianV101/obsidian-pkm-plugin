@@ -1,11 +1,11 @@
 ---
 name: pkm-write
-description: Use when writing to the vault — creating new notes (vault_write), editing existing notes (vault_edit, vault_append, vault_update_frontmatter). Handles duplicate checking, link discovery, annotations, and index updates for new notes. Provides guidelines for modifications.
+description: "Use when creating a new note in the vault: checks for duplicates, picks the template and location, fills it in and links it into the graph."
 ---
 
 # PKM Write — Vault Writing with Knowledge Graph Integration
 
-Follow these steps when creating new notes. When running as a subagent, the delegation prompt provides the note topic and project context.
+Follow these steps when creating new notes. When running as a subagent, the delegation prompt provides the note topic.
 
 ## Step 1: Duplicate Check
 
@@ -39,7 +39,7 @@ Use `vault_write` with the appropriate template. Select the template and path ba
 | Reusable knowledge | `03-Resources/Development/<title>.md` | `permanent-note` |
 | Literature | `03-Resources/<title>.md` | `literature-note` |
 
-Where `<project>` is the vault project path (e.g., `01-Projects/MyApp`). Determine from the delegation prompt, CLAUDE.md `# PKM:` annotation, or SessionStart hook context.
+Where `<project>` is the vault project path (e.g., `01-Projects/MyApp`). Take it from the session context's `## PKM Project Context: <path>` header; inside pkm-capture, from the capture context's `Project:` line. If there is none, ask the user (a subagent says so instead of guessing).
 
 **Notes in `03-Resources/`** should be written as project-agnostic knowledge — useful regardless of where the insight originated. Use frontmatter tags or `## Related` links to trace the origin project, but write the content for a general audience.
 
@@ -131,8 +131,9 @@ For **significant note types** (ADR, permanent-note, research-note, troubleshoot
 
 ## Step 8: Index Update
 
-- If the note is an **ADR**: add a wikilink to the project's `_index.md`
-- If the note is **project-scoped**: ensure the project `_index.md` references it where appropriate
+- If the note is an **ADR**: add a wikilink to the project's `_index.md` under `## Architecture Decisions`.
+- Add no other links to `_index.md`. Other notes are reached through search and the graph.
+- Update Current Status in place only when the note changes it.
 
 ---
 

@@ -1,11 +1,13 @@
 ---
 name: pkm-session-end
-description: Use when wrapping up a work session — creates devlog entry, captures undocumented decisions/research/debugging, audits link health of session work, and updates project index. Primarily used via the pkm-capture agent.
+description: "The capture workflow the pkm-capture agent follows. To capture session work, dispatch the pkm-capture agent in the background; don't run this in the main conversation."
 ---
 
 # PKM Session End — Knowledge Capture and Graph Maintenance
 
-Workflow for session wrap-up. When running as a subagent, the delegation prompt provides the project path and devlog boundary context. The agent's system prompt handles transcript discovery (Step 0) before this workflow begins.
+**If you are not the pkm-capture agent, stop here.** Dispatch pkm-capture in the background with the user's request (and any focus note) and do nothing else. `/vault-pkm:pkm-session-end` works the same way, through the agent.
+
+Workflow for session wrap-up, run by the pkm-capture agent. Its capture context supplies the project (`Project:` line) and the boundary of what to capture (`New activity:` file); the agent's Step 0 reads both before this workflow begins.
 
 ## Step 1: Devlog Entry
 
@@ -40,9 +42,9 @@ Use the **actual date** and fill in real content from the session. Keep entries 
 
 ## Step 2: Review Session Work
 
-The parent agent's session-context message in the delegation prompt is the **primary boundary** for what counts as "this session." Use it to decide which work is in-scope to capture. The activity log is a discovery aid — useful for spotting files-touched you may have missed — not a session-scope definition.
+The `New activity:` file from the capture context is the **boundary** for what counts as this capture: a condensed transcript of the session since the last capture. Capture only work that appears in it. The activity log is a discovery aid for files you may have missed, not a scope definition.
 
-Why this matters: the MCP server's session ID can span work that was already captured in earlier devlog entries within the same session, so filtering purely by session ID risks re-capturing already-documented work or capturing work outside the parent's intended scope.
+If the capture context says `New activity: unavailable`, fall back to the activity log for this session plus `git log` and `git diff --stat`.
 
 Query the activity log to find files touched:
 
@@ -56,11 +58,11 @@ The response header shows `current session: <id>` (an 8-character prefix). Filte
 vault_activity({ session: "<id-from-header>", limit: 50 })
 ```
 
-Cross-reference the touched files against the parent's session context. Files outside the parent's stated scope, or files already covered by prior devlog entries in the same session, are not your responsibility to capture again.
+Cross-reference the touched files against the new-activity file. Files that never appear in it, or that earlier devlog entries already cover, are not yours to capture again.
 
 ## Step 3: Capture Undocumented Work
 
-Review the session's conversation for significant work that only exists in chat history. Most exchanges produce nothing worth capturing beyond the devlog entry in Step 1. When in doubt, don't capture — a missed capture is better than vault noise.
+Review the new activity for significant work that only exists in chat history. Most exchanges produce nothing worth capturing beyond the devlog entry in Step 1. When in doubt, don't capture — a missed capture is better than vault noise.
 
 Skip entirely if the session was purely mechanical (config changes, minor fixes).
 
@@ -94,17 +96,7 @@ When a note already covers this topic, enrich it rather than creating a duplicat
 
 ### 3c: Create new note
 
-Follow the pkm-write skill workflow for proper duplicate checking, template selection, and linking:
-
-| Content Type | Template | Default Path |
-|---|---|---|
-| Architecture/design decisions | `adr` | `<project>/development/decisions/ADR-NNN-{title}.md` |
-| Research findings or evaluations | `research-note` | `<project>/research/{title}.md` |
-| Complex debugging sessions | `troubleshooting-log` | `<project>/development/debug/{title}.md` |
-| Reusable insights or patterns | `permanent-note` | `03-Resources/Development/{title}.md` |
-| New tasks identified | `task` | `<project>/tasks/{title}.md` |
-
-Where `<project>` is the vault project path from session context.
+Follow the pkm-write skill workflow for duplicate checking, template selection, location (its table lists every content type) and linking. `<project>` is the vault path from the capture context's `Project:` line.
 
 ### 3d: Update task status
 
@@ -144,5 +136,5 @@ For any **orphan** notes found (no connections), add links using `vault_add_link
 ## Step 6: Index Update
 
 Check and update if changed during the session:
-- **Project `_index.md`**: Add links to new ADRs, update project status, add key links
+- **Project `_index.md`**: add links to new ADRs under `## Architecture Decisions` and update Current Status in place. Add no other links.
 - **Relevant MOCs**: Add links to new notes that belong in topic index maps
