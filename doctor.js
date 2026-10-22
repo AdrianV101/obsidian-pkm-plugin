@@ -2,6 +2,7 @@ import fs from "fs/promises";
 import os from "os";
 import path from "path";
 import { loadTemplates } from "./helpers.js";
+import { resolveProject, describeVia } from "./hooks/resolve-project.js";
 import { healthFromStats, describeHealth } from "./semantic-health.js";
 
 const SETTINGS_LABEL = "~/.claude/settings.json";
@@ -87,11 +88,13 @@ export async function runDoctor() {
   }
 
   // 3. Vault is a directory
+  let vaultOk = false;
   try {
     const stat = await fs.stat(vaultPath);
     if (stat.isDirectory()) {
       ok("Vault is a directory");
       passed++;
+      vaultOk = true;
     } else {
       fail(`VAULT_PATH is not a directory: ${vaultPath}`);
       failed++;
@@ -103,6 +106,19 @@ export async function runDoctor() {
       fail(`Cannot access vault: ${e.message}`);
     }
     failed++;
+  }
+
+  // 3b. The project this folder resolves to
+  if (vaultOk) {
+    const cwd = process.cwd();
+    const resolution = await resolveProject(cwd, vaultPath);
+    if (resolution.projectPath) {
+      ok(`Project for ${cwd}: ${resolution.projectPath} (${describeVia(resolution)})`);
+      passed++;
+    } else {
+      warn(`Project for ${cwd}: not linked (${resolution.reason})`);
+      warnings++;
+    }
   }
 
   // 4. Templates
