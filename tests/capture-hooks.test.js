@@ -106,10 +106,13 @@ describe("buildCaptureContext", () => {
   it("reports no new activity and writes no delta when nothing is newer than the cursor", async () => {
     await writeTranscript([entry("u1", "user", 1, "prompt")]);
     await run();
-    const lines = linesOf(await run({ agent_id: "agent2" }));
+    const later = NOW + 60_000;
+    const lines = linesOf(await run({ agent_id: "agent2" }, {}, later));
     assert.equal(lines[3], "New activity: none since the last capture");
     await assert.rejects(fs.stat(deltaPath(captures(), SESSION, "agent2")));
-    assert.equal((await readJson(cursorPath(captures(), SESSION))).committed.uuid, "u1");
+    const { committed } = await readJson(cursorPath(captures(), SESSION));
+    assert.equal(committed.uuid, "u1");
+    assert.equal(committed.at, new Date(later).toISOString());
   });
 
   it("says why there is no project and still gives the session and activity lines", async () => {
@@ -119,6 +122,8 @@ describe("buildCaptureContext", () => {
     const table = [
       [{ VAULT_PATH: undefined }, {}, /^Project: none \(VAULT_PATH is not set\)$/],
       [{}, { cwd: unlinked }, /^Project: none \(.+\)$/],
+      [{}, { cwd: undefined }, /^Project: none \(the hook input has no cwd\)$/],
+      [{}, { cwd: "" }, /^Project: none \(the hook input has no cwd\)$/],
     ];
     for (const [envOver, inputOver, projectLine] of table) {
       const lines = linesOf(await run(inputOver, envOver));
@@ -133,9 +138,15 @@ describe("buildCaptureContext", () => {
     await writeTranscript([entry("u1", "user", 1, "prompt")]);
     await run();
     const before = await fs.readFile(cursorPath(captures(), SESSION), "utf8");
-    const lines = linesOf(await run({ transcript_path: path.join(tmp, "missing.jsonl") }));
+    const lines = linesOf(await run({ transcript_path: path.join(tmp, "missing.jsonl") }, {}, NOW + 60_000));
     assert.match(lines[3], /^New activity: unavailable \(.+\); use vault_activity for this session and git log instead$/);
     assert.equal(await fs.readFile(cursorPath(captures(), SESSION), "utf8"), before);
+  });
+
+  it("writes no cursor when the transcript is unreadable and there was none before", async () => {
+    const lines = linesOf(await run({ transcript_path: path.join(tmp, "missing.jsonl") }));
+    assert.match(lines[3], /^New activity: unavailable/);
+    await assert.rejects(fs.stat(cursorPath(captures(), SESSION)));
   });
 
   it("writes nothing and reports an unknown session when the session or agent id is unusable", async () => {
@@ -143,7 +154,10 @@ describe("buildCaptureContext", () => {
     for (const over of [{ session_id: "../x" }, { agent_id: "a/b" }, { session_id: undefined }, { agent_id: 7 }]) {
       const lines = linesOf(await run(over));
       assert.equal(lines[2], "Session: unknown", JSON.stringify(over));
-      assert.match(lines[3], /^New activity: unavailable \(.+\); use vault_activity/);
+      assert.equal(
+        lines[3],
+        "New activity: unavailable (the hook input has no usable session or agent id); use vault_activity for this session and git log instead",
+      );
     }
     await assert.rejects(fs.stat(captures()));
   });
@@ -199,6 +213,16 @@ describe("capture-context script", () => {
       assert.equal(r.status, 0, stdin);
       assert.equal(r.stdout, "", stdin);
     }
+  });
+
+  it("keeps the real home directory out of the project search when no home is injected", { skip: process.platform === "win32" }, async () => {
+    await fs.mkdir(path.join(tmp, ".claude"));
+    await fs.writeFile(path.join(tmp, ".claude", "CLAUDE.md"), "# PKM: 01-Projects/MyApp\n");
+    await writeTranscript([entry("u1", "user", 1, "prompt")]);
+    const r = spawnHook(JSON.stringify(input({ cwd: tmp })), { CLAUDE_PLUGIN_DATA: data });
+    assert.equal(r.status, 0, r.stderr);
+    const lines = JSON.parse(r.stdout).hookSpecificOutput.additionalContext.split("\n");
+    assert.match(lines[1], /^Project: none \(/);
   });
 
   it("prints SubagentStart JSON and commits the cursor under the home fallback when CLAUDE_PLUGIN_DATA is unset", async () => {

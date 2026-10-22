@@ -44,12 +44,13 @@ function unavailable(err) {
 /**
  * @param {unknown} cwd
  * @param {string|undefined} vaultPath
- * @param {string} home
+ * @param {string|undefined} home undefined lets the resolver use the real home directory
  */
 async function projectLine(cwd, vaultPath, home) {
   if (!vaultPath) return "Project: none (VAULT_PATH is not set)";
+  if (typeof cwd !== "string" || !cwd) return "Project: none (the hook input has no cwd)";
   try {
-    const resolution = await resolveProject(typeof cwd === "string" && cwd ? cwd : process.cwd(), vaultPath, { home });
+    const resolution = await resolveProject(cwd, vaultPath, home === undefined ? {} : { home });
     if (resolution.projectPath) return `Project: ${resolution.projectPath} (${describeVia(resolution)})`;
     return `Project: none (${resolution.reason ?? "not resolved"})`;
   } catch (err) {
@@ -114,9 +115,9 @@ export async function buildCaptureContext(hookInput, { env = process.env, now = 
     if (typeof input.agent_type !== "string" || !CAPTURE_AGENT_RE.test(input.agent_type)) return null;
 
     const dir = capturesDir(env, home);
-    const project = await projectLine(input.cwd, env.VAULT_PATH, home ?? "");
+    const project = await projectLine(input.cwd, env.VAULT_PATH, home);
     let session = "Session: unknown";
-    let activity = unavailable("no usable session or agent id");
+    let activity = unavailable("the hook input has no usable session or agent id");
     if (safeId(input.session_id) && safeId(input.agent_id)) {
       ({ session, activity } = await captureActivity(input, dir, now));
       await pruneCaptures(dir, now);
