@@ -34,9 +34,9 @@ vault_append({
 })
 ```
 
-Use the **actual date** and fill in real content from the session. Keep entries concise but specific. Using `after_heading` inserts each new entry at the top, keeping the log in reverse-chronological order.
+Use the **actual date** and fill in real content from the session. Keep entries concise but specific. Using `after_heading` inserts each new entry at the top, keeping the log in reverse-chronological order. Read back any multi-line `vault_append` section and fix literal `\n` sequences left in the text.
 
-**Wikilinks in devlog entries**: Include `[[wikilinks]]` to tasks, ADRs, research notes, and other vault notes that were completed, created, or significantly updated during the session. For example: `- Completed [[task-api-refactor]]` or `- Decided on caching strategy ([[ADR-003-caching]])`.
+**Wikilinks in devlog entries**: Include `[[wikilinks]]` to tasks, ADRs, research notes, and other vault notes that were completed, created, or significantly updated during the session. For example: `- Completed [[task-api-refactor]]` or `- Decided on caching strategy ([[ADR-003-caching]])`. Link only notes that exist in the vault, never repo files or agent memory.
 
 **Existing devlogs**: Older devlogs may use `## YYYY-MM-DD` entries without a `## Sessions` heading. If `vault_append` fails with "Heading not found", add the heading first: `vault_append({ path: "...", content: "\n## Sessions\n" })`.
 
@@ -64,7 +64,9 @@ Cross-reference the touched files against the new-activity file. Files that neve
 
 Review the new activity for significant work that only exists in chat history. Most exchanges produce nothing worth capturing beyond the devlog entry in Step 1. When in doubt, don't capture — a missed capture is better than vault noise.
 
-Skip entirely if the session was purely mechanical (config changes, minor fixes).
+Skip entirely if the session was purely mechanical (config changes, minor fixes). A small docs-only or mechanical change gets the devlog entry only: no task note just to track a PR awaiting review.
+
+Notes already written during the session are not created again. Check they read cleanly and link them from the devlog entry.
 
 **For each PKM-worthy item independently**, determine whether to update an existing note or create a new one:
 
@@ -76,7 +78,7 @@ For each item, search the vault:
 vault_semantic_search({ query: "<topic/title>", limit: 5 })
 ```
 
-If unavailable, use `vault_search` with key terms + `vault_query` with matching tags.
+If it is unavailable or returns an error (for example, a disabled index), use `vault_search` with key terms + `vault_query` with matching tags.
 
 **Route based on results.** Read scores on the compressed scale described in the `vault_semantic_search` tool description.
 
@@ -93,6 +95,7 @@ When a note already covers this topic, enrich it rather than creating a duplicat
 - `vault_edit` to update outdated information (e.g., refining a decision's rationale, adding a new root cause to a troubleshooting log)
 - `vault_update_frontmatter` to update status or other metadata if changed
 - After updating, run `vault_suggest_links` to discover new connections worth adding
+- A reversed decision is not an edit: create a new ADR, mark the old one superseded, and link the two both ways
 
 ### 3c: Create new note
 
@@ -131,7 +134,7 @@ Run a targeted link health check on files touched during this session:
 vault_link_health({ folder: "<project-folder>", checks: ["orphans", "broken"] })
 ```
 
-For any **orphan** notes found (no connections), add links using `vault_add_links`. Broken links (pointing to non-existent files) may self-resolve if the missing notes were created earlier in this session — otherwise note them for manual review. For deeper audit (weak connections, ambiguous links, full vault scan), delegate to the link-auditor agent separately.
+Act only on notes this session touched. For any **orphan** notes found (no connections), add links using `vault_add_links`. Broken links (pointing to non-existent files) may self-resolve if the missing notes were created earlier in this session — confirm a "broken" target is really missing before changing anything, and otherwise note it for manual review. For deeper audit (weak connections, ambiguous links, full vault scan), delegate to the link-auditor agent separately.
 
 ## Step 6: Index Update
 

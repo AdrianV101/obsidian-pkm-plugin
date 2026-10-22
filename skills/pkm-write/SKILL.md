@@ -15,7 +15,7 @@ Before creating, search for existing notes on the same topic:
 vault_semantic_search({ query: "<topic/title of intended note>", limit: 5 })
 ```
 
-If `vault_semantic_search` is unavailable (no `VAULT_PKM_OPENAI_KEY`), use `vault_search` with the note's title and key terms, and `vault_query` with matching tags to check for duplicates.
+If `vault_semantic_search` is unavailable (no `VAULT_PKM_OPENAI_KEY`) or returns an error (for example, a disabled index), use `vault_search` with the note's title and key terms, and `vault_query` with matching tags to check for duplicates.
 
 **Route based on results.** Scores are on the compressed scale described in the `vault_semantic_search` tool description.
 
@@ -65,6 +65,8 @@ Ensure:
 1. **Read the note** with `vault_read` to see the exact template output
 2. **Replace placeholders** with `vault_edit`, using the exact text from the read output as `old_string`
 
+Fill the template with `vault_edit`, never `vault_append`: appended text lands below the placeholders, which then stay in the note.
+
 Work section by section. Each `vault_edit` call must match text **exactly as it appears in the file** — do NOT guess what the template produced.
 
 For templates with many sections, you can batch multiple sections into fewer edits by using a larger `old_string` that spans consecutive sections.
@@ -81,7 +83,7 @@ vault_suggest_links({ path: "<path-to-new-note>", limit: 8 })
 
 Select the top **3–5** most relevant suggestions.
 
-If `vault_suggest_links` is unavailable (no `OPENAI_API_KEY`), use `vault_search` with key terms from the note's title/topic and `vault_query` with matching tags to manually identify good link targets.
+If `vault_suggest_links` is unavailable (no `OPENAI_API_KEY`) or returns an error (for example, a disabled index), use `vault_search` with key terms from the note's title/topic and `vault_query` with matching tags to manually identify good link targets.
 
 If **no suggestions are returned** (new vault or isolated topic), skip Steps 5–7 — the note's `## Related` section will be filled as the graph grows.
 
