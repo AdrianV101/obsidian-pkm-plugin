@@ -1,4 +1,4 @@
-// Rules for every session that has this server connected. Subagents don't
+// Rules for every session that has this server connected. Subagents may not
 // receive server instructions, so skills/pkm-write/SKILL.md keeps a copy of the
 // routing table; tests/instructions.test.js keeps the two equal.
 
@@ -36,6 +36,6 @@ ${routingTable()}
 
 4. Capture. pkm-capture runs automatically when a PR is created. Dispatch it in the background after significant work blocks or before ending. Don't run pkm-session-end in the main conversation and don't edit the devlog by hand.
 
-5. Agents and context. vault-explorer researches what the vault knows; link-auditor checks links after many note changes. The project's context is loaded at session start, so don't read _index.md, the devlog or tasks manually.
+5. Agents and context. vault-explorer researches what the vault knows; link-auditor checks links after many note changes. The project's context is loaded at session start, so there's no need to read _index.md, the devlog or tasks just to get oriented; follow a truncation marker when you need more.
 `;
 }
