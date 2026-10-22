@@ -1,6 +1,6 @@
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import fs from "fs/promises";
 import path from "path";
 import os from "os";
@@ -329,6 +329,11 @@ describe("doctor project line", () => {
     await fs.rm(tmpDir, { recursive: true, force: true });
   });
 
+  const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  // Doctor prints process.cwd(), which can differ from fs.realpath of the same folder
+  // (macOS /var symlink, Windows 8.3 short TEMP names), so ask a child in that folder.
+  const childCwd = (dir) => execFileSync(process.execPath, ["-e", "process.stdout.write(process.cwd())"], { cwd: dir, encoding: "utf8" });
+
   const cases = [
     {
       name: "a git repo listed under repos",
@@ -336,7 +341,7 @@ describe("doctor project line", () => {
         await makeProject(vaultPath, "Widget", "repos: [github.com/acme/widget]");
         await makeRepo(dir, { origin: "git@github.com:acme/widget.git" });
       },
-      line: (cwd) => `✓ Project for ${cwd}: 01-Projects/Widget (via repos: github.com/acme/widget)`,
+      line: (cwd) => new RegExp(`^[ \\t]*✓ Project for ${escapeRe(cwd)}: 01-Projects/Widget \\(via repos: github\\.com/acme/widget\\)\\r?$`, "m"),
     },
     {
       name: "an unlinked folder",
@@ -344,7 +349,7 @@ describe("doctor project line", () => {
         await makeProject(vaultPath, "Widget", "repos: [github.com/acme/widget]");
         await fs.mkdir(dir, { recursive: true });
       },
-      line: (cwd) => `⚠ Project for ${cwd}: not linked (`,
+      line: (cwd) => new RegExp(`^[ \\t]*⚠ Project for ${escapeRe(cwd)}: not linked \\([^)]+\\)\\r?$`, "m"),
     },
   ];
   for (const c of cases) {
@@ -353,13 +358,10 @@ describe("doctor project line", () => {
       await fs.mkdir(vaultPath, { recursive: true });
       const dir = path.join(tmpDir, "work");
       await c.setup(vaultPath, dir);
-      // The child reports its realpath, and macOS temp dirs sit behind a symlink.
-      const cwd = await fs.realpath(dir);
 
       const { stdout } = await runDoctor({ ...process.env, VAULT_PATH: vaultPath }, dir);
 
-      assert.ok(stdout.includes(c.line(cwd)), stdout);
-      if (c.name === "an unlinked folder") assert.match(stdout, /not linked \([^)]+\)/);
+      assert.match(stdout, c.line(childCwd(dir)));
     });
   }
 
