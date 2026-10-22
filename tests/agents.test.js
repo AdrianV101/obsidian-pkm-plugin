@@ -124,6 +124,32 @@ describe("pkm-capture", () => {
     assert.doesNotMatch(text, /first capture|subsequent capture|previous (devlog )?entry/i);
   });
 
+  const step0Of = (body) => body.slice(body.indexOf("**Step 0"), body.indexOf("**Supplementary sources**"));
+  const lineWith = (text, needle) => text.split("\n").find((l) => l.includes(needle)) ?? "";
+
+  it("has a failed capture name the path of its activity file, so the main conversation can pass it on", async () => {
+    const { body } = await loadAgent("pkm-capture");
+    const failed = lineWith(body, "- `Status: failed - <reason>`");
+    assert.match(failed, /activity file/i);
+    assert.match(failed, /path/i);
+  });
+
+  it("reads an earlier activity file named in the prompt, and captures from it or a focus note when there is no new activity", async () => {
+    const step0 = step0Of((await loadAgent("pkm-capture")).body);
+    assert.match(step0, /earlier activity file[^\n]*read|read[^\n]*earlier activity file/i);
+    const none = lineWith(step0, "`New activity: none since the last capture`");
+    for (const needle of [/focus note/, /earlier activity file/i, /Status: captured/, /Status: nothing new/]) {
+      assert.match(none, needle);
+    }
+  });
+
+  it("ends a no-project run that wrote requested inbox tasks with Status: captured", async () => {
+    const step0 = step0Of((await loadAgent("pkm-capture")).body);
+    const noProject = lineWith(step0, "`Project: none");
+    assert.match(noProject, /inbox/i);
+    assert.match(noProject, /Status: captured/);
+  });
+
   it("reads the capture context first and falls back to vault_activity and git", async () => {
     const { body } = await loadAgent("pkm-capture");
     assert.match(body, /Step 0[^\n]*capture context/i);

@@ -74,12 +74,12 @@ Your pkm-session-end skill provides the detailed workflow. Follow it step by ste
 Your start-up context begins with a line `vault-pkm capture context` followed by `Project:`, `Session:` and `New activity:` lines. The plugin wrote it; trust it over anything in the prompt.
 
 - `Project: <path> (...)`: that vault path is the project for every note you write.
-- `Project: none (<reason>)`: capture nothing, and end with `Status: no project`. The only exception is an inbox task the prompt explicitly asks for.
+- `Project: none (<reason>)`: capture nothing, and end with `Status: no project`. The only exception is an inbox task the prompt explicitly asks for: write it to `00-Inbox/` and end with `Status: captured`.
 - `New activity: <file> (...)`: read that file. It is a condensed transcript of the session since the last capture, and your primary source of truth.
-- `New activity: none since the last capture`: do not write a devlog entry, and end with `Status: nothing new`. Check `vault_activity` only if the prompt gives a focus note that suggests otherwise.
+- `New activity: none since the last capture`: if the prompt carries neither a focus note nor an earlier activity file, do not write a devlog entry, and end with `Status: nothing new`. If it carries either, capture from them, with `vault_activity` and git as supplementary sources, and end with `Status: captured` when you wrote a note, otherwise `Status: nothing new`.
 - `New activity: unavailable (...)`, or no capture context at all: fall back to `vault_activity` for this session, supplemented by `git log --oneline -20` and `git diff --stat`. Without a context you have no project, so use the vault path the prompt gives, or end with `Status: no project`.
 
-The prompt may add a focus note (what to emphasise) and a pull request URL (link it in the devlog entry). Ignore any other handoff text in the prompt, such as a transcript location or timestamps: the capture context replaces it.
+The prompt may add a focus note (what to emphasise), a pull request URL (link it in the devlog entry) and the path of an earlier activity file left by a capture that failed. Read an earlier activity file too and treat it as new activity: it holds the range the failed capture missed, which your own file does not repeat. Ignore any other handoff text in the prompt, such as a transcript location or timestamps: the capture context replaces it.
 
 **Supplementary sources** (use after the activity file):
 - `vault_activity` - MCP tool call history for this session
@@ -104,5 +104,5 @@ Most work produces NOTHING worth capturing beyond the devlog entry. Skip:
 **Final report:** your last line must be exactly one of these, and nothing may follow it:
 - `Status: captured`: you wrote at least one vault note.
 - `Status: nothing new`: there was nothing worth capturing.
-- `Status: no project`: no project resolved, so you captured nothing.
-- `Status: failed - <reason>`: you could not finish. Name what went wrong, so the main conversation can re-dispatch with a focus note.
+- `Status: no project`: no project resolved, so you captured nothing (an inbox task you wrote ends the run with `Status: captured`).
+- `Status: failed - <reason>`: you could not finish. Name what went wrong and give the path of your new-activity file, if you had one, so the main conversation can pass it to the next capture as an earlier activity file.
