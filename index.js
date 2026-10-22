@@ -17,6 +17,7 @@ import { ActivityLog } from "./activity.js";
 import { loadTemplates } from "./helpers.js";
 import { createHandlers } from "./handlers.js";
 import { createToolsList } from "./tools.js";
+import { buildServerInstructions } from "./instructions.js";
 import { normalizeVaultRoot } from "./vault-fs.js";
 
 // Read version from package.json
@@ -47,7 +48,7 @@ export async function startServer() {
   // Create the server
   const server = new Server(
     { name: "vault-pkm", version: PKG_VERSION },
-    { capabilities: { tools: {} } }
+    { capabilities: { tools: {} }, instructions: buildServerInstructions({ vaultName: VAULT_NAME }) }
   );
 
   // List available tools

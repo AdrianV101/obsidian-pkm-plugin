@@ -17,7 +17,7 @@ vault_semantic_search({ query: "<topic/title of intended note>", limit: 5 })
 
 If `vault_semantic_search` is unavailable (no `VAULT_PKM_OPENAI_KEY`), use `vault_search` with the note's title and key terms, and `vault_query` with matching tags to check for duplicates.
 
-**Route based on results.** Note on score interpretation: `vault_semantic_search` uses `text-embedding-3-large` (3072-dim) cosine similarity, which compresses hard. Even a verbatim title/heading of an existing note typically scores around 0.55–0.65 against that note; scores above 0.7 are essentially never observed. Read the scores with that scale in mind.
+**Route based on results.** Scores are on the compressed scale described in the `vault_semantic_search` tool description.
 
 - **Likely duplicate (top hit ≥ 0.5)**: Read the top hit with `vault_read` and confirm it's actually about the same topic before routing — a 0.5 score can be a real duplicate or a same-domain neighbor. If it IS the same topic: **update the existing note** instead of creating a new one — `vault_append` to add new content or `vault_edit` to refine existing content; `vault_update_frontmatter` if metadata changed. Skip to Step 4 (Discover Connections) after updating. If it's a same-domain neighbor (related but distinct topic), treat as a partial match.
 - **Partial matches (top hit < 0.5, or top hit ≥ 0.5 but verified as a neighbor)**: Mention as potentially related, proceed with creation at Step 2. Link to them in Step 6.
@@ -27,15 +27,17 @@ If `vault_semantic_search` is unavailable (no `VAULT_PKM_OPENAI_KEY`), use `vaul
 
 Use `vault_write` with the appropriate template. Select the template and path based on content type:
 
-| Content Type | Template | Default Path |
+| Content | Location | Template |
 |---|---|---|
-| Architecture decision | `adr` | `<project>/development/decisions/ADR-NNN-{title}.md` |
-| Research finding | `research-note` | `<project>/research/{title}.md` |
-| Bug investigation | `troubleshooting-log` | `<project>/development/debug/{title}.md` |
-| Reusable knowledge | `permanent-note` | `03-Resources/Development/{title}.md` |
-| Task | `task` | `<project>/tasks/{title}.md` |
-| Meeting record | `meeting-notes` | `<project>/planning/{title}.md` |
-| Literature/article notes | `literature-note` | `03-Resources/{title}.md` |
+| Architecture decision | `<project>/development/decisions/ADR-NNN-<title>.md` | `adr` |
+| Research finding | `<project>/research/<title>.md` | `research-note` |
+| Bug investigation | `<project>/development/debug/<title>.md` | `troubleshooting-log` |
+| Design doc | `<project>/development/designs/<title>.md` | `research-note` |
+| Implementation plan | `<project>/development/plans/<title>.md` | `research-note` |
+| Task | `<project>/tasks/<title>.md` (no project: `00-Inbox/`) | `task` |
+| Meeting | `<project>/planning/<title>.md` | `meeting-notes` |
+| Reusable knowledge | `03-Resources/Development/<title>.md` | `permanent-note` |
+| Literature | `03-Resources/<title>.md` | `literature-note` |
 
 Where `<project>` is the vault project path (e.g., `01-Projects/MyApp`). Determine from the delegation prompt, CLAUDE.md `# PKM:` annotation, or SessionStart hook context.
 
