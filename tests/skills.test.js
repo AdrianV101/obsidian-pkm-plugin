@@ -64,3 +64,31 @@ describe("skill wording and triggering", () => {
     });
   }
 });
+
+describe("project linking", () => {
+  const read = (rel) => fs.readFile(fileURLToPath(new URL(`../${rel}`, import.meta.url)), "utf-8");
+
+  it("the project-index template starts with an empty repos list", async () => {
+    const frontmatter = extractFrontmatter(await read("templates/project-index.md")) ?? {};
+    assert.deepEqual(frontmatter.repos, []);
+  });
+
+  it("init-project links through repos: or CLAUDE.local.md, never edits CLAUDE.md and writes no link rule", async () => {
+    const content = await read("commands/init-project.md");
+    const frontmatter = extractFrontmatter(content) ?? {};
+    const tools = [].concat(frontmatter["allowed-tools"]).join(",");
+    assert.match(tools, /vault_read/);
+    assert.match(tools, /vault_update_frontmatter/);
+    assert.match(content, /repos:/);
+    assert.match(content, /CLAUDE\.local\.md/);
+    assert.match(content, /Never edit `CLAUDE\.md`/);
+    assert.doesNotMatch(content, /obsidian:\/\/|Referring to vault files|pkm-capture/);
+  });
+
+  it("the sample CLAUDE.md is short, shows the optional # PKM: line and carries no vault rules", async () => {
+    const content = await read("sample-project/CLAUDE.md");
+    assert.ok(content.trimEnd().split("\n").length <= 15);
+    assert.match(content, /^# PKM: 01-Projects\/\S+/m);
+    assert.doesNotMatch(content, /## PKM Integration|obsidian:\/\/|pkm-capture/);
+  });
+});
