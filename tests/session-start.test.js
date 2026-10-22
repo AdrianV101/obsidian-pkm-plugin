@@ -4,6 +4,7 @@ import { spawn } from "node:child_process";
 import fs from "fs/promises";
 import path from "path";
 import os from "os";
+import { makeRepo, makeProject } from "./git-fixture.js";
 
 const SCRIPT = path.join(import.meta.dirname, "..", "hooks", "session-start.js");
 // The hook reads ~/.claude/settings.json. A test's fake HOME is passed as USERPROFILE too (Windows
@@ -60,7 +61,7 @@ describe("session-start.js", () => {
     await fs.mkdir(cwdDir, { recursive: true });
     await fs.writeFile(
       path.join(cwdDir, "CLAUDE.md"),
-      "# PKM: 01-Projects/MyApp\n\n## PKM Integration\n\nConfigured.\n"
+      "# PKM: 01-Projects/MyApp\n"
     );
 
     const result = await runHook({ cwd: cwdDir });
@@ -102,41 +103,12 @@ describe("session-start.js", () => {
     assert.ok(result.hookSpecificOutput.additionalContext.includes("cwd"));
   });
 
-  it("returns JSON error with systemMessage when project not found", async () => {
-    const result = await runHook({ cwd: "/home/user/Projects/unknown" });
-    assert.ok(result.hookSpecificOutput.additionalContext.includes("No vault project found"));
-    assert.ok(result.hookSpecificOutput.additionalContext.includes("init-project"));
-    assert.ok(result.systemMessage);
-    assert.ok(result.systemMessage.includes("init-project"));
-  });
-
-  it("returns systemMessage when CLAUDE.md has no PKM Integration section", async () => {
-    const cwdDir = path.join(tmpDir, "MyApp");
-    await fs.mkdir(cwdDir, { recursive: true });
-    await fs.writeFile(path.join(cwdDir, "CLAUDE.md"), "# MyApp\n\nSome instructions.\n");
-
-    const result = await runHook({ cwd: cwdDir });
-    assert.ok(result.systemMessage);
-    assert.ok(result.systemMessage.includes("init-project"));
-    assert.ok(result.hookSpecificOutput.additionalContext.includes("not configured"));
-    assert.ok(result.hookSpecificOutput.additionalContext.includes("PKM Project Context"));
-  });
-
-  it("returns systemMessage when no CLAUDE.md exists", async () => {
-    const cwdDir = path.join(tmpDir, "MyApp");
-    await fs.mkdir(cwdDir, { recursive: true });
-
-    const result = await runHook({ cwd: cwdDir });
-    assert.ok(result.systemMessage);
-    assert.ok(result.systemMessage.includes("init-project"));
-  });
-
   it("returns context summary systemMessage when configured", async () => {
     const cwdDir = path.join(tmpDir, "MyApp");
     await fs.mkdir(cwdDir, { recursive: true });
     await fs.writeFile(
       path.join(cwdDir, "CLAUDE.md"),
-      "# PKM: 01-Projects/MyApp\n\n## PKM Integration\n\nConfigured.\n"
+      "# PKM: 01-Projects/MyApp\n"
     );
 
     const result = await runHook({ cwd: cwdDir });
@@ -151,7 +123,7 @@ describe("session-start.js", () => {
     await fs.mkdir(cwdDir, { recursive: true });
     await fs.writeFile(
       path.join(cwdDir, "CLAUDE.md"),
-      "# PKM: 01-Projects/MyApp\n\n## PKM Integration\n\nConfigured.\n"
+      "# PKM: 01-Projects/MyApp\n"
     );
     await fs.mkdir(path.join(vaultPath, ".obsidian"), { recursive: true });
     await fs.writeFile(
@@ -168,7 +140,7 @@ describe("session-start.js", () => {
     await fs.mkdir(cwdDir, { recursive: true });
     await fs.writeFile(
       path.join(cwdDir, "CLAUDE.md"),
-      "# PKM: 01-Projects/MyApp\n\n## PKM Integration\n\nConfigured.\n"
+      "# PKM: 01-Projects/MyApp\n"
     );
     await fs.mkdir(path.join(vaultPath, ".obsidian"), { recursive: true });
     await fs.writeFile(
@@ -186,7 +158,7 @@ describe("session-start.js", () => {
     await fs.mkdir(cwdDir, { recursive: true });
     await fs.writeFile(
       path.join(cwdDir, "CLAUDE.md"),
-      "# PKM: 01-Projects/MyApp\n\n## PKM Integration\n\nConfigured.\n"
+      "# PKM: 01-Projects/MyApp\n"
     );
 
     const result = await runHook({ cwd: cwdDir });
@@ -198,7 +170,7 @@ describe("session-start.js", () => {
     await fs.mkdir(cwdDir, { recursive: true });
     await fs.writeFile(
       path.join(cwdDir, "CLAUDE.md"),
-      "# PKM: 01-Projects/MyApp\n\n## PKM Integration\n\nConfigured.\n"
+      "# PKM: 01-Projects/MyApp\n"
     );
     await fs.mkdir(path.join(vaultPath, ".obsidian"), { recursive: true });
     await fs.writeFile(
@@ -216,7 +188,7 @@ describe("session-start.js", () => {
     await fs.mkdir(cwdDir, { recursive: true });
     await fs.writeFile(
       path.join(cwdDir, "CLAUDE.md"),
-      "# PKM: 01-Projects/MyApp\n\n## PKM Integration\n\nConfigured.\n"
+      "# PKM: 01-Projects/MyApp\n"
     );
 
     // Create a fake HOME with .claude/settings.json pointing to a different vault
@@ -248,7 +220,7 @@ describe("session-start.js", () => {
     await fs.mkdir(cwdDir, { recursive: true });
     await fs.writeFile(
       path.join(cwdDir, "CLAUDE.md"),
-      "# PKM: 01-Projects/MyApp\n\n## PKM Integration\n\nConfigured.\n"
+      "# PKM: 01-Projects/MyApp\n"
     );
 
     // Create a fake HOME with .claude/settings.json matching the actual vault path
@@ -276,7 +248,7 @@ describe("session-start.js", () => {
     await fs.mkdir(cwdDir, { recursive: true });
     await fs.writeFile(
       path.join(cwdDir, "CLAUDE.md"),
-      "# PKM: 01-Projects/MyApp\n\n## PKM Integration\n\nConfigured.\n"
+      "# PKM: 01-Projects/MyApp\n"
     );
 
     // Create a fake HOME with no .claude/settings.json
@@ -310,7 +282,7 @@ describe("session-start.js context budget and semantic health", () => {
     await fs.writeFile(path.join(projectDir, "tasks", "t.md"), "---\ntype: task\nstatus: active\npriority: high\n---\n# Ship it\n");
     cwdDir = path.join(tmpDir, "MyApp");
     await fs.mkdir(cwdDir, { recursive: true });
-    await fs.writeFile(path.join(cwdDir, "CLAUDE.md"), "# PKM: 01-Projects/MyApp\n\n## PKM Integration\n\nConfigured.\n");
+    await fs.writeFile(path.join(cwdDir, "CLAUDE.md"), "# PKM: 01-Projects/MyApp\n");
   });
 
   afterEach(async () => {
@@ -322,10 +294,11 @@ describe("session-start.js context budget and semantic health", () => {
     return JSON.parse(stdout);
   }
 
-  it("passes the hook input's source through: \"compact\" loads only the project path and task titles", async () => {
+  it("passes the hook input's source through: \"compact\" loads only the full-path header and task titles", async () => {
     const result = await run({ cwd: cwdDir, source: "compact" });
     const context = result.hookSpecificOutput.additionalContext;
-    assert.ok(context.startsWith("## PKM Project Context: MyApp (compact)\nProject: 01-Projects/MyApp"), context);
+    assert.ok(context.startsWith("## PKM Project Context: 01-Projects/MyApp (compact)\n### Active Tasks\n- Ship it"), context);
+    assert.ok(!context.includes("Project: 01-Projects/MyApp"), context);
     assert.ok(context.includes("- Ship it"));
     assert.ok(!context.includes("INDEXBODY") && !context.includes("DEVLOGBODY"));
     assert.ok(result.systemMessage.startsWith("Obsidian PKM: Loaded MyApp (compact, 1 task)"), result.systemMessage);
@@ -356,4 +329,127 @@ describe("session-start.js context budget and semantic health", () => {
       assert.ok(result.systemMessage.endsWith(c.summary), result.systemMessage);
     });
   }
+});
+
+describe("session-start.js project resolution output", () => {
+  const HINT = "vault-pkm: this repo isn't linked to a vault project. Run /vault-pkm:init-project to link it.";
+  let tmpDir, vaultPath;
+
+  beforeEach(async () => {
+    tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "pkm-ss-res-"));
+    vaultPath = path.join(tmpDir, "vault");
+    await makeProject(vaultPath, "MyApp", "repos: [github.com/acme/myapp]");
+  });
+
+  afterEach(async () => {
+    await fs.rm(tmpDir, { recursive: true, force: true });
+  });
+
+  async function run(input, env = {}) {
+    const res = await runScript([SCRIPT], { ...process.env, VAULT_PATH: vaultPath, ...env }, JSON.stringify(input));
+    return { ...res, json: res.stdout.trim() ? JSON.parse(res.stdout) : null };
+  }
+
+  const linkedCases = [
+    {
+      name: "folder name",
+      setup: async () => {
+        const cwd = path.join(tmpDir, "myapp");
+        await fs.mkdir(cwd);
+        return cwd;
+      },
+      via: /\(via folder name: myapp\)/,
+    },
+    {
+      name: "annotation",
+      setup: async () => {
+        const cwd = path.join(tmpDir, "elsewhere");
+        await fs.mkdir(cwd);
+        await fs.writeFile(path.join(cwd, "CLAUDE.md"), "# PKM: 01-Projects/MyApp\n");
+        return cwd;
+      },
+      via: /\(via # PKM in .*CLAUDE\.md\)/,
+    },
+    {
+      name: "repos",
+      setup: async () => makeRepo(path.join(tmpDir, "checkout"), { origin: "git@github.com:acme/myapp.git" }),
+      via: /\(via repos: github\.com\/acme\/myapp\)/,
+    },
+  ];
+  for (const c of linkedCases) {
+    it(`a folder linked by ${c.name} says how in the summary and names the full path in the header`, async () => {
+      const cwd = await c.setup();
+      const { json } = await run({ cwd });
+      assert.ok(json.hookSpecificOutput.additionalContext.startsWith("## PKM Project Context: 01-Projects/MyApp\n"));
+      assert.match(json.systemMessage, /^Obsidian PKM: Loaded MyApp /);
+      assert.match(json.systemMessage, c.via);
+      assert.match(json.systemMessage, / chars \(via /);
+    });
+  }
+
+  it("an unlinked git repo gets exactly the hint as a systemMessage", async () => {
+    const cwd = await makeRepo(path.join(tmpDir, "other"), { origin: "git@github.com:acme/other.git" });
+    const { json, code } = await run({ cwd });
+    assert.equal(code, 0);
+    assert.deepEqual(json, { systemMessage: HINT });
+  });
+
+  it("an ambiguous remote gets the hint plus a reason naming both projects, and no context", async () => {
+    await makeProject(vaultPath, "Twin", "repos: [github.com/acme/myapp]");
+    const cwd = await makeRepo(path.join(tmpDir, "checkout"), { origin: "https://github.com/acme/myapp.git" });
+    const { json } = await run({ cwd });
+    assert.equal(json.hookSpecificOutput, undefined);
+    assert.ok(json.systemMessage.startsWith(`${HINT} (`), json.systemMessage);
+    assert.ok(json.systemMessage.includes("01-Projects/MyApp") && json.systemMessage.includes("01-Projects/Twin"), json.systemMessage);
+    assert.ok(json.systemMessage.endsWith(")"));
+  });
+
+  it("an invalid annotation outside git gets a systemMessage naming it, and no context", async () => {
+    const cwd = path.join(tmpDir, "plain");
+    await fs.mkdir(cwd);
+    await fs.writeFile(path.join(cwd, "CLAUDE.md"), "# PKM: 01-Projects/Missing\n");
+    const { json } = await run({ cwd });
+    assert.deepEqual(Object.keys(json), ["systemMessage"]);
+    assert.match(json.systemMessage, /^vault-pkm: .*Missing.*\.$/);
+  });
+
+  it("a non-git folder with no match produces no output and exits 0", async () => {
+    const cwd = path.join(tmpDir, "nomatch");
+    await fs.mkdir(cwd);
+    const { stdout, code, stderr } = await run({ cwd });
+    assert.equal(code, 0, stderr);
+    assert.equal(stdout, "");
+  });
+
+  it("a linked project whose CLAUDE.md has no PKM Integration section gets its context and no setup nudge", async () => {
+    const cwd = path.join(tmpDir, "myapp");
+    await fs.mkdir(cwd);
+    await fs.writeFile(path.join(cwd, "CLAUDE.md"), "# MyApp\n\nSome instructions.\n");
+    const { json } = await run({ cwd });
+    const context = json.hookSpecificOutput.additionalContext;
+    assert.ok(context.includes("## PKM Project Context: 01-Projects/MyApp"));
+    assert.ok(!/not configured|PKM Integration|init-project/.test(context + json.systemMessage));
+  });
+
+  it("a VAULT_PATH that does not exist gets a systemMessage naming VAULT_PATH, and no context", async () => {
+    const cwd = path.join(tmpDir, "myapp");
+    await fs.mkdir(cwd);
+    const { json } = await run({ cwd }, { VAULT_PATH: path.join(tmpDir, "missing-vault") });
+    assert.deepEqual(Object.keys(json), ["systemMessage"]);
+    assert.match(json.systemMessage, /^vault-pkm: .*VAULT_PATH.*\.$/);
+  });
+
+  it("credentials in the origin URL never reach the output", async () => {
+    const remote = "https://deploy:s3cr3t-token@github.com/acme/%s.git";
+    const cases = [
+      await makeRepo(path.join(tmpDir, "unlinked"), { origin: remote.replace("%s", "other") }),
+      await makeRepo(path.join(tmpDir, "linked"), { origin: remote.replace("%s", "myapp") }),
+    ];
+    await makeProject(vaultPath, "Twin", "repos: [github.com/acme/myapp]");
+    const ambiguous = await makeRepo(path.join(tmpDir, "ambiguous"), { origin: remote.replace("%s", "myapp") });
+    for (const cwd of [...cases, ambiguous]) {
+      const { stdout, stderr } = await run({ cwd });
+      assert.ok(!/s3cr3t|deploy:/.test(stdout + stderr), `${cwd}: ${stdout}${stderr}`);
+    }
+  });
 });
