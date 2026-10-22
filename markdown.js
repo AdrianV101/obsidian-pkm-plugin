@@ -268,3 +268,79 @@ export function maskCode(content) {
   }
   return out + maskInlineCode(content.slice(cursor));
 }
+
+/** Drop a trailing "# comment" (a # at the start or after whitespace, outside quotes) and trim. */
+function stripYamlComment(text) {
+  let quote = null;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (quote) {
+      if (ch === quote) quote = null;
+    } else if (ch === '"' || ch === "'") {
+      quote = ch;
+    } else if (ch === "#" && (i === 0 || /\s/.test(text[i - 1]))) {
+      return text.slice(0, i).trim();
+    }
+  }
+  return text.trim();
+}
+
+function unquoteYamlScalar(text) {
+  const m = /^(["'])(.*)\1$/.exec(text);
+  return m ? m[2] : text;
+}
+
+/** Split an inline list body on commas that are outside quotes. */
+function splitInlineList(body) {
+  const items = [];
+  let quote = null;
+  let start = 0;
+  for (let i = 0; i <= body.length; i++) {
+    const ch = body[i];
+    if (quote) {
+      if (ch === quote) quote = null;
+    } else if (ch === '"' || ch === "'") {
+      quote = ch;
+    } else if (ch === "," || i === body.length) {
+      items.push(body.slice(start, i));
+      start = i + 1;
+    }
+  }
+  return items;
+}
+
+/**
+ * Read a top-level frontmatter key written by hand as an inline list, a block
+ * list or a single scalar. A small reader rather than YAML, so hooks can use it
+ * without the yaml package. Empty, null and "~" values give [].
+ *
+ * @param {string|null} frontmatterText splitFrontmatter's frontmatterText
+ * @param {string} key
+ * @returns {string[]}
+ */
+export function frontmatterList(frontmatterText, key) {
+  if (typeof frontmatterText !== "string") return [];
+  const lines = frontmatterText.split(/\r?\n/);
+  const keyLine = new RegExp(`^${key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}[ \\t]*:(.*)$`);
+  const at = lines.findIndex(line => keyLine.test(line));
+  if (at === -1) return [];
+
+  const value = stripYamlComment(keyLine.exec(lines[at])[1]);
+  if (value === "") {
+    const items = [];
+    for (const line of lines.slice(at + 1)) {
+      const text = stripYamlComment(line);
+      if (text === "") continue;
+      const item = /^-(?:[ \t]+(.*))?$/.exec(text.replace(/^[ \t]+/, ""));
+      if (!item) break;
+      items.push(unquoteYamlScalar((item[1] ?? "").trim()));
+    }
+    return items.filter(item => item !== "");
+  }
+  if (value.startsWith("[") && value.endsWith("]")) {
+    return splitInlineList(value.slice(1, -1))
+      .map(item => unquoteYamlScalar(item.trim()))
+      .filter(item => item !== "");
+  }
+  return value === "null" || value === "~" ? [] : [unquoteYamlScalar(value)];
+}

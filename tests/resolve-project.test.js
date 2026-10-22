@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import fs from "fs/promises";
 import path from "path";
 import os from "os";
-import { resolveProject } from "../hooks/resolve-project.js";
+import { resolveProject, normalizeRemote } from "../hooks/resolve-project.js";
 
 describe("resolveProject", () => {
   let tmpDir;
@@ -77,4 +77,47 @@ describe("resolveProject", () => {
     assert.equal(result.projectPath, undefined);
     assert.ok(result.error.includes("non-existent"));
   });
+});
+
+describe("normalizeRemote", () => {
+  const KEY = "github.com/owner/repo";
+  const forms = [
+    "https://github.com/owner/repo",
+    "https://github.com/owner/repo.git",
+    "https://github.com/owner/repo/",
+    "https://github.com/owner/repo.git/",
+    "http://github.com/owner/repo.git",
+    "https://user:secret@github.com/owner/repo.git",
+    "https://token@github.com/owner/repo",
+    "ssh://git@github.com/owner/repo.git",
+    "ssh://git@github.com:2222/owner/repo.git",
+    "ssh://github.com/owner/repo",
+    "git://github.com/owner/repo.git",
+    "git+ssh://git@github.com/owner/repo.git",
+    "git@github.com:owner/repo.git",
+    "github.com:owner/repo",
+    "github.com/owner/repo",
+    "HTTPS://GitHub.com/Owner/Repo.git",
+    "  https://github.com/owner/repo.git\n",
+  ];
+  for (const form of forms) {
+    it(`maps ${JSON.stringify(form)} to the shared key without credentials`, () => {
+      const out = normalizeRemote(form);
+      assert.equal(out, KEY);
+      assert.doesNotMatch(out, /secret|token|@/);
+    });
+  }
+
+  it("keeps extra path segments and keeps different repos distinct", () => {
+    assert.equal(normalizeRemote("git@gitlab.com:group/sub/repo.git"), "gitlab.com/group/sub/repo");
+    assert.equal(normalizeRemote("https://gitlab.com:8443/group/sub/repo"), "gitlab.com/group/sub/repo");
+    assert.notEqual(normalizeRemote("github.com/a/repo"), normalizeRemote("github.com/b/repo"));
+    assert.notEqual(normalizeRemote("github.com/a/repo"), normalizeRemote("gitlab.com/a/repo"));
+  });
+
+  for (const input of [undefined, null, 42, {}, "", "   \n"]) {
+    it(`returns "" for ${JSON.stringify(input)}`, () => {
+      assert.equal(normalizeRemote(input), "");
+    });
+  }
 });

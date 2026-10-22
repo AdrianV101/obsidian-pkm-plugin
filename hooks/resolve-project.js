@@ -13,6 +13,30 @@ function assertPathWithinVault(relativePath, vaultPath) {
   }
 }
 
+/**
+ * Reduce any git remote URL form to a lowercase "host/owner/repo" key.
+ * Credentials and ports are dropped, so the result is safe to show to users.
+ *
+ * @param {unknown} url
+ * @returns {string} "" for non-strings and blank input
+ */
+export function normalizeRemote(url) {
+  if (typeof url !== "string") return "";
+  let rest = url.trim().replace(/^[a-z][a-z0-9+.-]*:\/\//i, "");
+  // Credentials end at the last "@" before the first "/" (scp-style has no scheme to anchor on).
+  const slash = rest.indexOf("/");
+  const authorityEnd = slash === -1 ? rest.length : slash;
+  const at = rest.lastIndexOf("@", authorityEnd);
+  if (at !== -1) rest = rest.slice(at + 1);
+  return rest
+    .replace(/^([^/:]+):\d+(?=\/|$)/, "$1")
+    .replace(/^([^/:]+):/, "$1/")
+    .replace(/\/+$/, "")
+    .replace(/\.git$/i, "")
+    .replace(/\/+$/, "")
+    .toLowerCase();
+}
+
 export async function resolveProject(cwd, vaultPath) {
   try {
     await fs.access(vaultPath);
