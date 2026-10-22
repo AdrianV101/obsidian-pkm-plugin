@@ -23,7 +23,7 @@ describe("condenseTranscript", () => {
     assert.equal(MAX_DELTA_CHARS, 40000);
   });
 
-  it("T1: keeps typed prompts and Claude's text with UTC timestamps, in order", () => {
+  it("keeps typed prompts and Claude's text with UTC timestamps, in order", () => {
     const entries = [
       user("string prompt", { timestamp: "2026-10-21T09:05:00.000Z", origin: { kind: "human" } }),
       assistant([text("first answer")], { timestamp: "2026-10-21T09:06:00.000Z" }),
@@ -53,7 +53,7 @@ describe("condenseTranscript", () => {
     ["attachment entry", { type: "attachment", uuid: nextUuid(), timestamp: ts(2), attachment: { text: "SECRET" } }],
   ];
   for (const [name, entry] of excluded) {
-    it(`T2: never includes a ${name}`, () => {
+    it(`never includes a ${name}`, () => {
       const r = condenseTranscript(jsonl([entry]));
       assert.equal(r.text, "");
       assert.equal(r.entryCount, 0);
@@ -64,6 +64,7 @@ describe("condenseTranscript", () => {
   const toolCases = [
     ["Bash with a description", toolUse("Bash", { command: "ls -la", description: "List files" }), "  Bash: List files"],
     ["Bash without a description", toolUse("Bash", { command: "x".repeat(300) }), `  Bash: ${"x".repeat(120)}`],
+    ["Bash with a multi-line command and no description", toolUse("Bash", { command: "cat <<EOF\n  line one\n\nline two\nEOF" }), "  Bash: cat <<EOF line one line two EOF"],
     ["Edit", toolUse("Edit", { file_path: "/a/b.js", old_string: "o", new_string: "n" }), "  Edit: /a/b.js"],
     ["Read", toolUse("Read", { file_path: "/a/c.js" }), "  Read: /a/c.js"],
     ["Write", toolUse("Write", { file_path: "/a/d.js", content: "BODY" }), "  Write: /a/d.js"],
@@ -72,7 +73,7 @@ describe("condenseTranscript", () => {
     ["unknown tool", toolUse("WebSearch", { query: "q" }), "  WebSearch"],
   ];
   for (const [name, block, expected] of toolCases) {
-    it(`T3: ${name} becomes one line`, () => {
+    it(`${name} becomes one line`, () => {
       const r = condenseTranscript(jsonl([assistant([block])]));
       assert.equal(r.text, expected);
       assert.equal(r.entryCount, 1);
@@ -84,19 +85,19 @@ describe("condenseTranscript", () => {
     ["text-block error", toolResult([text("first line\nsecond"), text("more")], true), "  Error: first line"],
   ];
   for (const [name, entry, expected] of resultCases) {
-    it(`T4: a ${name} shows its first line`, () => {
+    it(`a ${name} shows its first line`, () => {
       assert.equal(condenseTranscript(jsonl([entry])).text, expected);
     });
   }
 
-  it("T4: a successful result never appears", () => {
+  it("a successful result never appears", () => {
     const entries = [toolResult("SECRET output", false), toolResult([text("SECRET")], undefined)];
     const r = condenseTranscript(jsonl(entries));
     assert.equal(r.text, "");
     assert.equal(r.entryCount, 0);
   });
 
-  it("T5: long user and assistant text is cut at its limit and marked", () => {
+  it("long user and assistant text is cut at its limit and marked", () => {
     const r = condenseTranscript(jsonl([user("u".repeat(2500)), assistant([text("a".repeat(3500))])]));
     const [u, a] = lines(r);
     assert.ok(u.startsWith(`[2026-10-21 09:00] User: ${"u".repeat(2000)}`));
@@ -107,12 +108,12 @@ describe("condenseTranscript", () => {
     assert.match(a, /truncated 500 chars/);
   });
 
-  it("T5: text exactly at its limit is not marked", () => {
+  it("text exactly at its limit is not marked", () => {
     const r = condenseTranscript(jsonl([user("u".repeat(2000))]));
     assert.doesNotMatch(r.text, /truncated/);
   });
 
-  it("T6: with a cursor only later entries appear, lastUuid is the file's last entry", () => {
+  it("with a cursor only later entries appear, lastUuid is the file's last entry", () => {
     const e = [user("one"), assistant([text("two")]), user("three"), { type: "system", uuid: nextUuid(), timestamp: ts(3) }];
     const r = condenseTranscript(jsonl(e), { afterUuid: e[1].uuid });
     assert.equal(r.text, "[2026-10-21 09:00] User: three");
@@ -122,7 +123,7 @@ describe("condenseTranscript", () => {
 
   const fromStart = [["a null cursor", null], ["an undefined cursor", undefined], ["a cursor not in the file", "nope"]];
   for (const [name, cursor] of fromStart) {
-    it(`T7: ${name} starts from the beginning`, () => {
+    it(`${name} starts from the beginning`, () => {
       const e = [user("one"), assistant([text("two")])];
       const r = condenseTranscript(jsonl(e), { afterUuid: cursor });
       assert.equal(r.entryCount, 2);
@@ -130,7 +131,7 @@ describe("condenseTranscript", () => {
     });
   }
 
-  it("T8: nothing after the cursor gives an empty result", () => {
+  it("nothing after the cursor gives an empty result", () => {
     const e = [user("one"), assistant([text("two")])];
     const r = condenseTranscript(jsonl(e), { afterUuid: e[1].uuid });
     assert.deepEqual(r, {
@@ -138,13 +139,13 @@ describe("condenseTranscript", () => {
     });
   });
 
-  it("T8: an empty file keeps the cursor", () => {
+  it("an empty file keeps the cursor", () => {
     const r = condenseTranscript("", { afterUuid: "cur" });
     assert.equal(r.lastUuid, "cur");
     assert.equal(r.entryCount, 0);
   });
 
-  it("T9: over maxChars the oldest lines drop, the newest stay, behind a marker", () => {
+  it("over maxChars the oldest lines drop, the newest stay, behind a marker", () => {
     const e = Array.from({ length: 20 }, (_, i) => user(`message-${String(i).padStart(2, "0")} ${"p".repeat(60)}`));
     const r = condenseTranscript(jsonl(e), { maxChars: 600 });
     assert.equal(r.truncated, true);
@@ -157,13 +158,13 @@ describe("condenseTranscript", () => {
     assert.equal(r.entryCount, 20);
   });
 
-  it("T9: output within maxChars is not truncated", () => {
+  it("output within maxChars is not truncated", () => {
     const r = condenseTranscript(jsonl([user("hi")]), { maxChars: 600 });
     assert.equal(r.truncated, false);
     assert.doesNotMatch(r.text, /omitted/);
   });
 
-  it("T10: malformed lines are skipped without breaking the cursor or order", () => {
+  it("malformed lines are skipped without breaking the cursor or order", () => {
     const e1 = user("one");
     const e2 = assistant([text("two")]);
     const raw = [
@@ -177,7 +178,7 @@ describe("condenseTranscript", () => {
     }
   });
 
-  it("T11: first and last timestamps come from contributing entries only", () => {
+  it("first and last timestamps come from contributing entries only", () => {
     const e = [
       { type: "system", uuid: nextUuid(), timestamp: "2026-10-21T01:00:00.000Z" },
       user("a", { timestamp: "2026-10-21T02:00:00.000Z" }),
@@ -189,7 +190,7 @@ describe("condenseTranscript", () => {
     assert.equal(r.lastTimestamp, "2026-10-21T03:00:00.000Z");
   });
 
-  it("T12: a 10 MB transcript with a 5 MB successful result condenses fast and leaves it out", () => {
+  it("a 10 MB transcript with a 5 MB successful result condenses fast and leaves it out", () => {
     const big = "R".repeat(5 * 1024 * 1024);
     const filler = Array.from({ length: 2000 }, (_, i) => (i % 2 ? assistant([text("f".repeat(3000))]) : user("g".repeat(2000))));
     const entries = [user("start"), assistant([toolUse("Bash", { command: "cat big" })]), toolResult(big, false), ...filler];

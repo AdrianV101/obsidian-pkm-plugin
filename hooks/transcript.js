@@ -49,18 +49,21 @@ function textOf(content) {
     .join("\n");
 }
 
+function oneLine(value) {
+  return typeof value === "string" ? value.replace(/\s+/g, " ").trim() : "";
+}
+
 function describeTool(name, input) {
   const args = isObject(input) ? input : {};
   if (name === "Bash") {
-    const desc = typeof args.description === "string" && args.description.trim();
-    const cmd = typeof args.command === "string" ? args.command.slice(0, BASH_PREVIEW_CAP) : "";
-    return `  Bash: ${desc || cmd}`;
+    const cmd = oneLine(args.command).slice(0, BASH_PREVIEW_CAP);
+    return `  Bash: ${oneLine(args.description) || cmd}`;
   }
   if (FILE_TOOLS.has(name)) {
     return `  ${name}: ${args.file_path ?? args.notebook_path ?? args.path ?? ""}`.trimEnd();
   }
   if (name === "Agent" || name === "Task") {
-    return `  ${name}: ${args.description ?? ""}`.trimEnd();
+    return `  ${name}: ${oneLine(args.description)}`.trimEnd();
   }
   if (name.startsWith("mcp__")) {
     const short = name.slice(name.lastIndexOf("__") + 2);
