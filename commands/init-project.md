@@ -10,7 +10,13 @@ Link the current repository to a vault project folder. The link lives in the vau
 
 ## Step 1: Check for an existing link
 
-If this session's context has a `## PKM Project Context: <path>` header, the repo is already linked. Report the path and stop.
+If this session's context has a `## PKM Project Context: <path>` header, the repo is already linked. Work out how, in this order:
+
+1. A `# PKM:` line in `CLAUDE.local.md`, `CLAUDE.md` or `.claude/CLAUDE.md` in the repo.
+2. Otherwise, the repo's normalised remote (see Step 2) listed under `repos:` in that project's `_index.md` (`vault_read` it).
+3. Otherwise, the folder name matching the project.
+
+Report the path and how it was found, then ask whether to relink to a different project. If not, stop. If yes, continue with Step 2. A `# PKM:` line wins over `repos:`, so relinking an annotated repo means changing or removing that line in `CLAUDE.local.md`. If the line is in `CLAUDE.md`, tell the user to edit it themselves.
 
 ## Step 2: Read and normalise the remotes
 
@@ -20,7 +26,7 @@ Normalise each URL: drop the scheme and any credentials, turn `host:path` into `
 
 ## Step 3: Pick or create the project
 
-Use `vault_list({ path: "01-Projects" })`. Suggest the folder whose name matches the repo folder name (case-insensitive) and ask the user to confirm or choose another. If none fits, ask for a name and create it:
+Use `vault_list({ path: "01-Projects" })`. Suggest the folder whose name matches the main checkout's folder name (case-insensitive). In a git worktree the working directory's name differs, so derive the main checkout: run `git rev-parse --path-format=absolute --git-common-dir`; when that path ends in `.git`, its parent directory is the main checkout, otherwise use `git rev-parse --show-toplevel`. Outside git, use the current folder's name and ask the user to confirm or choose another. If none fits, ask for a name and create it:
 
 ```
 vault_write({
@@ -35,7 +41,7 @@ Subdirectories are created when notes are first written to them.
 ## Step 4: Add the remote to `repos:`
 
 1. `vault_read` the project's `_index.md` and read its `repos:` list (it may be missing, inline or a block list).
-2. Build the full list: every existing entry unchanged, plus the normalised remote (the `origin` one, unless the user picks another) if its normalised form isn't already there. Add no duplicates.
+2. Build the full list: every existing entry unchanged, plus the normalised remote (the `origin` one, unless the user picks another). Normalise each existing entry with the Step 2 rules before comparing, and add the remote only if its normalised form matches none of them, so a hand-written `git@github.com:Acme/App.git` isn't re-added. Keep existing entries' original text when writing the list back.
 3. `vault_update_frontmatter({ path: "01-Projects/<name>/_index.md", fields: { repos: [<full list>] } })`.
 
 Then go to Step 6.

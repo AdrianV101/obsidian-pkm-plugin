@@ -85,6 +85,31 @@ describe("project linking", () => {
     assert.doesNotMatch(content, /obsidian:\/\/|Referring to vault files|pkm-capture/);
   });
 
+  it("init-project works out how a linked folder was linked and offers a relink", async () => {
+    const content = await read("commands/init-project.md");
+    const step1 = content.slice(content.indexOf("## Step 1"), content.indexOf("## Step 2"));
+    assert.match(step1, /CLAUDE\.local\.md.*\.claude\/CLAUDE\.md/s);
+    assert.match(step1, /repos:/);
+    assert.match(step1, /folder name/i);
+    assert.match(step1, /relink/i);
+    assert.match(step1, /wins over/i);
+  });
+
+  it("init-project suggests the project from the main checkout's folder name, not the worktree's", async () => {
+    const content = await read("commands/init-project.md");
+    const step3 = content.slice(content.indexOf("## Step 3"), content.indexOf("## Step 4"));
+    assert.match(step3, /--git-common-dir/);
+    assert.match(step3, /--show-toplevel/);
+    assert.match(step3, /worktree/i);
+  });
+
+  it("init-project compares normalised forms when checking for an existing repos entry and keeps original text", async () => {
+    const content = await read("commands/init-project.md");
+    const step4 = content.slice(content.indexOf("## Step 4"), content.indexOf("## Step 5"));
+    assert.match(step4, /normalis\w+ (form|each existing)/i);
+    assert.match(step4, /original text/i);
+  });
+
   it("the sample CLAUDE.md is short, shows the optional # PKM: line and carries no vault rules", async () => {
     const content = await read("sample-project/CLAUDE.md");
     assert.ok(content.trimEnd().split("\n").length <= 15);
