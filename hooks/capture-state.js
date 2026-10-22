@@ -85,10 +85,10 @@ export async function writeCursor(dir, sessionId, cursor) {
     null,
     2,
   );
-  await fs.mkdir(dir, { recursive: true });
+  await fs.mkdir(dir, { recursive: true, mode: 0o700 });
   const tmp = `${target}.${process.pid}.${crypto.randomUUID()}.tmp`;
   try {
-    await fs.writeFile(tmp, body);
+    await fs.writeFile(tmp, body, { mode: 0o600 });
     await fs.rename(tmp, target);
   } catch (err) {
     await fs.rm(tmp, { force: true }).catch(() => {});

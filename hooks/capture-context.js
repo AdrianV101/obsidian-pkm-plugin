@@ -45,24 +45,30 @@ function unavailable(err) {
  * @param {unknown} cwd
  * @param {string|undefined} vaultPath
  * @param {string|undefined} home undefined lets the resolver use the real home directory
+ * @returns {Promise<{ line: string, resolved: boolean }>}
  */
 async function projectLine(cwd, vaultPath, home) {
-  if (!vaultPath) return "Project: none (VAULT_PATH is not set)";
-  if (typeof cwd !== "string" || !cwd) return "Project: none (the hook input has no cwd)";
+  const none = (reason) => ({ line: `Project: none (${reason})`, resolved: false });
+  if (!vaultPath) return none("VAULT_PATH is not set");
+  if (typeof cwd !== "string" || !cwd) return none("the hook input has no cwd");
   try {
     const resolution = await resolveProject(cwd, vaultPath, home === undefined ? {} : { home });
-    if (resolution.projectPath) return `Project: ${resolution.projectPath} (${describeVia(resolution)})`;
-    return `Project: none (${resolution.reason ?? "not resolved"})`;
+    if (resolution.projectPath) {
+      return { line: `Project: ${resolution.projectPath} (${describeVia(resolution)})`, resolved: true };
+    }
+    return none(resolution.reason ?? "not resolved");
   } catch (err) {
-    return `Project: none (${reasonOf(err)})`;
+    return none(reasonOf(err));
   }
 }
 
 /**
- * Reads the new transcript activity, writes it to a delta file and commits the cursor.
+ * Reads the new transcript activity and writes it to a delta file. The cursor is
+ * committed only when `commit` is set: a capture without a project writes nothing
+ * but inbox tasks, so its range stays open for the capture after the repo is linked.
  * @returns {Promise<{ session: string, activity: string }>}
  */
-async function captureActivity(input, dir, nowMs) {
+async function captureActivity(input, dir, nowMs, commit) {
   const sessionId = input.session_id;
   const agentId = input.agent_id;
   const cursor = await readCursor(dir, sessionId);
@@ -83,12 +89,13 @@ async function captureActivity(input, dir, nowMs) {
     let activity = "New activity: none since the last capture";
     if (condensed.entryCount > 0) {
       const file = deltaPath(dir, sessionId, agentId);
-      await fs.mkdir(dir, { recursive: true });
-      await fs.writeFile(file, condensed.text);
+      // The delta copies conversation text, and Claude Code keeps transcripts owner-only.
+      await fs.mkdir(dir, { recursive: true, mode: 0o700 });
+      await fs.writeFile(file, condensed.text, { mode: 0o600 });
       const omitted = condensed.truncated ? ", oldest part omitted" : "";
       activity = `New activity: ${file} (${condensed.text.length} chars, ${condensed.firstTimestamp} to ${condensed.lastTimestamp}${omitted})`;
     }
-    if (condensed.lastUuid) {
+    if (commit && condensed.lastUuid) {
       await writeCursor(dir, sessionId, {
         version: 1,
         transcript_path: input.transcript_path,
@@ -119,11 +126,11 @@ export async function buildCaptureContext(hookInput, { env = process.env, now = 
     let session = "Session: unknown";
     let activity = unavailable("the hook input has no usable session or agent id");
     if (safeId(input.session_id) && safeId(input.agent_id)) {
-      ({ session, activity } = await captureActivity(input, dir, now));
+      ({ session, activity } = await captureActivity(input, dir, now, project.resolved));
       await pruneCaptures(dir, now);
     }
 
-    const lines = ["vault-pkm capture context", project, session, activity].map(cap);
+    const lines = ["vault-pkm capture context", project.line, session, activity].map(cap);
     return {
       hookSpecificOutput: { hookEventName: "SubagentStart", additionalContext: lines.join("\n") },
     };

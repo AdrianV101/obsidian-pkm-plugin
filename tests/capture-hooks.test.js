@@ -115,7 +115,7 @@ describe("buildCaptureContext", () => {
     assert.equal(committed.at, new Date(later).toISOString());
   });
 
-  it("says why there is no project and still gives the session and activity lines", async () => {
+  it("says why there is no project, still writes the delta and commits no cursor", async () => {
     await writeTranscript([entry("u1", "user", 1, "prompt")]);
     const unlinked = path.join(tmp, "Unlinked");
     await fs.mkdir(unlinked);
@@ -126,12 +126,41 @@ describe("buildCaptureContext", () => {
       [{}, { cwd: "" }, /^Project: none \(the hook input has no cwd\)$/],
     ];
     for (const [envOver, inputOver, projectLine] of table) {
+      const label = JSON.stringify({ envOver, inputOver });
       const lines = linesOf(await run(inputOver, envOver));
-      assert.equal(lines.length, 4);
-      assert.match(lines[1], projectLine);
-      assert.match(lines[2], /^Session: sess-1 - /);
-      assert.match(lines[3], /^New activity: /);
+      const delta = deltaPath(captures(), SESSION, AGENT_ID);
+      assert.equal(lines.length, 4, label);
+      assert.match(lines[1], projectLine, label);
+      assert.equal(lines[2], `Session: ${SESSION} - first capture this session`, label);
+      assert.ok(lines[3].startsWith(`New activity: ${delta} (`), label);
+      assert.match(await fs.readFile(delta, "utf8"), /prompt/, label);
+      await assert.rejects(fs.stat(cursorPath(captures(), SESSION)), label);
     }
+  });
+
+  it("leaves an existing cursor untouched when no project resolves, so a later linked capture still covers the range", async () => {
+    await writeTranscript([entry("u1", "user", 1, "old prompt")]);
+    await run();
+    const before = await fs.readFile(cursorPath(captures(), SESSION), "utf8");
+    await writeTranscript([entry("u1", "user", 1, "old prompt"), entry("u2", "user", 8, "newer prompt")]);
+
+    const unlinked = linesOf(await run({ agent_id: "agent2" }, { VAULT_PATH: undefined }, NOW + 60_000));
+    assert.match(unlinked[1], /^Project: none \(/);
+    assert.match(await fs.readFile(deltaPath(captures(), SESSION, "agent2"), "utf8"), /newer prompt/);
+    assert.equal(await fs.readFile(cursorPath(captures(), SESSION), "utf8"), before);
+
+    await run({ agent_id: "agent3" }, {}, NOW + 120_000);
+    assert.match(await fs.readFile(deltaPath(captures(), SESSION, "agent3"), "utf8"), /newer prompt/);
+    assert.equal((await readJson(cursorPath(captures(), SESSION))).committed.uuid, "u2");
+  });
+
+  it("keeps the delta and cursor readable by the owner only, in an owner-only directory", { skip: process.platform === "win32" }, async () => {
+    await writeTranscript([entry("u1", "user", 1, "private prompt")]);
+    await run();
+    const modeOf = async (p) => (await fs.stat(p)).mode & 0o777;
+    assert.equal(await modeOf(captures()), 0o700);
+    assert.equal(await modeOf(deltaPath(captures(), SESSION, AGENT_ID)), 0o600);
+    assert.equal(await modeOf(cursorPath(captures(), SESSION)), 0o600);
   });
 
   it("gives an unreadable transcript as unavailable and leaves an existing cursor unchanged", async () => {
