@@ -10,6 +10,16 @@
         }]
       }
     ],
+    "SubagentStart": [
+      {
+        "matcher": "^vault-pkm:pkm-capture$",
+        "hooks": [{
+          "type": "command",
+          "command": "VAULT_PATH=\"${VAULT_PATH}\" node \"${CLAUDE_PLUGIN_ROOT}/hooks/capture-context.js\"",
+          "timeout": 10
+        }]
+      }
+    ],
     "PostToolUse": [
       {
         "matcher": "Bash",
