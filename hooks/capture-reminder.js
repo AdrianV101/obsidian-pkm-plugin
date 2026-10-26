@@ -168,26 +168,17 @@ export function buildReminder(hookInput) {
   if (!hookInput || typeof hookInput !== "object") return null;
   const input = /** @type {Record<string, any>} */ (hookInput);
   if (input.tool_name !== "Bash") return null;
+  // A subagent cannot dispatch agents itself, so a PR it creates is left to the main thread.
+  if (typeof input.agent_id === "string" && input.agent_id) return null;
   if (!isPrCreateCommand(input.tool_input?.command)) return null;
   const prUrl = extractPrUrl(input.tool_response);
   if (!prUrl) return null;
-
-  const details = [`PR: ${prUrl}`];
-  if (typeof input.transcript_path === "string" && input.transcript_path) {
-    details.push(`transcript_path: ${input.transcript_path}`);
-  }
-  if (typeof input.session_id === "string" && input.session_id) {
-    details.push(`session_id: ${input.session_id}`);
-  }
 
   return {
     hookSpecificOutput: {
       hookEventName: "PostToolUse",
       additionalContext:
-        `A pull request was just created (${prUrl}). Dispatch the pkm-capture agent in the background now to capture this work block into the vault. ` +
-        "In the delegation prompt, include the lines below verbatim, whether this is the first capture this session " +
-        "(if not, the previous devlog entry's timestamp), and the project's vault path.\n" +
-        details.join("\n"),
+        `A pull request was just created (${prUrl}). Dispatch the pkm-capture agent in the background now and include the PR URL in its prompt.`,
     },
   };
 }

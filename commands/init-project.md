@@ -1,111 +1,74 @@
 ---
 name: init-project
-description: Configure this project for Obsidian PKM — connects the repo to a vault project folder and writes CLAUDE.md integration directives
-allowed-tools: [Bash, Read, Write, Edit, Glob, Grep, AskUserQuestion, mcp__plugin_vault-pkm_vault-pkm__vault_list, mcp__plugin_vault-pkm_vault-pkm__vault_write, mcp__plugin_vault-pkm_vault-pkm__vault_peek]
+description: Link this repo to an Obsidian vault project through the project's repos list, or a CLAUDE.local.md line when there is no remote
+allowed-tools: [Bash, Read, Write, Edit, Glob, AskUserQuestion, mcp__plugin_vault-pkm_vault-pkm__vault_list, mcp__plugin_vault-pkm_vault-pkm__vault_write, mcp__plugin_vault-pkm_vault-pkm__vault_peek, mcp__plugin_vault-pkm_vault-pkm__vault_read, mcp__plugin_vault-pkm_vault-pkm__vault_update_frontmatter]
 ---
 
-# Initialize Project for Obsidian PKM
+# Link This Repo to a Vault Project
 
-You are configuring this code repository for Obsidian PKM integration. Walk the user through these steps.
+Link the current repository to a vault project folder. The link lives in the vault (the project's `repos:` list) or, when there is no remote, in `CLAUDE.local.md`. Never edit `CLAUDE.md`.
 
-## Step 1: Detect Vault Project Path
+## Step 1: Check for an existing link
 
-Determine which vault project folder corresponds to this repository.
+First, look for a `# PKM:` line, whether or not this session has a project context header. Check `CLAUDE.local.md`, `CLAUDE.md` and `.claude/CLAUDE.md` in each folder from the current one up to the repo's top level (`git rev-parse --show-toplevel`), then in the main checkout root (Step 3 shows how to find it). Outside git, check only the current folder. The first line found is the one that counts. Only a line that starts with `# PKM:` counts: one that starts with `<!--`, like the shipped sample's one-line comment, is inactive and is ignored, but a `# PKM:` line on its own line inside a multi-line comment still counts. If there is one:
 
-1. Get the current working directory name (the repo folder name)
-2. Use `vault_list` to check if a matching folder exists in `01-Projects/`:
-   ```
-   vault_list({ path: "01-Projects" })
-   ```
-3. Look for a case-insensitive basename match between the CWD and the `01-Projects/` entries
+- Explain that it overrides any `repos:` entry: while it is there, linking through `repos:` has no effect.
+- Say whether it points at an existing vault folder (`vault_list` its path). If it doesn't, the line is invalid and blocks resolution entirely.
+- If the line is invalid, or the user wants `repos:` to take effect: offer to fix or remove the line when it is in `CLAUDE.local.md`. When it is in `CLAUDE.md` or `.claude/CLAUDE.md`, tell the user to edit it themselves.
 
-**If a match is found**, proceed to Step 2 with the detected path.
+Then, if this session's context has a `## PKM Project Context: <path>` header, the repo is already linked. Work out how, in this order:
 
-**If no match is found**, ask the user:
-> "I couldn't find a matching project folder in your vault. What's the vault project path? (e.g., `01-Projects/MyApp`)"
+1. The `# PKM:` line found above.
+2. Otherwise, the repo's normalised remote (see Step 2) listed under `repos:` in that project's `_index.md` (`vault_read` it).
+3. Otherwise, the folder name matching the project.
 
-## Step 2: Confirm with User
+Report the path and how it was found, then ask whether to relink to a different project. If not, stop. If yes, continue with Step 2. A `# PKM:` line wins over `repos:`, so relinking an annotated repo means changing or removing that line as described above. Without a header, continue with Step 2.
 
-Present the detected (or provided) path and ask for confirmation:
-> "I found `01-Projects/<name>/` in your vault. Is this the right project for this repository?"
+## Step 2: Read and normalise the remotes
 
-If the user corrects the path, use their provided path instead.
+Read the remote URLs without their credentials, so a token in a URL never reaches the conversation:
 
-## Step 3: Scaffold Vault Folder (if needed)
+```
+git config --get-regexp '^remote\..*\.url$' | sed -E 's#(://)[^/@]*@#\1#'
+```
 
-Use `vault_list` to check if the confirmed path exists in the vault.
+Each line is `remote.<name>.url <url>`. Collect the URLs, `origin` first. If this isn't a git repo or there are no remotes, go to Step 5.
 
-**If the folder doesn't exist**, ask:
-> "The folder `01-Projects/<name>/` doesn't exist in your vault yet. Want me to create it with a project index?"
+Normalise each URL: drop the scheme and any credentials, turn `host:path` into `host/path` and remove a port, strip a trailing `/` and `.git`, and lowercase the result. For example, `git@github.com:Acme/App.git` and `https://token@github.com/Acme/App/` both become `github.com/acme/app`.
 
-If yes:
-1. Create the project index:
-   ```
-   vault_write({
-     template: "project-index",
-     path: "01-Projects/<name>/_index.md",
-     frontmatter: { tags: ["project"], status: "active" }
-   })
-   ```
-2. Subdirectories (`development/decisions/`, `development/debug/`, `research/`, `tasks/`, `planning/`) will be created automatically when notes are first written to them (`vault_write` has `createDirs: true` by default). Inform the user of this.
+## Step 3: Pick or create the project
 
-If no, proceed without scaffolding.
+Use `vault_list({ path: "01-Projects" })`. Suggest the folder whose name matches the main checkout's folder name (case-insensitive). In a git worktree the working directory's name differs, so derive the main checkout: run `git rev-parse --path-format=absolute --git-common-dir`; when that path ends in `.git`, its parent directory is the main checkout, otherwise use `git rev-parse --show-toplevel`. Outside git, use the current folder's name. Always ask the user to confirm the suggestion or choose another project, even when the name matches. If none fits, ask for a name and create it:
 
-## Step 4: Write CLAUDE.md
+```
+vault_write({
+  template: "project-index",
+  path: "01-Projects/<name>/_index.md",
+  frontmatter: { tags: ["project"], status: "active" }
+})
+```
 
-Read the existing CLAUDE.md in the current working directory (using the Read tool). If no CLAUDE.md exists, you will create one.
+Subdirectories are created when notes are first written to them.
 
-### 4a: Add/update `# PKM:` annotation
+## Step 4: Add the remote to `repos:`
 
-The annotation must be on its own line at the top of the file, before any other content:
+1. Find every other project that already lists the remote, because two projects listing one remote leave the repo ambiguous and unlinked. Scan every project index, as session start does: list the project folders with `vault_list({ path: "01-Projects" })`, then read each folder's `_index.md` frontmatter with `vault_peek` (it skips the body, which can be large) and skip folders that have no `_index.md`. Normalise each `repos:` entry with the Step 2 rules and compare it with the remote. Where one matches, offer to remove it: write that project's list back with `vault_update_frontmatter`, keeping all its other entries unchanged. On a relink, removing it from the old project is required: if the user declines, stop. This also repairs a repo that session start reported as listed by more than one project.
+2. `vault_read` the chosen project's `_index.md` and read its `repos:` list (it may be missing, inline or a block list).
+3. Build the full list: every existing entry unchanged, plus the normalised remote (the `origin` one, unless the user picks another). Normalise each existing entry with the Step 2 rules before comparing, and add the remote only if its normalised form matches none of them, so a hand-written `git@github.com:Acme/App.git` isn't re-added. Keep existing entries' original text when writing the list back.
+4. `vault_update_frontmatter({ path: "01-Projects/<name>/_index.md", fields: { repos: [<full list>] } })`.
+
+Then go to Step 6.
+
+## Step 5: No remote
+
+Offer to put this line at the top of `CLAUDE.local.md` in the main checkout's root (Step 3), creating the file if needed:
 
 ```
 # PKM: 01-Projects/<name>
 ```
 
-- If the file already has a `# PKM:` line (regex: `/^#\s+PKM:\s*.+$/m`), replace it with the correct path
-- If not, prepend it to the file with a blank line after it
+Use the main checkout even when working in a linked worktree: the resolver checks the main checkout's root, and a file in a worktree disappears with the worktree. Outside git, use the current folder. Replace an existing `# PKM:` line instead of adding a second one. Check with `git -C <main checkout> check-ignore CLAUDE.local.md`; if the file isn't git-ignored, warn the user so it isn't committed by accident.
 
-### 4b: Add/update `## PKM Integration` section
+## Step 6: Confirm
 
-The section content (substitute the actual project path):
-
-```
-## PKM Integration
-
-- **Vault project**: `01-Projects/<name>/`
-- **MCP Server**: `vault-pkm` plugin
-
-Document decisions, research findings, and debugging sessions as you work. The `pkm-capture` agent captures devlog entries and PKM-worthy content in the background (triggered automatically when a pull request is created with `gh pr create`), or use the `vault-pkm:pkm-write` skill for structured notes with linking.
-
-Use `vault-pkm:pkm-explore` to research what the vault already knows about a topic before creating new content.
-
-At the end of each session, run `vault-pkm:pkm-session-end` to update the devlog and capture undocumented work.
-
-### Referring to vault files
-
-Whenever you mention a vault note, PKM file, or file inside `01-Projects/<name>/` in your response to the user — whether quoting tool output, summarizing what you read, or referring to a file by name — format it as a markdown link to its `obsidian://` URI so the user can click to open it in Obsidian:
-
-`[01-Projects/<name>/some/note.md](obsidian://open?vault=<vault-name>&file=01-Projects%2F<name>%2Fsome%2Fnote)`
-
-Encoding rules: percent-encode `/` as `%2F` and spaces as `%20`. Strip the trailing `.md` from the URL `file=` parameter, but keep `.md` in the visible link text. The vault name is shown in any vault-pkm tool output (the part after `vault=`); reuse it.
-
-The vault-pkm MCP tools already emit paths in this format. Preserve the link form when relaying; don't revert to bare paths like `01-Projects/<name>/some/note.md` for inline mentions. Apply the same format proactively when mentioning a vault file you haven't just queried (e.g., when answering "what's in the devlog?" or "see ADR-002").
-```
-
-**If `## PKM Integration` already exists**: replace everything from `## PKM Integration` up to (but not including) the next `## ` heading or end of file. This makes re-runs idempotent.
-
-**If `## PKM Integration` does not exist**: append the section at the end of the file.
-
-## Step 5: Confirm
-
-Tell the user:
-
-> "Done! Your project is connected to the vault at `01-Projects/<name>/`."
->
-> The vault-pkm plugin will now:
-> - Load project context automatically at session start
-> - Capture decisions, tasks, and research in the background
-> - Document session progress when you run `pkm-session-end`
->
-> **Restart your Claude Code session** for the SessionStart hook to pick up the new CLAUDE.md configuration.
+Report the project path and how the repo is linked. Tell the user the link takes effect at the next session start or `/clear`. If `CLAUDE.md` has an old `## PKM Integration` section, say it can be deleted, since the plugin now supplies those rules. Do not edit `CLAUDE.md` yourself.

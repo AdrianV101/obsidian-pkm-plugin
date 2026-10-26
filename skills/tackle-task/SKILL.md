@@ -39,7 +39,7 @@ Classify into one tier using these signals. This should take seconds, not minute
 |------|---------|----------|
 | **Trivial** | Single concern, obvious change, clear AC, file/location already known | Step 5 directly (skip Step 4) |
 | **Standard** | Multi-file change, small feature or bugfix, scope is clear but needs a plan | Step 4 → Explore → Plan → Code → Commit |
-| **Significant** | New feature, architectural impact, vague requirements, multiple unknowns | Step 4 → `superpowers:brainstorming` → full pipeline |
+| **Significant** | New feature, architectural impact, vague requirements, multiple unknowns | Step 4 → brainstorm and plan → execute |
 
 When uncertain between tiers, go one tier up. A few extra minutes of planning is almost always cheaper than an incomplete or wrong implementation.
 
@@ -51,15 +51,15 @@ Complexity keywords that push up a tier: "design", "architecture", "integrate", 
 - `vault_activity({ path: project_folder, limit: 20 })` — see recent related work to avoid duplicating effort
 - Read any directly relevant linked notes (ADRs, research) before proceeding
 
-For **Significant** tasks: after exploring, invoke `superpowers:brainstorming` to clarify intent and requirements before writing any code. The brainstorming output should inform the plan.
+For **Significant** tasks: after exploring, if a brainstorming or planning skill is available, use it to clarify intent and requirements before writing any code; otherwise work them out with the user. The result should inform the plan.
 
 ## Step 5: Execute
 
 **Trivial**: Read the relevant file(s), make the change, run verification. Commit.
 
-**Standard**: Follow the Small Tasks workflow — Explore, confirm approach with user if non-obvious, Code, verify, Commit.
+**Standard**: Explore, confirm the approach with the user if it is non-obvious, code, verify, commit.
 
-**Significant**: Follow the Significant Features workflow — brainstorm → worktree → plan → execute → finish branch.
+**Significant**: Brainstorm, plan, then execute in steps with verification at each. Use the project's own workflow for isolation and review if it has one.
 
 Don't re-summarize what you read in Step 2. Move directly into the work.
 

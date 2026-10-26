@@ -17,7 +17,7 @@ Find the most relevant existing note for the topic:
 vault_semantic_search({ query: "<topic>", limit: 5 })
 ```
 
-**A note on score interpretation.** `vault_semantic_search` uses `text-embedding-3-large` (3072-dim) cosine similarity, which compresses hard. In a typical vault, even genuinely on-topic notes score around 0.45–0.65, and tangential notes that share surface tokens (e.g., "vibration" matching a "vibe coding" note) often score 0.40–0.45 too. Absolute scores cannot reliably separate "topically relevant seed" from "tangential surface match" — you must read and judge.
+**Score interpretation.** Scores are compressed and cannot separate relevant from tangential hits; see the `vault_semantic_search` tool description, and read and judge.
 
 **Routing:**
 

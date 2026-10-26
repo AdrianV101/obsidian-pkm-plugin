@@ -402,7 +402,7 @@ Pass custom <%...%> variables via the 'variables' parameter.` + LINK_FORMAT_NOTE
   if (hasSemanticIndex) {
     tools.push({
       name: "vault_semantic_search",
-      description: "Search the vault using semantic similarity. Finds conceptually related notes even when they use different words. Requires VAULT_PKM_OPENAI_KEY." + LINK_FORMAT_NOTE,
+      description: "Search the vault using semantic similarity. Finds conceptually related notes even when they use different words. Requires VAULT_PKM_OPENAI_KEY. Score scale: embeddings are text-embedding-3-large cosine similarity, which compresses hard. Even a verbatim title or heading of an existing note scores about 0.55-0.65 against that note, and scores above 0.7 are essentially never seen. On-topic notes typically land at 0.45-0.65, and tangential notes sharing surface tokens often score 0.40-0.45, so absolute scores cannot separate relevant from tangential: read the top hits and judge." + LINK_FORMAT_NOTE,
       inputSchema: {
         type: "object",
         properties: {

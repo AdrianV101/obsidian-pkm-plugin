@@ -1,11 +1,11 @@
 ---
 name: pkm-write
-description: Use when writing to the vault — creating new notes (vault_write), editing existing notes (vault_edit, vault_append, vault_update_frontmatter). Handles duplicate checking, link discovery, annotations, and index updates for new notes. Provides guidelines for modifications.
+description: "Use when creating a new note in the vault: checks for duplicates, picks the template and location, fills it in and links it into the graph."
 ---
 
 # PKM Write — Vault Writing with Knowledge Graph Integration
 
-Follow these steps when creating new notes. When running as a subagent, the delegation prompt provides the note topic and project context.
+Follow these steps when creating new notes. When running as a subagent, the delegation prompt provides the note topic.
 
 ## Step 1: Duplicate Check
 
@@ -15,9 +15,9 @@ Before creating, search for existing notes on the same topic:
 vault_semantic_search({ query: "<topic/title of intended note>", limit: 5 })
 ```
 
-If `vault_semantic_search` is unavailable (no `VAULT_PKM_OPENAI_KEY`), use `vault_search` with the note's title and key terms, and `vault_query` with matching tags to check for duplicates.
+If `vault_semantic_search` is unavailable (no `VAULT_PKM_OPENAI_KEY`) or returns an error (for example, a disabled index), use `vault_search` with the note's title and key terms, and `vault_query` with matching tags to check for duplicates.
 
-**Route based on results.** Note on score interpretation: `vault_semantic_search` uses `text-embedding-3-large` (3072-dim) cosine similarity, which compresses hard. Even a verbatim title/heading of an existing note typically scores around 0.55–0.65 against that note; scores above 0.7 are essentially never observed. Read the scores with that scale in mind.
+**Route based on results.** Scores are on the compressed scale described in the `vault_semantic_search` tool description.
 
 - **Likely duplicate (top hit ≥ 0.5)**: Read the top hit with `vault_read` and confirm it's actually about the same topic before routing — a 0.5 score can be a real duplicate or a same-domain neighbor. If it IS the same topic: **update the existing note** instead of creating a new one — `vault_append` to add new content or `vault_edit` to refine existing content; `vault_update_frontmatter` if metadata changed. Skip to Step 4 (Discover Connections) after updating. If it's a same-domain neighbor (related but distinct topic), treat as a partial match.
 - **Partial matches (top hit < 0.5, or top hit ≥ 0.5 but verified as a neighbor)**: Mention as potentially related, proceed with creation at Step 2. Link to them in Step 6.
@@ -27,17 +27,19 @@ If `vault_semantic_search` is unavailable (no `VAULT_PKM_OPENAI_KEY`), use `vaul
 
 Use `vault_write` with the appropriate template. Select the template and path based on content type:
 
-| Content Type | Template | Default Path |
+| Content | Location | Template |
 |---|---|---|
-| Architecture decision | `adr` | `<project>/development/decisions/ADR-NNN-{title}.md` |
-| Research finding | `research-note` | `<project>/research/{title}.md` |
-| Bug investigation | `troubleshooting-log` | `<project>/development/debug/{title}.md` |
-| Reusable knowledge | `permanent-note` | `03-Resources/Development/{title}.md` |
-| Task | `task` | `<project>/tasks/{title}.md` |
-| Meeting record | `meeting-notes` | `<project>/planning/{title}.md` |
-| Literature/article notes | `literature-note` | `03-Resources/{title}.md` |
+| Architecture decision | `<project>/development/decisions/ADR-NNN-<title>.md` | `adr` |
+| Research finding | `<project>/research/<title>.md` | `research-note` |
+| Bug investigation | `<project>/development/debug/<title>.md` | `troubleshooting-log` |
+| Design doc | `<project>/development/designs/<title>.md` | `research-note` |
+| Implementation plan | `<project>/development/plans/<title>.md` | `research-note` |
+| Task | `<project>/tasks/<title>.md` (no project: `00-Inbox/`) | `task` |
+| Meeting | `<project>/planning/<title>.md` | `meeting-notes` |
+| Reusable knowledge | `03-Resources/Development/<title>.md` | `permanent-note` |
+| Literature | `03-Resources/<title>.md` | `literature-note` |
 
-Where `<project>` is the vault project path (e.g., `01-Projects/MyApp`). Determine from the delegation prompt, CLAUDE.md `# PKM:` annotation, or SessionStart hook context.
+Where `<project>` is the vault project path (e.g., `01-Projects/MyApp`). Take it from the session context's `## PKM Project Context: <path>` header; inside pkm-capture, from the capture context's `Project:` line. If there is none, ask the user (a subagent says so instead of guessing).
 
 **Notes in `03-Resources/`** should be written as project-agnostic knowledge — useful regardless of where the insight originated. Use frontmatter tags or `## Related` links to trace the origin project, but write the content for a general audience.
 
@@ -63,6 +65,8 @@ Ensure:
 1. **Read the note** with `vault_read` to see the exact template output
 2. **Replace placeholders** with `vault_edit`, using the exact text from the read output as `old_string`
 
+Fill the template with `vault_edit`, never `vault_append`: appended text lands below the placeholders, which then stay in the note.
+
 Work section by section. Each `vault_edit` call must match text **exactly as it appears in the file** — do NOT guess what the template produced.
 
 For templates with many sections, you can batch multiple sections into fewer edits by using a larger `old_string` that spans consecutive sections.
@@ -79,7 +83,7 @@ vault_suggest_links({ path: "<path-to-new-note>", limit: 8 })
 
 Select the top **3–5** most relevant suggestions.
 
-If `vault_suggest_links` is unavailable (no `OPENAI_API_KEY`), use `vault_search` with key terms from the note's title/topic and `vault_query` with matching tags to manually identify good link targets.
+If `vault_suggest_links` is unavailable (no `OPENAI_API_KEY`) or returns an error (for example, a disabled index), use `vault_search` with key terms from the note's title/topic and `vault_query` with matching tags to manually identify good link targets.
 
 If **no suggestions are returned** (new vault or isolated topic), skip Steps 5–7 — the note's `## Related` section will be filled as the graph grows.
 
@@ -129,8 +133,9 @@ For **significant note types** (ADR, permanent-note, research-note, troubleshoot
 
 ## Step 8: Index Update
 
-- If the note is an **ADR**: add a wikilink to the project's `_index.md`
-- If the note is **project-scoped**: ensure the project `_index.md` references it where appropriate
+- If the note is an **ADR**: add a wikilink to the project's `_index.md` under `## Architecture Decisions`.
+- Add no other links to `_index.md`. Other notes are reached through search and the graph.
+- Update Current Status in place only when the note changes it.
 
 ---
 

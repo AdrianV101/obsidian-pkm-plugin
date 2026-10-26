@@ -184,9 +184,9 @@ function taskLines(tasks, taskFolder, format) {
   return lines;
 }
 
-function assembleContext({ projectName, indexText, indexRel, devlogText, devlogRel, tasksText }) {
+function assembleContext({ projectPath, indexText, indexRel, devlogText, devlogRel, tasksText }) {
   const build = (index, devlog) => [
-    `## PKM Project Context: ${projectName}`,
+    `## PKM Project Context: ${projectPath}`,
     index === null ? null : `### Project Index\n${index}`,
     devlog === null ? null : `### Recent Development Activity\n${devlog}`,
     `### Active Tasks\n${tasksText}`,
@@ -215,7 +215,6 @@ function assembleContext({ projectName, indexText, indexRel, devlogText, devlogR
  * @returns {Promise<{ context: string, meta: { index: boolean, devlog: boolean, tasks: number, source: string } }>}
  */
 export async function loadProjectContext(vaultPath, projectPath, { source = "startup" } = {}) {
-  const projectName = path.basename(projectPath);
   const projectDir = path.join(vaultPath, projectPath);
   const meta = { index: false, devlog: false, tasks: 0, source };
   const taskFolder = `${projectPath}/tasks`;
@@ -225,8 +224,7 @@ export async function loadProjectContext(vaultPath, projectPath, { source = "sta
 
   if (source === "compact") {
     const lines = [
-      `## PKM Project Context: ${projectName} (compact)`,
-      `Project: ${projectPath}`,
+      `## PKM Project Context: ${projectPath} (compact)`,
       "### Active Tasks",
       ...(tasks.length > 0 ? taskLines(tasks, taskFolder, t => `- ${t.title}`) : ["No active tasks"]),
     ];
@@ -258,6 +256,6 @@ export async function loadProjectContext(vaultPath, projectPath, { source = "sta
     ? taskLines(tasks, taskFolder, t => `- ${t.title} (status: ${t.status}, priority: ${t.priority})`).join("\n")
     : "No active tasks";
 
-  const context = assembleContext({ projectName, indexText, indexRel, devlogText, devlogRel, tasksText });
+  const context = assembleContext({ projectPath, indexText, indexRel, devlogText, devlogRel, tasksText });
   return { context, meta };
 }

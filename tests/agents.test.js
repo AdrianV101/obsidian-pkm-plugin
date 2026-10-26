@@ -31,7 +31,7 @@ async function loadAgent(name) {
   const body = content.slice(content.indexOf("\n---", 3) + 4);
   const raw = frontmatter?.tools;
   const tools = Array.isArray(raw) ? raw.map(String) : typeof raw === "string" ? raw.split(",").map((t) => t.trim()).filter(Boolean) : null;
-  return { tools, body };
+  return { tools, body, frontmatter: frontmatter ?? {} };
 }
 
 describe("read-mostly agents", () => {
@@ -70,4 +70,96 @@ describe("read-mostly agents", () => {
       }
     });
   }
+});
+
+describe("agent memory", () => {
+  const memoryAgents = { "pkm-capture": "user", "vault-explorer": undefined, "link-auditor": undefined };
+
+  for (const [name, memory] of Object.entries(memoryAgents)) {
+    it(`${name} ${memory ? `keeps ${memory}-scope memory` : "declares no memory and its text never mentions it"}`, async () => {
+      const { frontmatter, body } = await loadAgent(name);
+      assert.equal(frontmatter.memory, memory);
+      const text = `${frontmatter.description}\n${body}`;
+      assert.equal(/memory/i.test(text), Boolean(memory));
+    });
+  }
+
+  it("pkm-capture saves only durable lessons labelled by project and keeps MEMORY.md under 60 lines", async () => {
+    const { body } = await loadAgent("pkm-capture");
+    assert.match(body, /label[^\n]*project/i);
+    assert.match(body, /never[^\n]*per-run/i);
+    assert.match(body, /MEMORY\.md[^\n]*under 60 lines/);
+  });
+});
+
+describe("vault-explorer triggering", () => {
+  it("is never suggested as a step before creating notes", async () => {
+    const { frontmatter, body } = await loadAgent("vault-explorer");
+    const text = `${frontmatter.description}\n${body}`;
+    assert.doesNotMatch(text, /before (creating|writing|you create|you write)|note creation|new notes|prevents duplicates/i);
+  });
+});
+
+describe("pkm-capture", () => {
+  it("keeps Write and Edit disallowed and preloads exactly pkm-session-end and pkm-write", async () => {
+    const { frontmatter } = await loadAgent("pkm-capture");
+    const disallowed = String(frontmatter.disallowedTools).split(",").map((t) => t.trim());
+    assert.deepEqual(disallowed, ["Write", "Edit"]);
+    assert.deepEqual([...frontmatter.skills].sort(), ["pkm-session-end", "pkm-write"]);
+  });
+
+  it("defines exactly the four status lines, in order", async () => {
+    const { body } = await loadAgent("pkm-capture");
+    const defined = body.split("\n").filter((l) => l.startsWith("- `Status: ")).map((l) => l.match(/^- `([^`]+)`/)[1]);
+    assert.deepEqual(defined, ["Status: captured", "Status: nothing new", "Status: no project", "Status: failed - <reason>"]);
+    assert.doesNotMatch(body, /retr(y|ied)/i);
+  });
+
+  it("carries no transcript discovery and no first-versus-subsequent handoff", async () => {
+    const { frontmatter, body } = await loadAgent("pkm-capture");
+    const text = `${frontmatter.description}\n${body}`;
+    for (const needle of ["ls -t", ".jsonl", "CLAUDE_CONFIG_DIR", "transcript_path"]) {
+      assert.ok(!text.includes(needle), `mentions ${needle}`);
+    }
+    assert.doesNotMatch(text, /first capture|subsequent capture|previous (devlog )?entry/i);
+  });
+
+  const step0Of = (body) => body.slice(body.indexOf("**Step 0"), body.indexOf("**Supplementary sources**"));
+  const lineWith = (text, needle) => text.split("\n").find((l) => l.includes(needle)) ?? "";
+
+  it("has a failed capture name the path of its activity file, so the main conversation can pass it on", async () => {
+    const { body } = await loadAgent("pkm-capture");
+    const failed = lineWith(body, "- `Status: failed - <reason>`");
+    assert.match(failed, /activity file/i);
+    assert.match(failed, /path/i);
+  });
+
+  it("tells the dispatcher to pass on the activity file a failed capture named", async () => {
+    const { frontmatter } = await loadAgent("pkm-capture");
+    assert.match(frontmatter.description, /failed capture[^.]*activity file|activity file[^.]*failed capture/i);
+  });
+
+  it("reads an earlier activity file named in the prompt, and captures from it or a focus note when there is no new activity", async () => {
+    const step0 = step0Of((await loadAgent("pkm-capture")).body);
+    assert.match(step0, /earlier activity file[^\n]*read|read[^\n]*earlier activity file/i);
+    const none = lineWith(step0, "`New activity: none since the last capture`");
+    for (const needle of [/focus note/, /earlier activity file/i, /Status: captured/, /Status: nothing new/]) {
+      assert.match(none, needle);
+    }
+  });
+
+  it("ends a no-project run that wrote requested inbox tasks with Status: captured", async () => {
+    const step0 = step0Of((await loadAgent("pkm-capture")).body);
+    const noProject = lineWith(step0, "`Project: none");
+    assert.match(noProject, /inbox/i);
+    assert.match(noProject, /Status: captured/);
+  });
+
+  it("reads the capture context first and falls back to vault_activity and git", async () => {
+    const { body } = await loadAgent("pkm-capture");
+    assert.match(body, /Step 0[^\n]*capture context/i);
+    for (const needle of ["vault-pkm capture context", "Project: none", "none since the last capture", "unavailable", "vault_activity", "git log"]) {
+      assert.ok(body.includes(needle), `body is missing ${needle}`);
+    }
+  });
 });

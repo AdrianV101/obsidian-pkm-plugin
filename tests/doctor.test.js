@@ -1,9 +1,10 @@
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import fs from "fs/promises";
 import path from "path";
 import os from "os";
+import { makeRepo, makeProject } from "./git-fixture.js";
 
 const CLI = path.join(import.meta.dirname, "..", "cli.js");
 const KEY_VARS = ["VAULT_PKM_OPENAI_KEY", "OBSIDIAN_PKM_OPENAI_KEY", "OPENAI_API_KEY"];
@@ -12,9 +13,10 @@ const KEY_VARS = ["VAULT_PKM_OPENAI_KEY", "OBSIDIAN_PKM_OPENAI_KEY", "OPENAI_API
 // home: the developer's real settings must never leak into these assertions.
 let fakeHome;
 
-function runDoctor(env) {
+function runDoctor(env, cwd) {
   return new Promise((resolve, reject) => {
     const child = spawn("node", [CLI, "doctor"], {
+      cwd,
       env: { ...(env || process.env), HOME: fakeHome, USERPROFILE: fakeHome },
       stdio: ["pipe", "pipe", "pipe"],
     });
@@ -312,4 +314,62 @@ describe("doctor semantic health", () => {
       else assert.ok(!stdout.includes("Semantic index"), stdout);
     });
   }
+});
+
+describe("doctor project line", () => {
+  let tmpDir;
+
+  beforeEach(async () => {
+    tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "pkm-doctor-project-"));
+    fakeHome = path.join(tmpDir, "home");
+    await fs.mkdir(fakeHome);
+  });
+
+  afterEach(async () => {
+    await fs.rm(tmpDir, { recursive: true, force: true });
+  });
+
+  const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  // Doctor prints process.cwd(), which can differ from fs.realpath of the same folder
+  // (macOS /var symlink, Windows 8.3 short TEMP names), so ask a child in that folder.
+  const childCwd = (dir) => execFileSync(process.execPath, ["-e", "process.stdout.write(process.cwd())"], { cwd: dir, encoding: "utf8" });
+
+  const cases = [
+    {
+      name: "a git repo listed under repos",
+      setup: async (vaultPath, dir) => {
+        await makeProject(vaultPath, "Widget", "repos: [github.com/acme/widget]");
+        await makeRepo(dir, { origin: "git@github.com:acme/widget.git" });
+      },
+      line: (cwd) => new RegExp(`^[ \\t]*✓ Project for ${escapeRe(cwd)}: 01-Projects/Widget \\(via repos: github\\.com/acme/widget\\)\\r?$`, "m"),
+    },
+    {
+      name: "an unlinked folder",
+      setup: async (vaultPath, dir) => {
+        await makeProject(vaultPath, "Widget", "repos: [github.com/acme/widget]");
+        await fs.mkdir(dir, { recursive: true });
+      },
+      line: (cwd) => new RegExp(`^[ \\t]*⚠ Project for ${escapeRe(cwd)}: not linked \\([^)]+\\)\\r?$`, "m"),
+    },
+  ];
+  for (const c of cases) {
+    it(`reports how the working folder resolves: ${c.name}`, async () => {
+      const vaultPath = path.join(tmpDir, "vault");
+      await fs.mkdir(vaultPath, { recursive: true });
+      const dir = path.join(tmpDir, "work");
+      await c.setup(vaultPath, dir);
+
+      const { stdout } = await runDoctor({ ...process.env, VAULT_PATH: vaultPath }, dir);
+
+      assert.match(stdout, c.line(childCwd(dir)));
+    });
+  }
+
+  it("prints no project line when the vault is missing", async () => {
+    const dir = path.join(tmpDir, "work");
+    await fs.mkdir(dir);
+    const { stdout } = await runDoctor({ ...process.env, VAULT_PATH: path.join(tmpDir, "nonexistent") }, dir);
+    assert.ok(stdout.includes("Vault directory does not exist"), stdout);
+    assert.ok(!stdout.includes("Project for"), stdout);
+  });
 });

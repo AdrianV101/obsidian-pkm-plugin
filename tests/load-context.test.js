@@ -53,7 +53,7 @@ describe("loadProjectContext", () => {
 
   it("loads full project context", async () => {
     const { context: ctx, meta } = await loadProjectContext(vaultPath, projectPath);
-    assert.ok(ctx.includes("## PKM Project Context: MyApp"));
+    assert.ok(ctx.includes("## PKM Project Context: 01-Projects/MyApp"));
     assert.ok(ctx.includes("A test project."));
     assert.ok(ctx.includes("Latest entry."));
     assert.ok(ctx.includes("Add Authentication"));
@@ -75,7 +75,7 @@ describe("loadProjectContext", () => {
   it("handles missing _index.md gracefully", async () => {
     await fs.rm(path.join(vaultPath, projectPath, "_index.md"));
     const { context: ctx, meta } = await loadProjectContext(vaultPath, projectPath);
-    assert.ok(ctx.includes("## PKM Project Context: MyApp"));
+    assert.ok(ctx.includes("## PKM Project Context: 01-Projects/MyApp"));
     assert.ok(ctx.includes("Latest entry."));
     assert.equal(meta.index, false);
   });
@@ -375,7 +375,7 @@ describe("loadProjectContext budgets", () => {
 
     const { context, meta } = await loadProjectContext(vaultPath, projectPath, { source: "compact" });
 
-    assert.ok(context.startsWith("## PKM Project Context: Big (compact)\nProject: 01-Projects/Big\n### Active Tasks\n- Task 0 "));
+    assert.ok(context.startsWith("## PKM Project Context: 01-Projects/Big (compact)\n### Active Tasks\n- Task 0 "));
     assert.ok(!context.includes("INDEXBODY") && !context.includes("DEVLOGBODY") && !context.includes("status:"));
     assert.ok(context.length <= COMPACT_BUDGET, `compact context is ${context.length} chars`);
     assert.equal(meta.source, "compact");

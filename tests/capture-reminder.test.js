@@ -139,27 +139,20 @@ describe("capture-reminder hook", { concurrency: true }, () => {
     }
   });
 
-  it("emits PostToolUse additionalContext naming the PR URL, transcript_path and session_id and asking for a background pkm-capture", async () => {
+  it("emits PostToolUse additionalContext with the exact reminder sentence for the PR URL", async () => {
     const out = await expectReminder(JSON.stringify(bashEvent("gh pr create --fill")));
     assert.equal(out.hookSpecificOutput.hookEventName, "PostToolUse");
-    const ctx = out.hookSpecificOutput.additionalContext;
-    assert.equal(typeof ctx, "string");
-    assert.ok(ctx.includes("pkm-capture"), ctx);
-    assert.ok(ctx.includes("background"), ctx);
-    assert.ok(ctx.includes(`PR: ${PR_URL}`), ctx);
-    assert.ok(ctx.includes(`transcript_path: ${TRANSCRIPT}`), ctx);
-    assert.ok(ctx.includes(`session_id: ${SESSION_ID}`), ctx);
+    assert.equal(
+      out.hookSpecificOutput.additionalContext,
+      `A pull request was just created (${PR_URL}). Dispatch the pkm-capture agent in the background now and include the PR URL in its prompt.`,
+    );
   });
 
-  it("leaves out transcript_path and session_id when the hook input lacks them", async () => {
+  it("stays silent when the PR is created inside a subagent", async () => {
     const event = bashEvent("gh pr create --fill");
-    delete event.transcript_path;
-    delete event.session_id;
-    const ctx = (await expectReminder(JSON.stringify(event))).hookSpecificOutput.additionalContext;
-    assert.ok(ctx.includes(`PR: ${PR_URL}`), ctx);
-    assert.ok(!ctx.includes("transcript_path"), ctx);
-    assert.ok(!ctx.includes("session_id"), ctx);
-    assert.ok(!ctx.includes("undefined"), ctx);
+    event.agent_id = "agent-abc123";
+    event.agent_type = "general-purpose";
+    await expectSilent(JSON.stringify(event));
   });
 
   it("ignores non-Bash tool events even when their input and response look like a PR creation", async () => {

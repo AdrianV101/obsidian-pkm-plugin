@@ -9,6 +9,7 @@ import {
   findSection,
   formatHeadingList,
   maskCode,
+  frontmatterList,
 } from "../markdown.js";
 
 const texts = (headings) => headings.map(h => `${h.level}:${h.text}`);
@@ -323,4 +324,37 @@ describe("maskCode", () => {
     const content = "---\nrelated: \"`[[x]]`\"\n---\n`[[y]]`\n";
     assert.equal(maskCode(content), "---\nrelated: \"`[[x]]`\"\n---\n       \n");
   });
+});
+
+describe("frontmatterList", () => {
+  const cases = [
+    ["inline list", "repos: [a, b]\n", ["a", "b"]],
+    ["inline list with quoted items", "repos: [\"a/b\", 'c, d']\n", ["a/b", "c, d"]],
+    ["inline list with a trailing comment", "repos: [a, b] # note\n", ["a", "b"]],
+    ["empty inline list", "repos: []\n", []],
+    ["indented block list", "repos:\n  - a\n  - b\n", ["a", "b"]],
+    ["block list at column 0", "repos:\n- a\n- b\n", ["a", "b"]],
+    ["quoted block items", "repos:\n  - \"a#b\"\n  - 'c'\n", ["a#b", "c"]],
+    ["block list with blank and comment lines", "repos:\n  - a\n\n  # skip\n  - b\n", ["a", "b"]],
+    ["block list after a comment on the key line", "repos: # where\n  - a\n", ["a"]],
+    ["block list stopping at the next key", "repos:\n  - a\ntags:\n  - t\n", ["a"]],
+    ["block item with a trailing comment", "repos:\n  - a # note\n", ["a"]],
+    ["plain scalar", "repos: a/b\n", ["a/b"]],
+    ["scalar with a trailing comment", "repos: a/b # note\n", ["a/b"]],
+    ["quoted scalar containing #", "repos: \"a#b\"\n", ["a#b"]],
+    ["empty value", "repos:\ntags: [x]\n", []],
+    ["null", "repos: null\n", []],
+    ["tilde", "repos: ~\n", []],
+    ["CRLF block list", "repos:\r\n  - a\r\n  - b\r\ntags: [x]\r\n", ["a", "b"]],
+    ["CRLF inline list", "repos: [a, b]\r\n", ["a", "b"]],
+    ["absent key", "tags: [x]\n", []],
+    ["longer key with the same prefix", "repos_old: [x]\n", []],
+    ["indented (non-top-level) key", "meta:\n  repos: [x]\n", []],
+    ["null frontmatter", null, []],
+  ];
+  for (const [name, fm, expected] of cases) {
+    it(`reads ${name}`, () => {
+      assert.deepEqual(frontmatterList(fm, "repos"), expected);
+    });
+  }
 });

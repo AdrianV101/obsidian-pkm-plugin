@@ -107,17 +107,17 @@ Without this, knowledge stays fragmented across per-project memory files and cha
 
 | Agent | Purpose |
 |-------|---------|
-| `vault-explorer` | Research existing knowledge before creating notes |
-| `pkm-capture` | Devlog entries + knowledge capture when a PR is opened and after work blocks |
+| `vault-explorer` | Research what the vault already knows about a topic |
+| `pkm-capture` | Devlog entries + knowledge capture when a PR is opened and after work blocks; a hook hands it the project and the new session activity, and it keeps a little memory of durable capture lessons across sessions |
 | `link-auditor` | Audit vault link health after bulk note changes |
 
 **Skills** (6) are guided workflows triggered by slash commands:
 
 | Skill | Purpose |
 |-------|---------|
-| `pkm-write` | Duplicate checking, link discovery, and annotations when creating notes |
+| `pkm-write` | Duplicate checking, location and template choice, and link discovery when creating a note |
 | `pkm-explore` | Graph + semantic exploration to map existing knowledge on a topic |
-| `pkm-session-end` | Session wrap-up: devlog, undocumented work capture, link health audit |
+| `pkm-session-end` | The capture workflow `pkm-capture` follows: devlog, undocumented work, link health audit. In the main conversation it just dispatches the agent |
 | `add-task` | Fast task capture from a title with duplicate detection, priority shorthands, and due date |
 | `triage-tasks` | Surface open tasks as a numbered list with git completion hints; batch-update via shorthand (e.g. `1,3 done \| 2 active`) |
 | `tackle-task` | Work a task end-to-end: read, explore vault context, route to the right workflow tier, close when done |
@@ -127,7 +127,7 @@ Without this, knowledge stays fragmented across per-project memory files and cha
 | Command | Purpose |
 |---------|---------|
 | `/vault-pkm:setup` | Configure vault path, API keys, and permissions |
-| `/vault-pkm:init-project` | Connect a code repository to a vault project folder |
+| `/vault-pkm:init-project` | Link a code repository to a vault project folder through the project's `repos:` list (or a `CLAUDE.local.md` line when there is no remote); never edits `CLAUDE.md` |
 
 ## Prerequisites
 
@@ -259,7 +259,7 @@ Task notes enforce `status` (pending, active, done, cancelled) and `priority` (l
 
 ### CLAUDE.md for Your Projects
 
-`sample-project/CLAUDE.md` is a template you can drop into any code repository to wire up Claude Code with your vault. It defines context loading, documentation rules, and ADR/devlog conventions.
+Most repos need no `CLAUDE.md` content for the vault: run `/vault-pkm:init-project` to link the repo, and the plugin supplies the rules (see Project resolution under [How It Works](#how-it-works)). `sample-project/CLAUDE.md` is an 8-line optional template for the cases that need a file: a commented-out `# PKM:` line to enable for a repo with no remote, and a place for repo-specific notes.
 
 </details>
 
@@ -303,16 +303,20 @@ File layout:
 ├── semantic-health.js # Dependency-free semantic index health formatting (server, hooks, doctor)
 ├── activity.js       # Activity log (session tracking, SQLite)
 ├── utils.js          # Shared utilities (file listing; re-exports frontmatter parsing)
+├── instructions.js   # Server instructions (vault rules every session receives) and the note routing table
 ├── cli.js            # CLI entry point (routes `init` / `doctor` subcommands or starts the server)
 ├── init.js           # Vault scaffolding wizard (templates, PARA folders)
 ├── doctor.js         # `obsidian-pkm doctor` setup diagnostics
 ├── .claude-plugin/   # Plugin packaging
 │   └── plugin.json   # Plugin manifest (identity, version, MCP server launch config)
 ├── hooks/            # Claude Code hooks
-│   ├── hooks.json          # Hook registrations (SessionStart, PostToolUse)
+│   ├── hooks.json          # Hook registrations (SessionStart, SubagentStart, PostToolUse)
 │   ├── session-start.js    # Loads project context at session start
-│   ├── resolve-project.js  # Maps the working directory to a vault project
+│   ├── resolve-project.js  # Maps the working directory to a vault project (annotation, repos:, folder name)
 │   ├── load-context.js     # Reads index, devlog and tasks for the context block
+│   ├── capture-context.js  # SubagentStart: gives pkm-capture its project and new session activity
+│   ├── capture-state.js    # Per-session capture cursor, delta file paths and pruning
+│   ├── transcript.js       # Condenses a session transcript into a short digest
 │   └── capture-reminder.js # Prompts pkm-capture after a successful `gh pr create`
 ├── agents/           # Specialized agents (vault-explorer, pkm-capture, link-auditor)
 ├── skills/           # PKM workflow skills (pkm-write, pkm-explore, pkm-session-end, add-task, triage-tasks, tackle-task)
@@ -337,7 +341,19 @@ File layout:
 
 **Session memory** records every tool call with timestamps and session IDs, so Claude can recall what was read, written, or searched in previous conversations. This turns ephemeral chat sessions into a continuous thread of work.
 
-**Knowledge capture** uses the `pkm-capture` agent to update the project devlog and persist PKM-worthy content from a session (decisions, research findings, tasks, bug root causes) in one pass. It is triggered automatically when you open a pull request: a PostToolUse hook watches for a successful `gh pr create` and hands Claude the PR URL, transcript path and session ID for the capture. You can also dispatch it manually after significant work blocks. It runs in the background on Haiku without interrupting the coding flow.
+**Knowledge capture** uses the `pkm-capture` agent to update the project devlog and persist PKM-worthy content from a session (decisions, research findings, tasks, bug root causes) in one pass. It is triggered automatically when you open a pull request: a PostToolUse hook watches for a successful `gh pr create` and asks Claude to dispatch the agent with the PR URL. You can also dispatch it manually after significant work blocks. It runs in the background on Haiku without interrupting the coding flow.
+
+Whoever dispatches it, the capture itself goes through one path. A SubagentStart hook resolves the project, condenses the session since the previous capture into a short digest file (what you and Claude said, one line per tool call, and the first line of each error; tool output is never included) and gives the agent the project, the session and the digest path as its start-up context. The hook also records the new capture position in a small per-session state file (under `$CLAUDE_PLUGIN_DATA/captures`, or `~/.claude/vault-pkm/captures`), so the next capture starts where this one ended and a range is normally not captured twice (two captures that start at the same moment can cover the same range). A capture that finds no project leaves the position where it was, so the first capture after you link the repo still covers that range. Claude Code's SubagentStop input carries no final message, so success can't be checked when the agent stops: the position advances when the agent starts, and a capture that fails is not retried automatically. The agent ends with a status line (`Status: captured`, `nothing new`, `no project` or `failed - <reason>`) that tells the main conversation what happened. A failed capture names its digest file in the reason, and because the position has already moved past that range, the main conversation passes that path to the next dispatch, which reads it along with its own. State files are pruned after 30 days and digests after 7, and both are readable only by your user account.
+
+**Project resolution** decides which vault project a session belongs to, in this order:
+
+1. A `# PKM: 01-Projects/<name>` line in `CLAUDE.local.md`, `CLAUDE.md` or `.claude/CLAUDE.md` in the repo (the nearest one wins, and the main checkout's files count too in a linked worktree).
+2. A `repos:` list in a project's `_index.md` that contains one of the repo's git remotes (normalised, so `git@github.com:Acme/App.git` and `https://github.com/acme/app` match).
+3. The folder name of the main checkout, matched against `01-Projects/` case-insensitively. Linked git worktrees resolve through the main checkout, not their own folder name.
+
+Session start shows the full project path and how it was found (`via repos: …`, `via # PKM in …`, `via folder name: …`). In a git repo that matches nothing it adds a hint to run `/vault-pkm:init-project`; an ambiguous remote (listed by two projects) says so. `npx obsidian-pkm doctor` prints the same resolution for the folder you run it in. Git lookups time out after 2 seconds, so a slow git never blocks a session.
+
+**Server instructions** carry the vault rules the plugin used to ask each repo's `CLAUDE.md` to repeat: how to link notes, always create notes from a template, where each kind of note goes, when capture runs, and that session start already loads the index, devlog and tasks, so there's no need to read them just to get oriented. Claude Code delivers them to every session that has the server connected, so a repo needs no `## PKM Integration` section any more (an existing one is harmless and can be deleted). Subagents may not receive server instructions, so `pkm-write` keeps its own copy of the routing table. The `vault_semantic_search` description explains the score scale: embeddings compress hard, so even a verbatim title scores about 0.55-0.65 and absolute scores can't separate relevant from tangential hits.
 
 **Session context** is loaded by a SessionStart hook. It injects the project's `_index.md` (Overview and Current Status first, up to 2,500 characters), the three newest devlog entries by the date in their headings (up to 1,500 characters each) and up to ten open tasks, about 8 KB at most. After a compaction only the project path and task titles are injected. Activity entries are kept for 90 days by default (`VAULT_PKM_ACTIVITY_RETENTION_DAYS`), and long arguments such as note bodies are stored as `<N chars>`. The `path` filter of `vault_activity` matches the stored argument exactly (full vault-relative paths, case-sensitive; a folder matches everything under it), so a short name or partial folder finds nothing.
 

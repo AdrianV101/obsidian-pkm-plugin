@@ -9,20 +9,14 @@ Runs interactively: fetch open tasks, show them numbered with completion hints, 
 
 ## Step 1: Determine Scope
 
-Detect the current project from CLAUDE.md:
-
-```
-Read("CLAUDE.md")  // look for: # PKM: <path>
-```
-
-Extract the vault project path from a line matching `/^#\s+PKM:\s*(.+)$/m` (e.g., `01-Projects/Obsidian-MCP`).
+Take the current project from the session context's `## PKM Project Context: <path>` header (e.g., `01-Projects/Obsidian-MCP`).
 
 **Scope** (check skill args first, then default):
 - **Current project** (default): use the detected project folder
-- **All** (if args contain "all" or no project detected and user chooses all): omit `folder` from queries
+- **All** (if args contain "all" or no project in the session context and user chooses all): omit `folder` from queries
 
-If CLAUDE.md has no `# PKM:` line and no scope was specified, ask:
-> "No project found in CLAUDE.md. Should I triage tasks across all projects, or a specific folder?"
+If the session context has no project and no scope was specified, ask:
+> "No project found in the session context. Should I triage tasks across all projects, or a specific folder?"
 
 ## Step 2: Fetch Open Tasks
 
