@@ -38,6 +38,13 @@ describe("skill wording and triggering", () => {
     assert.doesNotMatch(body, /transcript discovery|first capture or|session-context message|previous devlog entry/i);
   });
 
+  it("pkm-session-end's boundary includes an earlier activity file named in the prompt", async () => {
+    const { body } = await loadSkill("pkm-session-end");
+    const step2 = body.slice(body.indexOf("## Step 2"), body.indexOf("## Step 3"));
+    assert.match(step2, /earlier activity file[^.]*(prompt|names)|(prompt|names)[^.]*earlier activity file/i);
+    assert.match(step2, /earlier activity file[^.]*boundary|boundary[^.]*earlier activity file/i);
+  });
+
   const projectConsumers = ["add-task", "triage-tasks", "pkm-write"];
   for (const name of projectConsumers) {
     it(`${name} takes the project from the session context and never parses a # PKM: line`, async () => {

@@ -42,7 +42,7 @@ Use the **actual date** and fill in real content from the session. Keep entries 
 
 ## Step 2: Review Session Work
 
-The `New activity:` file from the capture context is the **boundary** for what counts as this capture: a condensed transcript of the session since the last capture. Capture only work that appears in it. The activity log is a discovery aid for files you may have missed, not a scope definition.
+The `New activity:` file from the capture context is the **boundary** for what counts as this capture: a condensed transcript of the session since the last capture. Capture only work that appears in it, plus any earlier activity file the delegation prompt names (the range a failed capture missed), which is inside the boundary too. The activity log is a discovery aid for files you may have missed, not a scope definition.
 
 If the capture context says `New activity: unavailable`, fall back to the activity log for this session plus `git log` and `git diff --stat`.
 

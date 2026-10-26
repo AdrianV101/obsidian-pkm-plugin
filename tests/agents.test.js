@@ -134,6 +134,11 @@ describe("pkm-capture", () => {
     assert.match(failed, /path/i);
   });
 
+  it("tells the dispatcher to pass on the activity file a failed capture named", async () => {
+    const { frontmatter } = await loadAgent("pkm-capture");
+    assert.match(frontmatter.description, /failed capture[^.]*activity file|activity file[^.]*failed capture/i);
+  });
+
   it("reads an earlier activity file named in the prompt, and captures from it or a focus note when there is no new activity", async () => {
     const step0 = step0Of((await loadAgent("pkm-capture")).body);
     assert.match(step0, /earlier activity file[^\n]*read|read[^\n]*earlier activity file/i);

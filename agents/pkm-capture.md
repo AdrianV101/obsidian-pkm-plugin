@@ -7,7 +7,8 @@ description: >-
   vault: devlog entries, decisions, research findings, tasks, and bug
   documentation. Conservative: most exchanges produce nothing worth capturing
   beyond the devlog entry. The plugin supplies the project and the new session
-  activity, so the prompt needs only an optional focus note and the PR URL.
+  activity, so the prompt needs only an optional focus note, the PR URL and,
+  after a failed capture, the activity file it named.
 
   Examples:
 
