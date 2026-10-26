@@ -111,6 +111,7 @@ describe("project linking", () => {
     assert.match(step1, /existing vault folder/i);
     assert.match(step1, /(fix|remove)[^.]*CLAUDE\.local\.md|CLAUDE\.local\.md[^.]*(fix|remove)/i);
     assert.match(step1, /edit it themselves/i);
+    assert.match(step1, /HTML comment[^.]*(inactive|ignored|does not count|doesn't count)|(commented[- ]out|inside an HTML comment)[^.]*(inactive|ignored|not count)/i);
   });
 
   it("init-project asks the user to confirm the suggested project in every case", async () => {
@@ -126,7 +127,12 @@ describe("project linking", () => {
     const removal = step4.search(/every other project/i);
     assert.ok(removal >= 0, "Step 4 must look for other projects listing the remote");
     assert.ok(removal < step4.search(/plus the normalised remote/i), "removal must come before the remote is added");
-    assert.match(tools, /vault_search/);
+    assert.match(step4, /vault_list/);
+    assert.match(step4, /vault_peek|vault_read/);
+    assert.match(step4, /_index\.md/);
+    assert.match(step4, /every project/i);
+    assert.doesNotMatch(step4, /vault_search/);
+    for (const tool of step4.match(/vault_[a-z_]+/g)) assert.match(tools, new RegExp(`${tool}(,|$)`), `${tool} must be in allowed-tools`);
     assert.match(step4, /vault_update_frontmatter/);
     assert.match(step4, /other entries/i);
     assert.match(step4, /relink[^.]*required/i);

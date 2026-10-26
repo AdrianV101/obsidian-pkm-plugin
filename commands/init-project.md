@@ -1,7 +1,7 @@
 ---
 name: init-project
 description: Link this repo to an Obsidian vault project through the project's repos list, or a CLAUDE.local.md line when there is no remote
-allowed-tools: [Bash, Read, Write, Edit, Glob, AskUserQuestion, mcp__plugin_vault-pkm_vault-pkm__vault_list, mcp__plugin_vault-pkm_vault-pkm__vault_write, mcp__plugin_vault-pkm_vault-pkm__vault_peek, mcp__plugin_vault-pkm_vault-pkm__vault_read, mcp__plugin_vault-pkm_vault-pkm__vault_search, mcp__plugin_vault-pkm_vault-pkm__vault_update_frontmatter]
+allowed-tools: [Bash, Read, Write, Edit, Glob, AskUserQuestion, mcp__plugin_vault-pkm_vault-pkm__vault_list, mcp__plugin_vault-pkm_vault-pkm__vault_write, mcp__plugin_vault-pkm_vault-pkm__vault_peek, mcp__plugin_vault-pkm_vault-pkm__vault_read, mcp__plugin_vault-pkm_vault-pkm__vault_update_frontmatter]
 ---
 
 # Link This Repo to a Vault Project
@@ -10,7 +10,7 @@ Link the current repository to a vault project folder. The link lives in the vau
 
 ## Step 1: Check for an existing link
 
-First, look for a `# PKM:` line, whether or not this session has a project context header. Check `CLAUDE.local.md`, `CLAUDE.md` and `.claude/CLAUDE.md` in each folder from the current one up to the repo's top level (`git rev-parse --show-toplevel`), then in the main checkout root (Step 3 shows how to find it). Outside git, check only the current folder. The first line found is the one that counts. If there is one:
+First, look for a `# PKM:` line, whether or not this session has a project context header. Check `CLAUDE.local.md`, `CLAUDE.md` and `.claude/CLAUDE.md` in each folder from the current one up to the repo's top level (`git rev-parse --show-toplevel`), then in the main checkout root (Step 3 shows how to find it). Outside git, check only the current folder. The first line found is the one that counts. Only a line that starts with `# PKM:` counts: one inside an HTML comment (as in the shipped sample) is inactive and is ignored. If there is one:
 
 - Explain that it overrides any `repos:` entry: while it is there, linking through `repos:` has no effect.
 - Say whether it points at an existing vault folder (`vault_list` its path). If it doesn't, the line is invalid and blocks resolution entirely.
@@ -52,7 +52,7 @@ Subdirectories are created when notes are first written to them.
 
 ## Step 4: Add the remote to `repos:`
 
-1. Find every other project that already lists the remote, because two projects listing one remote leave the repo ambiguous and unlinked. Run `vault_search({ query: "<owner>/<repo>", folder: "01-Projects", limit: 100 })` with the last two segments of the normalised remote (the search ignores case, so it finds every written form). For each `01-Projects/<other>/_index.md` it returns, read its `repos:` list and normalise each entry with the Step 2 rules. Where one matches, offer to remove it: write that project's list back with `vault_update_frontmatter`, keeping all its other entries unchanged. On a relink, removing it from the old project is required: if the user declines, stop. This also repairs a repo that session start reported as listed by more than one project.
+1. Find every other project that already lists the remote, because two projects listing one remote leave the repo ambiguous and unlinked. Scan every project index, as session start does: list the project folders with `vault_list({ path: "01-Projects" })`, then read each folder's `_index.md` frontmatter with `vault_peek` (it skips the body, which can be large) and skip folders that have no `_index.md`. Normalise each `repos:` entry with the Step 2 rules and compare it with the remote. Where one matches, offer to remove it: write that project's list back with `vault_update_frontmatter`, keeping all its other entries unchanged. On a relink, removing it from the old project is required: if the user declines, stop. This also repairs a repo that session start reported as listed by more than one project.
 2. `vault_read` the chosen project's `_index.md` and read its `repos:` list (it may be missing, inline or a block list).
 3. Build the full list: every existing entry unchanged, plus the normalised remote (the `origin` one, unless the user picks another). Normalise each existing entry with the Step 2 rules before comparing, and add the remote only if its normalised form matches none of them, so a hand-written `git@github.com:Acme/App.git` isn't re-added. Keep existing entries' original text when writing the list back.
 4. `vault_update_frontmatter({ path: "01-Projects/<name>/_index.md", fields: { repos: [<full list>] } })`.
