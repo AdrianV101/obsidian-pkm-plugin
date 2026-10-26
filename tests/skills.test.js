@@ -118,7 +118,8 @@ describe("project linking", () => {
     assert.match(step1, /existing vault folder/i);
     assert.match(step1, /(fix|remove)[^.]*CLAUDE\.local\.md|CLAUDE\.local\.md[^.]*(fix|remove)/i);
     assert.match(step1, /edit it themselves/i);
-    assert.match(step1, /HTML comment[^.]*(inactive|ignored|does not count|doesn't count)|(commented[- ]out|inside an HTML comment)[^.]*(inactive|ignored|not count)/i);
+    assert.match(step1, /<!--[^.]*(inactive|ignored|does not count)/i);
+    assert.match(step1, /multi-line comment[^.]*counts/i);
   });
 
   it("init-project asks the user to confirm the suggested project in every case", async () => {

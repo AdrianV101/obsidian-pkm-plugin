@@ -10,7 +10,7 @@ Link the current repository to a vault project folder. The link lives in the vau
 
 ## Step 1: Check for an existing link
 
-First, look for a `# PKM:` line, whether or not this session has a project context header. Check `CLAUDE.local.md`, `CLAUDE.md` and `.claude/CLAUDE.md` in each folder from the current one up to the repo's top level (`git rev-parse --show-toplevel`), then in the main checkout root (Step 3 shows how to find it). Outside git, check only the current folder. The first line found is the one that counts. Only a line that starts with `# PKM:` counts: one inside an HTML comment (as in the shipped sample) is inactive and is ignored. If there is one:
+First, look for a `# PKM:` line, whether or not this session has a project context header. Check `CLAUDE.local.md`, `CLAUDE.md` and `.claude/CLAUDE.md` in each folder from the current one up to the repo's top level (`git rev-parse --show-toplevel`), then in the main checkout root (Step 3 shows how to find it). Outside git, check only the current folder. The first line found is the one that counts. Only a line that starts with `# PKM:` counts: one that starts with `<!--`, like the shipped sample's one-line comment, is inactive and is ignored, but a `# PKM:` line on its own line inside a multi-line comment still counts. If there is one:
 
 - Explain that it overrides any `repos:` entry: while it is there, linking through `repos:` has no effect.
 - Say whether it points at an existing vault folder (`vault_list` its path). If it doesn't, the line is invalid and blocks resolution entirely.
