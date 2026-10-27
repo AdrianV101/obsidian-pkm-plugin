@@ -220,14 +220,15 @@ describe("parseDevlog", () => {
     }
   });
 
-  it("runs an entry to the next dated ##/### heading or undated #/## heading; undated ### to ###### headings and --- lines stay in it", () => {
+  it("runs an entry to the next dated ##/### heading or undated ## heading; # headings, undated ### to ###### headings and --- lines stay in it", () => {
     const cases = [
       ["### 2026-05-19 14:32\nA\n### 2026-05-18 09:00\nB\n", ["### 2026-05-19 14:32\nA\n", "### 2026-05-18 09:00\nB\n"]],
       ["## 2026-10-26: X\nA\n\n## 2026-10-25: Y\nB\n", ["## 2026-10-26: X\nA\n\n", "## 2026-10-25: Y\nB\n"]],
       ["## 2026-10-26: X\nA\n### 2026-10-25 10:00\nB\n", ["## 2026-10-26: X\nA\n", "### 2026-10-25 10:00\nB\n"]],
       ["### 2026-05-19 14:32\nA\n\n## Related\n- [[x]]\n", ["### 2026-05-19 14:32\nA\n\n"]],
       ["### 2026-05-19\nA\n## Sessions\n### 2026-05-18\nB\n", ["### 2026-05-19\nA\n", "### 2026-05-18\nB\n"]],
-      ["### 2026-05-19 14:32\nA\n# Archive\nold\n", ["### 2026-05-19 14:32\nA\n"]],
+      ["### 2026-05-19 14:32\nDid stuff\n# Big heading\nMore details\n", ["### 2026-05-19 14:32\nDid stuff\n# Big heading\nMore details\n"]],
+      ["### 2026-05-19\nA\n# 2026-05-18\nB\n", ["### 2026-05-19\nA\n# 2026-05-18\nB\n"]],
       [
         "### 2026-05-19 14:32\n#### Session Summary\n- a\n### Commit\nabc\n##### Detail\n###### Deep\n---\n- b\n\n---\n\n",
         ["### 2026-05-19 14:32\n#### Session Summary\n- a\n### Commit\nabc\n##### Detail\n###### Deep\n---\n- b\n\n---\n\n"],
@@ -300,6 +301,7 @@ describe("parseDevlog", () => {
       "text",
       "### 2026-05-18",
       "B",
+      "## Sessions",
       "# Archive",
       "",
       "old notes",
@@ -313,9 +315,59 @@ describe("parseDevlog", () => {
       "Newest first.\n",
       "## Related\n\n### Links\n- [[one]]\n\n---\n- [[two]]\n\n",
       "## Notes\ntext\n",
+      "# Archive\n",
       "old notes\n",
       "more old notes\n",
     ]);
+  });
+
+  it("treats a # heading, dated or not, as scaffolding before the first entry and as text after it", () => {
+    const cases = [
+      {
+        name: "inside an entry",
+        content: "### 2026-05-19 14:32\nDid stuff\n# Big heading\nMore details\n",
+        entries: ["### 2026-05-19 14:32\nDid stuff\n# Big heading\nMore details\n"],
+        kept: [],
+        scaffolding: "",
+      },
+      {
+        name: "in a ## Sessions region after the first entry",
+        content: "# Dev\n\n### 2026-05-19\nA\n## Sessions\n\n# Archive\n\nold\n---\n# 2026-05-18\n### 2026-05-17\nB\n",
+        entries: ["### 2026-05-19\nA\n", "### 2026-05-17\nB\n"],
+        kept: ["# Archive\n", "old\n", "# 2026-05-18\n"],
+        scaffolding: "# Dev\n\n## Sessions\n\n\n---\n",
+      },
+      {
+        name: "in an undated ## section after the first entry",
+        content: "### 2026-05-19\nA\n## Related\nx\n# Archive\n\ny\n",
+        entries: ["### 2026-05-19\nA\n"],
+        kept: ["## Related\nx\n# Archive\n\ny\n"],
+        scaffolding: "",
+      },
+      {
+        name: "in a ## Sessions region before the first entry",
+        content: "## Sessions\n# Old title\n# 2026-01-01\n\n### 2026-05-19\nA\n",
+        entries: ["### 2026-05-19\nA\n"],
+        kept: [],
+        scaffolding: "## Sessions\n# Old title\n# 2026-01-01\n\n",
+      },
+      {
+        name: "in an undated ## section before the first entry",
+        content: "## Notes\ntext\n# 2026-01-01\nmore\n### 2026-05-19\nA\n",
+        entries: ["### 2026-05-19\nA\n"],
+        kept: ["## Notes\ntext\n", "more\n"],
+        scaffolding: "# 2026-01-01\n",
+      },
+    ];
+    for (const c of cases) {
+      const parsed = parseDevlog(c.content);
+      assertPartition(c.content, parsed, c.name);
+      assert.deepEqual(
+        { entries: slices(c.content, parsed.entries), kept: slices(c.content, parsed.kept), scaffolding: slices(c.content, parsed.scaffolding).join("") },
+        { entries: c.entries, kept: c.kept, scaffolding: c.scaffolding },
+        c.name,
+      );
+    }
   });
 
   describe("partitions the content exactly", () => {

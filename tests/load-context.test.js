@@ -147,6 +147,13 @@ describe("loadProjectContext items", () => {
     assert.ok(context.includes("No devlog entries found."));
   });
 
+  it("a legacy entry keeps the text after a # heading inside it, as the migration does", async () => {
+    await write("development/devlog.md", legacyFile([legacyEntry("2026-10-08 10:00 — A", "BEFORE\n# Big heading\nAFTER")]));
+    const { context } = await loadProjectContext(vaultPath, projectPath);
+    assert.deepEqual(labels(context), ["devlog.md: 2026-10-08 10:00 — A"]);
+    assert.ok(devlogPart(context).endsWith("BEFORE\n# Big heading\nAFTER"), devlogPart(context));
+  });
+
   it("a CRLF session note renders its newest section's Summary and Next steps", async () => {
     await write("development/devlog/2026-10-27 1000 Crlf.md",
       sessionNote("c", [{ key: "2026-10-27 10:00", summary: "CRLFSUM", next: "CRLFNEXT" }]).replace(/\n/g, "\r\n"));

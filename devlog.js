@@ -165,12 +165,12 @@ export async function findSessionNote(dirAbs, prefix, sessionId) {
  * byte for byte.
  *
  * An entry starts at a `##` or `###` heading (outside code) whose text starts
- * with YYYY-MM-DD and runs to the next entry heading or the next undated `#` or
- * `##` heading. An undated `##` section other than `## Sessions` is kept whole.
- * The rest (the preamble, `## Sessions` and `#` sections) is split by line:
- * blank and `---` lines, `#` headings, `## Sessions` and the template intro
- * sentence are scaffolding, any other line is kept. A leading BOM is its own
- * scaffolding range.
+ * with YYYY-MM-DD and runs to the next entry heading or the next undated `##`
+ * heading. An undated `##` section other than `## Sessions` is kept whole.
+ * The rest (the preamble, `## Sessions` sections, and `#` sections before the
+ * first entry) is split by line: blank and `---` lines, `## Sessions`, the
+ * template intro sentence and, before the first entry, `#` headings are
+ * scaffolding; any other line is kept. A leading BOM is its own scaffolding range.
  *
  * @param {string} content
  * @returns {ParsedDevlog}
@@ -185,8 +185,9 @@ export function parseDevlog(content) {
   const { frontmatterText, bodyOffset } = splitFrontmatter(text);
   if (frontmatterText !== null) parsed.frontmatter = { start: base, end: base + bodyOffset };
 
-  /** `#` and `## Sessions` heading lines: scaffolding where a region is split by line, kept inside an entry. */
+  /** `## Sessions` lines, and `#` lines before the first entry: scaffolding where a region is split by line. */
   const droppedHeadings = new Set();
+  let entrySeen = false;
   /** @type {Array<{ offset: number, entry?: Omit<DevlogEntry, "start"|"end">, whole?: boolean }>} */
   const starts = [];
   for (const h of parseHeadings(text)) {
@@ -198,9 +199,13 @@ export function parseDevlog(content) {
       /** @type {DevlogEntry["style"]} */
       const style = h.level === 3 ? "h3" : h.text === date ? "day" : "h2";
       starts.push({ offset, entry: { date, time, key: `${date} ${time ?? "00:00"}`, heading: h.text, style } });
+      entrySeen = true;
     } else if (h.level === 1) {
-      droppedHeadings.add(offset);
-      if (!ENTRY_DATE.test(h.text)) starts.push({ offset });
+      // A `#` heading, dated or not, neither opens nor ends an entry; after the first entry it is plain text.
+      if (!entrySeen) {
+        droppedHeadings.add(offset);
+        starts.push({ offset });
+      }
     } else if (h.level === 2) {
       const sessions = SESSIONS.test(h.text);
       if (sessions) droppedHeadings.add(offset);
