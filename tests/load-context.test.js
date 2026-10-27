@@ -147,6 +147,28 @@ describe("loadProjectContext items", () => {
     assert.ok(context.includes("No devlog entries found."));
   });
 
+  it("a CRLF session note renders its newest section's Summary and Next steps", async () => {
+    await write("development/devlog/2026-10-27 1000 Crlf.md",
+      sessionNote("c", [{ key: "2026-10-27 10:00", summary: "CRLFSUM", next: "CRLFNEXT" }]).replace(/\n/g, "\r\n"));
+    const part = devlogPart((await loadProjectContext(vaultPath, projectPath)).context);
+    assert.ok(part.includes("### Summary\r\nCRLFSUM") && part.includes("### Next steps\r\nCRLFNEXT"), part);
+    assert.ok(!part.includes("### Decisions"));
+  });
+
+  it("a session note whose newest section is a container falls back to the last section with content", async () => {
+    await write("development/devlog/2026-10-27 1000 Cont.md",
+      sessionNote("c", [{ key: "2026-10-27 10:00", summary: "REALSUM", next: "REALNEXT" }]) + "\n## 2026-10-27 12:00 Empty\n\n");
+    const part = devlogPart((await loadProjectContext(vaultPath, projectPath)).context);
+    assert.ok(part.includes("## 2026-10-27 10:00 Work") && part.includes("REALSUM") && !part.includes("Empty"), part);
+  });
+
+  it("an unmigrated day entry with a body is an item", async () => {
+    await write("development/devlog.md", "# Development Log\n\n## 2026-10-12\n\nDAYBODY\n");
+    const { context } = await loadProjectContext(vaultPath, projectPath);
+    assert.deepEqual(labels(context), ["devlog.md: 2026-10-12"]);
+    assert.ok(context.includes("DAYBODY"));
+  });
+
   it("dated container sections of an unmigrated devlog are not items", async () => {
     await write("development/devlog.md", "# Development Log\n\n## 2026-10-12\n\n### 2026-10-12 13:50 Child\nCHILDBODY\n");
     const { context } = await loadProjectContext(vaultPath, projectPath);
@@ -193,6 +215,17 @@ describe("loadProjectContext failures", () => {
     assert.equal(meta.devlog, 2);
     assert.equal(errors.mock.callCount(), 1);
     assert.ok(String(errors.mock.calls[0].arguments.join(" ")).includes(broken));
+  });
+
+  it("never reads more than 20 notes, even when every one is unreadable", { skip: !canChmod }, async (t) => {
+    for (let i = 10; i < 40; i++) {
+      const name = await writeSession(`2026-10-${i} 10:00`, "Broken");
+      await fs.chmod(path.join(projectDir(), "development/devlog", name), 0o000);
+    }
+    const errors = t.mock.method(console, "error", () => {});
+    const { meta } = await loadProjectContext(vaultPath, projectPath);
+    assert.equal(meta.devlog, 0);
+    assert.equal(errors.mock.callCount(), 20);
   });
 
   it("a note with no section is skipped without a stderr line", async (t) => {
@@ -290,6 +323,18 @@ describe("loadProjectContext budgets", () => {
       if (hugeIs === "oldest") assert.ok(context.length > CONTEXT_BUDGET - 1500, `only ${context.length} chars used; the huge note should take the rest`);
     });
   }
+
+  it("unused share reaches a huge newest note: it takes all the room the nine small ones leave", async () => {
+    await write("_index.md", "# Big\n\n## Overview\nShort.\n");
+    for (let i = 10; i < 20; i++) {
+      await writeSession(`2026-10-${i} 10:00`, "Work", [{ key: `2026-10-${i} 10:00`, summary: i === 19 ? hugeBody("huge") : `SMALL-${i}\nEND-${i}` }]);
+    }
+    const { context } = await loadProjectContext(vaultPath, projectPath);
+    assert.ok(context.length <= CONTEXT_BUDGET);
+    assert.ok(context.length > CONTEXT_BUDGET - 300, `only ${context.length} chars used`);
+    for (let i = 10; i < 19; i++) assert.ok(context.includes(`END-${i}`));
+    assert.ok(context.includes(`[truncated — vault_read ${FOLDER}/2026-10-19 1000 Work.md]`));
+  });
 
   it("a truncated legacy entry's marker names devlog.md", async () => {
     await write("_index.md", "# Big\n\n## Overview\nShort.\n");

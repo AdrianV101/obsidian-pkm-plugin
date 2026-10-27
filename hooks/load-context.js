@@ -10,6 +10,7 @@ import { devlogFolder, listDevlogNotes, parseDevlog } from "../devlog.js";
 export const CONTEXT_BUDGET = 9500, INDEX_BUDGET = 2500, COMPACT_BUDGET = 1500;
 
 const MAX_ITEMS = 10;
+const MAX_NOTE_READS = 2 * MAX_ITEMS;
 const INDEX_FIRST = ["overview", "current status"];
 const INDEX_SKIP = new Set(["key links", "related"]);
 
@@ -69,7 +70,8 @@ function renderSessionSection(text) {
   const summary = find("summary");
   const next = find("next steps");
   if (summary === null || next === null) return text.trim();
-  return [text.slice(0, text.indexOf("\n") === -1 ? text.length : text.indexOf("\n")).trim(), summary, next].join("\n\n");
+  const eol = text.indexOf("\n");
+  return [text.slice(0, eol === -1 ? text.length : eol).trim(), summary, next].join("\n\n");
 }
 
 /** The text shown for a listed note, or null when it has no entry. */
@@ -129,12 +131,20 @@ async function listNotes(dirAbs) {
   }
 }
 
-/** Renders up to MAX_ITEMS items, each getting an equal share of what is left of `room`. */
+/**
+ * Renders up to MAX_ITEMS items. Items that fit an equal share keep their full text and what
+ * they leave unused is split among the rest, repeatedly, so room reaches every item that needs it.
+ * At most MAX_NOTE_READS notes are read, however many of them turn out unreadable or empty.
+ */
 async function renderItems(candidates, room) {
-  const items = [];
-  let remaining = room;
-  for (let i = 0; i < candidates.length && items.length < MAX_ITEMS; i++) {
-    const c = candidates[i];
+  const rendered = [];
+  let reads = 0;
+  for (const c of candidates) {
+    if (rendered.length >= MAX_ITEMS) break;
+    if (!c.legacy) {
+      if (reads >= MAX_NOTE_READS) break;
+      reads++;
+    }
     let body;
     try {
       body = await c.render();
@@ -143,14 +153,20 @@ async function renderItems(candidates, room) {
       continue;
     }
     if (body === null) continue;
-    const separator = items.length === 0 ? 0 : 2;
-    const itemsLeft = Math.min(MAX_ITEMS - items.length, candidates.length - i);
-    const share = Math.floor(remaining / itemsLeft) - separator;
-    const text = truncateAtLine(`#### ${c.label}\n${body}`, share, `[truncated — vault_read ${c.vaultRel}]`);
-    items.push(text);
-    remaining -= text.length + separator;
+    rendered.push({ c, text: `#### ${c.label}\n${body}` });
   }
-  return items;
+
+  let remaining = room - 2 * Math.max(0, rendered.length - 1);
+  let open = rendered;
+  for (;;) {
+    const share = Math.floor(remaining / open.length);
+    const fits = open.filter(r => r.text.length <= share);
+    if (fits.length === 0 || fits.length === open.length) break;
+    for (const r of fits) remaining -= r.text.length;
+    open = open.filter(r => !fits.includes(r));
+  }
+  const share = open.length > 0 ? Math.floor(remaining / open.length) : 0;
+  return rendered.map(r => truncateAtLine(r.text, open.includes(r) ? share : r.text.length, `[truncated — vault_read ${r.c.vaultRel}]`));
 }
 
 /**
