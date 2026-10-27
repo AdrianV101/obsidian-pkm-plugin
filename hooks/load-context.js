@@ -74,11 +74,15 @@ function renderSessionSection(text) {
   return [text.slice(0, eol === -1 ? text.length : eol).trim(), summary, next].join("\n\n");
 }
 
-/** The text shown for a listed note, or null when it has no entry. */
+/** The text shown for a listed note, or null when it has nothing after its frontmatter. */
 async function renderNote(dirAbs, note) {
   const content = await fs.readFile(path.join(dirAbs, note.name), "utf-8");
   const entries = contentEntries(content, parseDevlog(content).entries);
-  if (entries.length === 0) return null;
+  if (entries.length === 0) {
+    // A note written by hand may have no dated section; its text still counts.
+    const body = splitFrontmatter(content.replace(/^\uFEFF/, "")).body.trim();
+    return body === "" ? null : body;
+  }
   if (note.kind === "day") return content.slice(entries[0].start, entries[0].end).trim();
   const last = entries[entries.length - 1];
   return renderSessionSection(content.slice(last.start, last.end));

@@ -124,6 +124,21 @@ describe("loadProjectContext items", () => {
     assert.ok(part.includes("## 2026-10-27 10:00 Only summary") && part.includes("SUM") && part.includes("### Decisions\nDECIDED"), part);
   });
 
+  it("a session note with text but no dated section is shown from the top of its body, within its share", async () => {
+    await write("development/devlog/2026-10-27 1000 Freeform.md",
+      "---\ntype: devlog-session\nsession: x\n---\n\nFREEFORM notes written by hand\n- a bullet\n");
+    let { context } = await loadProjectContext(vaultPath, projectPath);
+    assert.deepEqual(labels(context), ["2026-10-27 1000 Freeform"]);
+    assert.ok(devlogPart(context).startsWith("#### 2026-10-27 1000 Freeform\nFREEFORM notes written by hand\n- a bullet"), devlogPart(context));
+    assert.ok(!context.includes("session: x"));
+
+    await write("development/devlog/2026-10-27 1000 Freeform.md", "---\nsession: x\n---\nHUGE\n" + filler("free", 50_000));
+    ({ context } = await loadProjectContext(vaultPath, projectPath));
+    assert.ok(devlogPart(context).startsWith("#### 2026-10-27 1000 Freeform\nHUGE\n"), devlogPart(context).slice(0, 80));
+    assert.ok(context.endsWith(`[truncated — vault_read ${FOLDER}/2026-10-27 1000 Freeform.md]`), context.slice(-120));
+    assert.ok(context.length <= CONTEXT_BUDGET);
+  });
+
   it("a day note shows its first entry, skipping a container day heading", async () => {
     await write("development/devlog/2026-10-12 Big devlog.md",
       "---\ntype: devlog-day\n---\n\n## 2026-10-12\n\n### 2026-10-12 16:00 Newest\nNEWESTBODY\n\n### 2026-10-12 09:00 Older\nOLDERBODY\n");
