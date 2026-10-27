@@ -195,7 +195,7 @@ describe("migrate-devlog", () => {
           name: "a day note already exists",
           existing: [`${FOLDER}/2026-10-02 ${P} devlog.md`],
           code: 1,
-          blockers: [`Blocker: ${FOLDER}/2026-10-02 ${P} devlog.md already exists`],
+          blockers: [`Blocker: ${FOLDER}/2026-10-02 ${P} devlog.md already exists; move that date's entries from devlog.md into it by hand, or rename it, then run again`],
         },
       ];
       for (const c of cases) {
@@ -393,7 +393,7 @@ describe("migrate-devlog", () => {
             await put(v, DEVLOG, fx.content);
             await put(v, `${FOLDER}/2026-10-03 ${P} devlog.md`, "someone else's note\n");
           },
-          blocker: `Blocker: ${FOLDER}/2026-10-03 ${P} devlog.md already exists`,
+          blocker: `Blocker: ${FOLDER}/2026-10-03 ${P} devlog.md already exists; move that date's entries from devlog.md into it by hand, or rename it, then run again`,
         },
         {
           name: "the project folder is missing",

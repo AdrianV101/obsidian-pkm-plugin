@@ -244,7 +244,9 @@ async function buildPlan(ctx, { projectPath: typedPath }) {
 
   const blockers = [];
   for (const note of notes) {
-    if (await lstatOrNull(ctx.abs(note.rel))) blockers.push(`${note.rel} already exists`);
+    if (await lstatOrNull(ctx.abs(note.rel))) {
+      blockers.push(`${note.rel} already exists; move that date's entries from devlog.md into it by hand, or rename it, then run again`);
+    }
   }
 
   return { kind: "migrate", devlogRel, folderRel, raw, content, parsed, isHub, notes, hub, blockers };
