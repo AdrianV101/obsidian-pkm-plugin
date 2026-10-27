@@ -11,7 +11,7 @@ Move a project's old single-file `devlog.md` into one note per day in its `devel
 
 ## Step 1: Pick the project
 
-Use `$ARGUMENTS` when it is given. Otherwise use the path in this session's `## PKM Project Context:` header. If neither exists, ask the user which project to migrate. A project is a folder name under `01-Projects/` or a vault-relative project path.
+Use `$ARGUMENTS` when it is given. Otherwise use the vault path from this session's `## PKM Project Context:` header, without a trailing ` (compact)` (after a compaction the header ends with it). If neither exists, ask the user which project to migrate. A project is a folder name under `01-Projects/` or a vault-relative project path.
 
 ## Step 2: Warn about other devices
 

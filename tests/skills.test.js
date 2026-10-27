@@ -150,6 +150,7 @@ describe("project linking", () => {
     assert.ok(preview >= 0, "runs the plugin's own cli.js");
     assert.ok(preview < ask && ask < apply, "preview, then ask, then --apply");
     assert.match(body, /upgrade[^.]*every device/i);
+    assert.match(body, /without a trailing ` \(compact\)`/);
     for (const tool of ["Bash", "AskUserQuestion"]) {
       if (body.includes(tool)) assert.ok(allowed.includes(tool), `${tool} must be allowed`);
     }
