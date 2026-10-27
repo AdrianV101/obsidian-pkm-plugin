@@ -90,7 +90,8 @@ Pass custom <%...%> variables via the 'variables' parameter.` + LINK_FORMAT_NOTE
               project: { type: "string", description: "Project name (for devlogs)" },
               deciders: { type: "string", description: "Decision makers (for ADRs)" },
               due: { type: "string", description: "Due date (for tasks)" },
-              source: { type: "string", description: "Source reference (for tasks)" }
+              source: { type: "string", description: "Source reference (for tasks)" },
+              session: { type: "string", description: "Session identifier the note belongs to" }
             }
           },
           createDirs: { type: "boolean", description: "Create parent directories if they don't exist", default: true }

@@ -205,6 +205,15 @@ describe("doctor command", () => {
     );
   });
 
+  it("warns about missing vault templates even though bundled ones exist", async () => {
+    const vaultPath = path.join(tmpDir, "vault");
+    await fs.mkdir(path.join(vaultPath, "05-Templates"), { recursive: true });
+
+    const { stdout } = await runDoctor({ ...process.env, VAULT_PATH: vaultPath });
+    assert.match(stdout, /\u26A0 No templates found in 05-Templates\//);
+    assert.ok(!/\d+ templates? in 05-Templates/.test(stdout));
+  });
+
   it("warns when VAULT_PKM_OPENAI_KEY is not set", async () => {
     const vaultPath = path.join(tmpDir, "vault");
     await fs.mkdir(vaultPath, { recursive: true });

@@ -124,8 +124,9 @@ export async function runDoctor() {
   // 4. Templates
   try {
     const templates = await loadTemplates(vaultPath);
-    if (templates.size > 0) {
-      ok(`${templates.size} template${templates.size === 1 ? "" : "s"} in 05-Templates/`);
+    const vaultTemplates = [...templates.values()].filter((t) => t.source === "vault").length;
+    if (vaultTemplates > 0) {
+      ok(`${vaultTemplates} template${vaultTemplates === 1 ? "" : "s"} in 05-Templates/`);
       passed++;
     } else {
       warn("No templates found in 05-Templates/ \u2014 run 'npx obsidian-pkm init' to install");

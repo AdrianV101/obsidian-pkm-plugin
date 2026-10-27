@@ -1,6 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import fs from "fs/promises";
+import os from "node:os";
 import path from "path";
 import { fileURLToPath } from "node:url";
 import { extractFrontmatter, parseFrontmatterText } from "../frontmatter.js";
@@ -10,6 +11,7 @@ import {
   formatMetadata,
   countOccurrences,
   extractTemplateDescription,
+  loadTemplates,
   substituteTemplateVariables,
   validateFrontmatterStrict,
   extractInlineTags,
@@ -1370,5 +1372,55 @@ describe("obsidianLink", () => {
     assert.equal(obsidianLink(null, "PKM"), "");
     assert.equal(obsidianLink(undefined, "PKM"), "");
     assert.equal(obsidianLink("", "PKM"), "");
+  });
+});
+
+describe("loadTemplates bundled fallback", () => {
+  const BUNDLED = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "templates");
+  const tpl = (type) => `---\ntype: ${type}\ncreated: 2026-01-01\ntags: []\n---\n# ${type}\n`;
+
+  async function withVault(files, fn) {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "tpl-vault-"));
+    try {
+      for (const [rel, content] of Object.entries(files)) {
+        await fs.mkdir(path.dirname(path.join(root, rel)), { recursive: true });
+        await fs.writeFile(path.join(root, rel), content);
+      }
+      return await fn(root);
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  }
+
+  it("fills names the vault lacks from the bundled folder; the vault's copy wins; no 05-Templates/ gives the bundled set", async () => {
+    await withVault({ "05-Templates/devlog.md": tpl("mine"), "05-Templates/custom.md": tpl("custom") }, async (root) => {
+      const map = await loadTemplates(root);
+      assert.equal(map.get("devlog").source, "vault");
+      assert.equal(map.get("devlog").frontmatter.type, "mine");
+      assert.equal(map.get("custom").source, "vault");
+      assert.equal(map.get("devlog-session").source, "bundled");
+      assert.equal(map.get("devlog-session").frontmatter.type, "devlog-session");
+      assert.equal(map.get("devlog-session").path, "templates/devlog-session.md");
+    });
+    await withVault({}, async (root) => {
+      const map = await loadTemplates(root);
+      const bundled = (await fs.readdir(BUNDLED)).filter((f) => f.endsWith(".md")).map((f) => f.slice(0, -3));
+      assert.deepEqual([...map.keys()].sort(), bundled.sort());
+      assert.ok([...map.values()].every((t) => t.source === "bundled"));
+    });
+  });
+
+  it("a missing bundled folder leaves the vault's templates loaded", async () => {
+    await withVault({ "05-Templates/note.md": tpl("note") }, async (root) => {
+      const map = await loadTemplates(root, { bundledDir: path.join(root, "nope") });
+      assert.deepEqual([...map.keys()], ["note"]);
+    });
+  });
+
+  it("describes the session template sensibly", async () => {
+    await withVault({}, async (root) => {
+      const { description } = (await loadTemplates(root)).get("devlog-session");
+      assert.ok(description.length > 0 && !description.includes("<%"), description);
+    });
   });
 });
