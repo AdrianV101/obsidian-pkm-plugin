@@ -9,6 +9,7 @@
 
 import { realpathSync } from "node:fs";
 import fs from "node:fs/promises";
+import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   CAPTURE_AGENT_RE,
@@ -20,6 +21,7 @@ import {
   startPoint,
   writeCursor,
 } from "./capture-state.js";
+import { devlogFolder, findSessionNote, sessionPrefix } from "../devlog.js";
 import { describeVia, resolveProject } from "./resolve-project.js";
 import { condenseTranscript } from "./transcript.js";
 
@@ -45,16 +47,16 @@ function unavailable(err) {
  * @param {unknown} cwd
  * @param {string|undefined} vaultPath
  * @param {string|undefined} home undefined lets the resolver use the real home directory
- * @returns {Promise<{ line: string, resolved: boolean }>}
+ * @returns {Promise<{ line: string, resolved: boolean, projectPath: string|null }>}
  */
 async function projectLine(cwd, vaultPath, home) {
-  const none = (reason) => ({ line: `Project: none (${reason})`, resolved: false });
+  const none = (reason) => ({ line: `Project: none (${reason})`, resolved: false, projectPath: null });
   if (!vaultPath) return none("VAULT_PATH is not set");
   if (typeof cwd !== "string" || !cwd) return none("the hook input has no cwd");
   try {
     const resolution = await resolveProject(cwd, vaultPath, home === undefined ? {} : { home });
     if (resolution.projectPath) {
-      return { line: `Project: ${resolution.projectPath} (${describeVia(resolution)})`, resolved: true };
+      return { line: `Project: ${resolution.projectPath} (${describeVia(resolution)})`, resolved: true, projectPath: resolution.projectPath };
     }
     return none(resolution.reason ?? "not resolved");
   } catch (err) {
@@ -66,7 +68,9 @@ async function projectLine(cwd, vaultPath, home) {
  * Reads the new transcript activity and writes it to a delta file. The cursor is
  * committed only when `commit` is set: a capture without a project writes nothing
  * but inbox tasks, so its range stays open for the capture after the repo is linked.
- * @returns {Promise<{ session: string, activity: string }>}
+ * `sessionStart` is the transcript's first timestamp; `transcriptError` is set when
+ * the transcript could not be read at all.
+ * @returns {Promise<{ session: string, activity: string, sessionStart: string|null, transcriptError: string|null }>}
  */
 async function captureActivity(input, dir, nowMs, commit) {
   const sessionId = input.session_id;
@@ -81,7 +85,12 @@ async function captureActivity(input, dir, nowMs, commit) {
     if (typeof input.transcript_path !== "string" || !input.transcript_path) throw new Error("no transcript path");
     raw = await fs.readFile(input.transcript_path, "utf8");
   } catch (err) {
-    return { session, activity: unavailable(`cannot read the transcript: ${reasonOf(err)}`) };
+    return {
+      session,
+      activity: unavailable(`cannot read the transcript: ${reasonOf(err)}`),
+      sessionStart: null,
+      transcriptError: "cannot read the transcript",
+    };
   }
 
   const condensed = condenseTranscript(raw, { afterUuid: startPoint(cursor) });
@@ -102,9 +111,40 @@ async function captureActivity(input, dir, nowMs, commit) {
         committed: { uuid: condensed.lastUuid, at: new Date(nowMs).toISOString() },
       });
     }
-    return { session, activity };
+    return { session, activity, sessionStart: condensed.sessionStart, transcriptError: null };
   } catch (err) {
-    return { session, activity: unavailable(`cannot write capture state: ${reasonOf(err)}`) };
+    return {
+      session,
+      activity: unavailable(`cannot write capture state: ${reasonOf(err)}`),
+      sessionStart: condensed.sessionStart,
+      transcriptError: null,
+    };
+  }
+}
+
+/**
+ * Which note this session's capture goes into: the existing one, a name for a new
+ * one, or why neither can be determined.
+ * @param {string} vaultPath
+ * @param {string} projectPath vault-relative
+ * @param {string} sessionId
+ * @param {string|null} sessionStart
+ * @param {string|null} transcriptError
+ */
+async function devlogLine(vaultPath, projectPath, sessionId, sessionStart, transcriptError) {
+  const unavailableLine = (reason, id = sessionId) =>
+    `Devlog: unavailable (${reason}); find this session's note with vault_query (session: ${id}) or create one`;
+  if (transcriptError) return unavailableLine(transcriptError);
+  const prefix = sessionPrefix(sessionStart);
+  if (!prefix) return unavailableLine("the transcript has no timestamp");
+  const folder = devlogFolder(projectPath);
+  try {
+    const found = await findSessionNote(path.join(vaultPath, ...folder.split("/")), prefix, sessionId);
+    return found
+      ? `Devlog: ${folder}/${found} (add a section)`
+      : `Devlog: new note ${folder}/${prefix} <Title>.md (session: ${sessionId})`;
+  } catch (err) {
+    return unavailableLine(`cannot read the devlog folder: ${reasonOf(err)}`);
   }
 }
 
@@ -125,14 +165,20 @@ export async function buildCaptureContext(hookInput, { env = process.env, now = 
     const project = await projectLine(input.cwd, env.VAULT_PATH, home);
     let session = "Session: unknown";
     let activity = unavailable("the hook input has no usable session or agent id");
+    let devlog = "Devlog: unavailable (the hook input has no usable session id); find this session's note with vault_query (session: unknown) or create one";
     if (safeId(input.session_id) && safeId(input.agent_id)) {
-      ({ session, activity } = await captureActivity(input, dir, now, project.resolved));
+      const captured = await captureActivity(input, dir, now, project.resolved);
+      ({ session, activity } = captured);
+      if (project.projectPath && env.VAULT_PATH) {
+        devlog = await devlogLine(env.VAULT_PATH, project.projectPath, input.session_id, captured.sessionStart, captured.transcriptError);
+      }
       await pruneCaptures(dir, now);
     }
 
-    const lines = ["vault-pkm capture context", project.line, session, activity].map(cap);
+    const lines = ["vault-pkm capture context", project.line, session, activity];
+    if (project.resolved) lines.push(devlog);
     return {
-      hookSpecificOutput: { hookEventName: "SubagentStart", additionalContext: lines.join("\n") },
+      hookSpecificOutput: { hookEventName: "SubagentStart", additionalContext: lines.map(cap).join("\n") },
     };
   } catch (err) {
     process.stderr.write(`capture-context: ${reasonOf(err)}\n`);

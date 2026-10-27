@@ -9,6 +9,13 @@ import { buildCaptureContext } from "../hooks/capture-context.js";
 import { cursorPath, deltaPath } from "../hooks/capture-state.js";
 import { makeProject } from "./git-fixture.js";
 
+const pad2 = (n) => String(n).padStart(2, "0");
+// Local-time prefix of a transcript timestamp, computed independently of the module under test.
+const prefixOf = (iso) => {
+  const d = new Date(iso);
+  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())} ${pad2(d.getHours())}${pad2(d.getMinutes())}`;
+};
+
 const SCRIPT = fileURLToPath(new URL("../hooks/capture-context.js", import.meta.url));
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
 const AGENT = "vault-pkm:pkm-capture";
@@ -67,13 +74,13 @@ describe("buildCaptureContext", () => {
     await assert.rejects(fs.stat(captures()));
   });
 
-  it("answers the first capture with four lines and writes the delta and a committed cursor", async () => {
+  it("answers the first capture with five lines and writes the delta and a committed cursor", async () => {
     await writeTranscript([entry("u1", "user", 1, "first prompt"), entry("u2", "assistant", 5, "first answer")]);
     const out = await run();
     assert.equal(out.hookSpecificOutput.hookEventName, "SubagentStart");
     const lines = linesOf(out);
     const delta = deltaPath(captures(), SESSION, AGENT_ID);
-    assert.equal(lines.length, 4);
+    assert.equal(lines.length, 5);
     assert.equal(lines[0], "vault-pkm capture context");
     assert.equal(lines[1], "Project: 01-Projects/MyApp (via folder name: MyApp)");
     assert.equal(lines[2], `Session: ${SESSION} - first capture this session`);
@@ -195,7 +202,7 @@ describe("buildCaptureContext", () => {
     await writeTranscript([entry("u1", "user", 1, "prompt")]);
     await fs.writeFile(data, "a file where the directory should be");
     const lines = linesOf(await run());
-    assert.equal(lines.length, 4);
+    assert.equal(lines.length, 5);
     assert.match(lines[1], /^Project: 01-Projects\/MyApp/);
     assert.match(lines[3], /^New activity: unavailable \(.+\); use vault_activity/);
   });
@@ -225,6 +232,100 @@ describe("buildCaptureContext", () => {
     assert.ok(lines.some((l) => l.length === 480 && l.endsWith("...")), "a line was cut to exactly 480 characters");
     for (const line of lines) assert.ok(line.length <= 480, line.length);
     assert.ok(contextOf(out).length < 2000);
+  });
+});
+
+describe("Devlog line", () => {
+  const FOLDER = "01-Projects/MyApp/development/devlog";
+  const FIRST = "2026-10-22T09:01:00.000Z";
+  const devlogLine = (out) => linesOf(out).find((l) => l.startsWith("Devlog:"));
+  const folderAbs = () => path.join(vault, ...FOLDER.split("/"));
+  const writeNote = async (name, session) => {
+    await fs.mkdir(folderAbs(), { recursive: true });
+    await fs.writeFile(path.join(folderAbs(), name), `---\ntype: devlog-session\nsession: ${session}\n---\n\n# x\n`);
+  };
+  const unavailableLine = (reason) =>
+    `Devlog: unavailable (${reason}); find this session's note with vault_query (session: ${SESSION}) or create one`;
+  const twoEntries = () => writeTranscript([entry("u1", "user", 1, "first prompt"), entry("u2", "assistant", 5, "first answer")]);
+
+  it("points at the note of this session, also on a second capture after the cursor moved", async () => {
+    await twoEntries();
+    const prefix = prefixOf(FIRST);
+    await writeNote(`${prefix} Fix capture hook.md`, SESSION);
+    const expected = `Devlog: ${FOLDER}/${prefix} Fix capture hook.md (add a section)`;
+    assert.equal(devlogLine(await run()), expected);
+    await fs.appendFile(transcript, JSON.stringify(entry("u3", "user", 9, "later prompt")) + "\n");
+    const second = await run({}, {}, NOW + 60_000);
+    assert.match(linesOf(second)[2], /previous capture/);
+    assert.equal(devlogLine(second), expected);
+  });
+
+  it("proposes a new note when there is no folder, no prefix match, or only another session's note", async () => {
+    await twoEntries();
+    const prefix = prefixOf(FIRST);
+    const expected = `Devlog: new note ${FOLDER}/${prefix} <Title>.md (session: ${SESSION})`;
+    assert.equal(devlogLine(await run()), expected, "no folder");
+    await writeNote("1999-01-01 0000 Old session.md", SESSION);
+    assert.equal(devlogLine(await run()), expected, "no prefix match");
+    await writeNote(`${prefix} Someone else.md`, "other-session");
+    assert.equal(devlogLine(await run()), expected, "prefix match from another session");
+  });
+
+  it("says unavailable, with the reason, for an unreadable transcript, one without timestamps and an unreadable folder", async () => {
+    const base = async (over = {}) => run(over);
+    const missing = await base({ transcript_path: path.join(tmp, "missing.jsonl") });
+    assert.equal(devlogLine(missing), unavailableLine("cannot read the transcript"));
+
+    await writeTranscript([{ type: "user", uuid: "u1", message: { role: "user", content: "hi" } }]);
+    const bare = await base();
+    assert.equal(devlogLine(bare), unavailableLine("the transcript has no timestamp"));
+
+    await twoEntries();
+    await fs.mkdir(path.dirname(folderAbs()), { recursive: true });
+    await fs.writeFile(folderAbs(), "a file where the folder should be");
+    const blocked = await base();
+    assert.match(devlogLine(blocked), /^Devlog: unavailable \(cannot read the devlog folder: [^;)]+\); find this session's note with vault_query \(session: sess-1\) or create one$/);
+
+    for (const out of [missing, bare, blocked]) {
+      const lines = linesOf(out);
+      assert.equal(lines.length, 5);
+      assert.equal(lines[1], "Project: 01-Projects/MyApp (via folder name: MyApp)");
+      assert.match(lines[2], /^Session: sess-1 - /);
+      assert.match(lines[3], /^New activity: /);
+    }
+    assert.match(linesOf(missing)[3], /^New activity: unavailable \(cannot read the transcript/);
+  });
+
+  it("says unavailable with an unknown session when the session or agent id is unusable", async () => {
+    await twoEntries();
+    const out = await run({ session_id: "../x" });
+    assert.equal(
+      devlogLine(out),
+      "Devlog: unavailable (the hook input has no usable session id); find this session's note with vault_query (session: unknown) or create one",
+    );
+  });
+
+  it("has no Devlog line without a resolved project", async () => {
+    await twoEntries();
+    const unlinked = path.join(tmp, "Unlinked");
+    await fs.mkdir(unlinked);
+    for (const [envOver, inputOver] of [[{ VAULT_PATH: undefined }, {}], [{}, { cwd: unlinked }], [{}, { cwd: undefined }]]) {
+      const out = await run(inputOver, envOver);
+      assert.equal(devlogLine(out), undefined, JSON.stringify({ envOver, inputOver }));
+      assert.equal(linesOf(out).length, 4);
+    }
+  });
+
+  it("keeps the whole context under 2,000 characters with a long project path", async () => {
+    const name = "p".repeat(240);
+    await makeProject(vault, name);
+    const deepCwd = path.join(tmp, name);
+    await fs.mkdir(deepCwd);
+    await twoEntries();
+    const out = await run({ cwd: deepCwd });
+    assert.match(devlogLine(out), /^Devlog: new note .*\(session: sess-1\)$/);
+    assert.ok(contextOf(out).length < 2000);
+    for (const line of linesOf(out)) assert.ok(line.length <= 480, line.length);
   });
 });
 
