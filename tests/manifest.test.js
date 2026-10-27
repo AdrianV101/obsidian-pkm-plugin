@@ -72,6 +72,35 @@ function importSpecifiers(source) {
   return specs;
 }
 
+/**
+ * Walks the static and dynamic imports from `entries`.
+ * @returns {Promise<{ files: string[], violations: string[] }>} every module reached, and each
+ *   specifier that is bare or does not resolve
+ */
+async function importClosure(entries) {
+  const queue = [...entries];
+  const seen = new Set();
+  const violations = [];
+  while (queue.length > 0) {
+    const file = queue.pop();
+    if (seen.has(file)) continue;
+    seen.add(file);
+    const source = await fs.readFile(file, "utf-8");
+    for (const spec of importSpecifiers(source)) {
+      const where = `${path.relative(ROOT, file)}: "${spec}"`;
+      if (spec.startsWith("node:")) continue;
+      if (!spec.startsWith("./") && !spec.startsWith("../")) {
+        violations.push(`${where} is a bare specifier`);
+        continue;
+      }
+      const target = path.resolve(path.dirname(file), spec);
+      if (!(await exists(target))) violations.push(`${where} does not resolve to a file`);
+      else if (/\.m?js$/.test(target)) queue.push(target);
+    }
+  }
+  return { files: [...seen], violations };
+}
+
 describe("plugin manifest contracts", () => {
   it("package.json and .claude-plugin/plugin.json declare the same version", async () => {
     const pkg = await readJson("package.json");
@@ -145,28 +174,44 @@ describe("plugin manifest contracts", () => {
 
   it("hooks and every module they import use only relative or node: specifiers", async () => {
     const hookDir = path.join(ROOT, "hooks");
-    const queue = (await fs.readdir(hookDir)).filter((f) => f.endsWith(".js")).map((f) => path.join(hookDir, f));
-    assert.ok(queue.length > 0, "no hook scripts found");
-    const seen = new Set();
-    const violations = [];
-    while (queue.length > 0) {
-      const file = queue.pop();
-      if (seen.has(file)) continue;
-      seen.add(file);
-      const source = await fs.readFile(file, "utf-8");
-      for (const spec of importSpecifiers(source)) {
-        const where = `${path.relative(ROOT, file)}: "${spec}"`;
-        if (spec.startsWith("node:")) continue;
-        if (!spec.startsWith("./") && !spec.startsWith("../")) {
-          violations.push(`${where} is a bare specifier`);
-          continue;
+    const hooks = (await fs.readdir(hookDir)).filter((f) => f.endsWith(".js")).map((f) => path.join(hookDir, f));
+    assert.ok(hooks.length > 0, "no hook scripts found");
+    assert.deepEqual((await importClosure(hooks)).violations, []);
+  });
+
+  describe("migrate-devlog runs without node_modules", () => {
+    it("migrate-devlog.js and every module it imports use only relative or node: specifiers", async () => {
+      const { files, violations } = await importClosure([path.join(ROOT, "migrate-devlog.js")]);
+      assert.deepEqual(violations, []);
+      assert.ok(files.length > 1, "expected the migration to import the devlog parser");
+    });
+
+    it("previews from a plugin-root copy holding only cli.js, package.json, the migration's modules and the hub template", async () => {
+      const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "pkm manifest "));
+      try {
+        const pluginRoot = path.join(tmp, "plugin root");
+        const vault = path.join(tmp, "my vault");
+        const { files } = await importClosure([path.join(ROOT, "migrate-devlog.js")]);
+        for (const rel of ["cli.js", "package.json", "templates/devlog.md", ...files.map((f) => path.relative(ROOT, f))]) {
+          await fs.mkdir(path.dirname(path.join(pluginRoot, rel)), { recursive: true });
+          await fs.copyFile(path.join(ROOT, rel), path.join(pluginRoot, rel));
         }
-        const target = path.resolve(path.dirname(file), spec);
-        if (!(await exists(target))) violations.push(`${where} does not resolve to a file`);
-        else if (/\.m?js$/.test(target)) queue.push(target);
+        const devlog = path.join(vault, "01-Projects", "Demo", "development", "devlog.md");
+        await fs.mkdir(path.dirname(devlog), { recursive: true });
+        await fs.writeFile(devlog, "# Development Log\n\n### 2026-10-27 09:14 First\n- a\n\n### 2026-10-26 10:00 Second\n- b\n");
+
+        const result = spawnSync(process.execPath, [path.join(pluginRoot, "cli.js"), "migrate-devlog", "Demo"], {
+          cwd: tmp,
+          encoding: "utf-8",
+          env: { ...process.env, VAULT_PATH: vault },
+        });
+        assert.equal(result.status, 0, result.stderr);
+        assert.doesNotMatch(result.stderr, /Cannot find (module|package)/);
+        assert.match(result.stdout, /^Preview only; nothing was written\. Run with --apply to migrate\.$/m);
+      } finally {
+        await fs.rm(tmp, { recursive: true, force: true });
       }
-    }
-    assert.deepEqual(violations, []);
+    });
   });
 
   describe("every hooks.json command quotes its ${CLAUDE_PLUGIN_ROOT} and ${VAULT_PATH} expansions", () => {
