@@ -121,12 +121,10 @@ async function main() {
     loaded.push("compact");
   } else {
     if (meta.index) loaded.push("index");
-    if (meta.devlog) loaded.push("devlog");
+    if (meta.devlog > 0) loaded.push(`${meta.devlog} devlog item${meta.devlog !== 1 ? "s" : ""}`);
     if (!meta.index) missing.push("index");
-    if (!meta.devlog) missing.push("devlog");
+    if (meta.devlog === 0) missing.push("devlog");
   }
-  if (meta.tasks > 0) loaded.push(`${meta.tasks} task${meta.tasks !== 1 ? "s" : ""}`);
-  if (meta.tasks === 0) missing.push("tasks");
 
   let msg = `Obsidian PKM: Loaded ${projectName}`;
   if (loaded.length > 0) msg += ` (${loaded.join(", ")})`;

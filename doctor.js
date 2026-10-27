@@ -124,11 +124,22 @@ export async function runDoctor() {
   // 4. Templates
   try {
     const templates = await loadTemplates(vaultPath);
-    if (templates.size > 0) {
-      ok(`${templates.size} template${templates.size === 1 ? "" : "s"} in 05-Templates/`);
+    const vaultTemplates = [...templates.values()].filter((t) => t.source === "vault").length;
+    if (vaultTemplates > 0) {
+      ok(`${vaultTemplates} template${vaultTemplates === 1 ? "" : "s"} in 05-Templates/`);
       passed++;
     } else {
       warn("No templates found in 05-Templates/ \u2014 run 'npx obsidian-pkm init' to install");
+      warnings++;
+    }
+    // The vault copy wins over the bundled one, and init never overwrites it, so a
+    // vault set up before devlog.md became a hub keeps creating old-style devlogs.
+    const devlog = templates.get("devlog");
+    if (devlog?.source === "vault" && !/^```base\r?$/m.test(devlog.content)) {
+      warn(
+        "05-Templates/devlog.md is an old devlog template without the hub's ```base table; " +
+          "delete it to use the bundled hub template, or replace it with the package's templates/devlog.md"
+      );
       warnings++;
     }
   } catch {

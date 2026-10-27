@@ -205,6 +205,42 @@ describe("doctor command", () => {
     );
   });
 
+  it("warns about missing vault templates even though bundled ones exist", async () => {
+    const vaultPath = path.join(tmpDir, "vault");
+    await fs.mkdir(path.join(vaultPath, "05-Templates"), { recursive: true });
+
+    const { stdout } = await runDoctor({ ...process.env, VAULT_PATH: vaultPath });
+    assert.match(stdout, /\u26A0 No templates found in 05-Templates\//);
+    assert.ok(!/\d+ templates? in 05-Templates/.test(stdout));
+  });
+
+  it("warns about a vault devlog template without the hub's base block, and only then", async () => {
+    // The devlog template `init` installed before devlog.md became a hub.
+    const OLD_TEMPLATE = "---\ntype: devlog\nproject: \ncreated: <% tp.date.now(\"YYYY-MM-DD\") %>\ntags:\n  - devlog\n---\n\n" +
+      "# Development Log\n\nThis log tracks development progress, decisions made, and lessons learned.\n\n## Sessions\n";
+    const hub = await fs.readFile(path.join(import.meta.dirname, "..", "templates", "devlog.md"), "utf-8");
+    const WARNING =
+      "⚠ 05-Templates/devlog.md is an old devlog template without the hub's ```base table; " +
+      "delete it to use the bundled hub template, or replace it with the package's templates/devlog.md";
+    const cases = [
+      { name: "old single-file template", devlog: OLD_TEMPLATE, warns: true },
+      { name: "hub template", devlog: hub, warns: false },
+      { name: "hub template with CRLF", devlog: hub.replace(/\r?\n/g, "\r\n"), warns: false },
+      { name: "no devlog template", devlog: null, warns: false },
+    ];
+    for (const c of cases) {
+      const vaultPath = path.join(tmpDir, c.name.replace(/\W+/g, "-"));
+      const templatesDir = path.join(vaultPath, "05-Templates");
+      await fs.mkdir(templatesDir, { recursive: true });
+      await fs.writeFile(path.join(templatesDir, "note.md"), "---\ntype: note\ncreated: <% tp.date.now(\"YYYY-MM-DD\") %>\ntags: []\n---\n");
+      if (c.devlog !== null) await fs.writeFile(path.join(templatesDir, "devlog.md"), c.devlog);
+
+      const { stdout } = await runDoctor({ ...process.env, VAULT_PATH: vaultPath });
+      const lines = stdout.split(/\r?\n/).filter((l) => l.includes("05-Templates/devlog.md"));
+      assert.deepEqual(lines.map((l) => l.trim()), c.warns ? [WARNING] : [], `${c.name}\n${stdout}`);
+    }
+  });
+
   it("warns when VAULT_PKM_OPENAI_KEY is not set", async () => {
     const vaultPath = path.join(tmpDir, "vault");
     await fs.mkdir(vaultPath, { recursive: true });

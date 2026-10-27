@@ -7,6 +7,7 @@ import { spawn } from "node:child_process";
 import { setImmediate } from "node:timers";
 import { fileURLToPath } from "node:url";
 import { createHandlers } from "../handlers.js";
+import { loadTemplates } from "../helpers.js";
 
 const IS_WIN = process.platform === "win32";
 
@@ -357,6 +358,86 @@ describe("vault_move races and write errors", () => {
           assert.equal(leaksPath(err.message, v.root), false);
           return true;
         }
+      );
+    } finally {
+      await v.cleanup();
+    }
+  });
+});
+
+describe("vault_write with bundled templates", () => {
+  async function bundledVault() {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "bundled-vault-"));
+    const handlers = await createHandlers({
+      vaultPath: root,
+      templateRegistry: await loadTemplates(root),
+      semanticIndex: null,
+      activityLog: null,
+      sessionId: "bundled-test",
+    });
+    return { root, handlers, cleanup: () => fs.rm(root, { recursive: true, force: true }) };
+  }
+
+  it("devlog-session creates a session note with its properties", async () => {
+    const v = await bundledVault();
+    try {
+      const rel = "01-Projects/Demo/development/devlog/2026-10-27 0930 Fix Thing.md";
+      await v.handlers.get("vault_write")({
+        template: "devlog-session",
+        path: rel,
+        frontmatter: { tags: ["devlog"], project: "Demo", session: "abc-123" },
+      });
+      const content = await fs.readFile(path.join(v.root, rel), "utf-8");
+      const fm = content.split("---")[1];
+      assert.match(fm, /^type: devlog-session$/m);
+      assert.match(fm, /^project: Demo$/m);
+      assert.match(fm, /^session: abc-123$/m);
+      assert.match(fm, /^created: \d{4}-\d{2}-\d{2}$/m);
+      assert.match(fm, /^tags:\n\s+- devlog$/m);
+    } finally {
+      await v.cleanup();
+    }
+  });
+
+  it("devlog creates the hub embedding a table of the folder, and fails without devlog_folder", async () => {
+    const v = await bundledVault();
+    try {
+      const rel = "01-Projects/Demo/development/devlog.md";
+      const folder = "01-Projects/Demo/development/devlog";
+      await v.handlers.get("vault_write")({
+        template: "devlog",
+        path: rel,
+        frontmatter: { tags: ["devlog"], project: "Demo" },
+        variables: { devlog_folder: folder },
+      });
+      const content = await fs.readFile(path.join(v.root, rel), "utf-8");
+      const body = content.slice(content.indexOf("---", 3) + 4).replace(/^\n/, "");
+      assert.equal(body, [
+        "# Development Log",
+        "",
+        "Each session has its own note in the devlog folder next to this one; the table lists them newest first.",
+        "",
+        "```base",
+        "filters:",
+        "  and:",
+        `    - file.inFolder("${folder}")`,
+        "views:",
+        "  - type: table",
+        "    name: Sessions",
+        "    order:",
+        "      - file.name",
+        "      - type",
+        "      - file.mtime",
+        "    sort:",
+        "      - property: file.name",
+        "        direction: DESC",
+        "```",
+        "",
+      ].join("\n"));
+
+      await assert.rejects(
+        v.handlers.get("vault_write")({ template: "devlog", path: "01-Projects/Other/development/devlog.md", frontmatter: { tags: ["devlog"] } }),
+        /Unsubstituted template variables/,
       );
     } finally {
       await v.cleanup();

@@ -64,7 +64,7 @@ Built-in variables (auto-substituted):
 - <% tp.file.title %> - Derived from output path filename
 
 Required: frontmatter.tags - provide at least one tag for the note.
-Optional: frontmatter.status, frontmatter.priority, frontmatter.project, frontmatter.deciders, frontmatter.due, frontmatter.source (depending on template type).
+Optional: frontmatter.session, frontmatter.status, frontmatter.priority, frontmatter.project, frontmatter.deciders, frontmatter.due, frontmatter.source (depending on template type).
 Pass custom <%...%> variables via the 'variables' parameter.` + LINK_FORMAT_NOTE,
       inputSchema: {
         type: "object",
@@ -90,7 +90,8 @@ Pass custom <%...%> variables via the 'variables' parameter.` + LINK_FORMAT_NOTE
               project: { type: "string", description: "Project name (for devlogs)" },
               deciders: { type: "string", description: "Decision makers (for ADRs)" },
               due: { type: "string", description: "Due date (for tasks)" },
-              source: { type: "string", description: "Source reference (for tasks)" }
+              source: { type: "string", description: "Source reference (for tasks)" },
+              session: { type: "string", description: "Session identifier the note belongs to" }
             }
           },
           createDirs: { type: "boolean", description: "Create parent directories if they don't exist", default: true }

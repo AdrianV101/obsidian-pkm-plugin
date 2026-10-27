@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import os from "os";
 import path from "path";
 import fs from "fs/promises";
+import { fileURLToPath } from "node:url";
 import { resolveInputPath, copyTemplates, scaffoldFolders, backupVault, dirSize } from "../init.js";
 
 describe("resolveInputPath", () => {
@@ -239,3 +240,18 @@ describe("dirSize", () => {
   });
 });
 
+
+describe("bundled templates", () => {
+  it("full mode installs 14 templates, devlog-session among them", async () => {
+    const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "init-bundled-"));
+    try {
+      const src = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "templates");
+      const dest = path.join(tmp, "05-Templates");
+      const result = await copyTemplates(src, dest, "full");
+      assert.equal(result.created, 14);
+      assert.ok((await fs.readdir(dest)).includes("devlog-session.md"));
+    } finally {
+      await fs.rm(tmp, { recursive: true, force: true });
+    }
+  });
+});

@@ -114,11 +114,13 @@ function entryLines(entry) {
 /**
  * Digest of the transcript after `afterUuid` (or from the start when it is
  * absent or unknown). `lastUuid` is the file's last entry, whether or not it
- * contributed, so it can serve as the next cursor.
+ * contributed, so it can serve as the next cursor. `sessionStart` is the first
+ * timestamp anywhere in the file, whatever the cursor, or null.
  */
 export function condenseTranscript(jsonlText, { afterUuid = null, maxChars = MAX_DELTA_CHARS } = {}) {
   const entries = parseEntries(jsonlText);
   const lastUuid = entries.length ? entries[entries.length - 1].uuid : afterUuid;
+  const sessionStart = entries.find((e) => typeof e.timestamp === "string")?.timestamp ?? null;
   const cursorAt = afterUuid ? entries.findIndex((e) => e.uuid === afterUuid) : -1;
 
   const pieces = [];
@@ -136,7 +138,7 @@ export function condenseTranscript(jsonlText, { afterUuid = null, maxChars = MAX
 
   const full = pieces.join("\n");
   if (full.length <= maxChars) {
-    return { text: full, lastUuid, entryCount, truncated: false, firstTimestamp, lastTimestamp };
+    return { text: full, lastUuid, entryCount, truncated: false, firstTimestamp, lastTimestamp, sessionStart };
   }
 
   // Drop whole lines from the oldest end until the marker plus the rest fits.
@@ -151,5 +153,5 @@ export function condenseTranscript(jsonlText, { afterUuid = null, maxChars = MAX
     dropped += 1;
   }
   const text = (marker(dropped, droppedChars) + pieces.slice(dropped).join("\n")).slice(0, maxChars);
-  return { text, lastUuid, entryCount, truncated: true, firstTimestamp, lastTimestamp };
+  return { text, lastUuid, entryCount, truncated: true, firstTimestamp, lastTimestamp, sessionStart };
 }

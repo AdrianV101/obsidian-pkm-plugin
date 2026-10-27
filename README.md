@@ -25,7 +25,7 @@ Under the hood, this Claude Code plugin provides 20 [MCP](https://modelcontextpr
 Claude Code has built-in memory, but it's flat text files scoped to individual projects — no structure, no search beyond exact matches, no connections between notes, and no way to query across projects. As knowledge grows, it doesn't scale. This server replaces that with a proper PKM layer: structured notes with enforced metadata, semantic search, a navigable knowledge graph, and cross-project access through a single Obsidian vault.
 
 - **Structured session memory** — Every tool call is logged with timestamps and session IDs, so Claude can recall exactly what was read, written, and searched in previous conversations — not just what was saved to a text file.
-- **Structured knowledge creation** — ADRs, research notes, devlogs, and tasks are created from enforced templates with validated frontmatter — not freeform text dumps. Your vault stays consistent and queryable.
+- **Structured knowledge creation** — ADRs, research notes, per-session devlog notes, and tasks are created from enforced templates with validated frontmatter — not freeform text dumps. Your vault stays consistent and queryable.
 - **Semantic discovery** — "Find my notes about caching strategies" works even if you never used the word "caching." Conceptual search surfaces relevant knowledge that keyword search misses.
 - **Graph-aware connections** — Claude explores your knowledge graph by following wikilinks, discovering related notes by proximity rather than just content. Link suggestions help weave new notes into your existing web of knowledge.
 - **Knowledge capture** — Decisions, tasks, and research findings are captured by specialized agents in the background without interrupting your coding flow.
@@ -40,7 +40,7 @@ Without this, knowledge stays fragmented across per-project memory files and cha
 | **Scope** | Cross-project (one vault for everything) | Per-project | Per-project (git-repo scoped) |
 | **Semantic search** | OpenAI embeddings | — | — |
 | **Graph traversal** | Wikilink BFS, link health audits | — | — |
-| **Structured notes** | 13 templates with validated frontmatter | Plain markdown | Plain markdown |
+| **Structured notes** | 14 templates with validated frontmatter | Plain markdown | Plain markdown |
 | **Metadata queries** | Filter by type, status, tags, dates, custom fields | — | — |
 | **Session memory** | Activity log (every tool call with timestamps) | Tiered daily summaries (Haiku-compressed) | Manual (user writes CLAUDE.md) |
 | **Setup effort** | Medium (vault path + optional OpenAI key) | Low (auto hooks, no config) | None (built-in) |
@@ -108,7 +108,7 @@ Without this, knowledge stays fragmented across per-project memory files and cha
 | Agent | Purpose |
 |-------|---------|
 | `vault-explorer` | Research what the vault already knows about a topic |
-| `pkm-capture` | Devlog entries + knowledge capture when a PR is opened and after work blocks; a hook hands it the project and the new session activity, and it keeps a little memory of durable capture lessons across sessions |
+| `pkm-capture` | Devlog notes + knowledge capture when a PR is opened and after work blocks; a hook hands it the project and the new session activity, and it keeps a little memory of durable capture lessons across sessions |
 | `link-auditor` | Audit vault link health after bulk note changes |
 
 **Skills** (6) are guided workflows triggered by slash commands:
@@ -128,6 +128,7 @@ Without this, knowledge stays fragmented across per-project memory files and cha
 |---------|---------|
 | `/vault-pkm:setup` | Configure vault path, API keys, and permissions |
 | `/vault-pkm:init-project` | Link a code repository to a vault project folder through the project's `repos:` list (or a `CLAUDE.local.md` line when there is no remote); never edits `CLAUDE.md` |
+| `/vault-pkm:migrate-devlog` | Split a project's single-file `devlog.md` into one note per day and turn `devlog.md` into the hub; previews first and asks before writing |
 
 ## Prerequisites
 
@@ -175,7 +176,7 @@ This is separate from the plugin install above — it only sets up your vault's 
 **Step 1 — Vault path.** Point to an existing Obsidian vault or create a new one. The wizard resolves `~`, `$HOME`, and relative paths automatically. Safety checks prevent using system directories (`/`, `/home`, etc.) as a vault. For existing non-empty directories you can use it as-is, create a subfolder inside it, or wipe it (with triple confirmation). You'll be offered an optional backup before any changes.
 
 **Step 2 — Note templates.** Copies template files into `<vault>/05-Templates/`. Three options:
-- **Full set** — all 13 templates (`adr`, `daily-note`, `devlog`, `fleeting-note`, `literature-note`, `meeting-notes`, `moc`, `note`, `permanent-note`, `project-index`, `research-note`, `task`, `troubleshooting-log`)
+- **Full set** — all 14 templates (`adr`, `daily-note`, `devlog`, `devlog-session`, `fleeting-note`, `literature-note`, `meeting-notes`, `moc`, `note`, `permanent-note`, `project-index`, `research-note`, `task`, `troubleshooting-log`)
 - **Minimal** — just `note.md` (a single generic template)
 - **Skip** — for users with their own templates
 
@@ -253,7 +254,9 @@ Vault/
 
 `vault_write` loads all `.md` files from `05-Templates/` at startup and enforces frontmatter on every note created. Run `npx obsidian-pkm init` to install them automatically, or copy the files from `templates/` manually.
 
-13 included templates: `adr`, `daily-note`, `devlog`, `fleeting-note`, `literature-note`, `meeting-notes`, `moc`, `note`, `permanent-note`, `project-index`, `research-note`, `task`, `troubleshooting-log`. Add your own templates to `05-Templates/` and they become available to `vault_write` automatically.
+14 included templates: `adr`, `daily-note`, `devlog`, `devlog-session`, `fleeting-note`, `literature-note`, `meeting-notes`, `moc`, `note`, `permanent-note`, `project-index`, `research-note`, `task`, `troubleshooting-log`. Add your own templates to `05-Templates/` and they become available to `vault_write` automatically.
+
+A template missing from your vault's `05-Templates/` falls back to the copy bundled with the plugin, so `devlog-session` works in vaults set up before it existed. A copy in your vault always wins over the bundled one. A vault set up before `devlog.md` became a hub still has the old `devlog` template, which would create a hub without its table: delete `05-Templates/devlog.md` (the bundled hub template then applies) or replace it with the package's `templates/devlog.md`. `obsidian-pkm doctor` warns while the old one is there.
 
 Task notes enforce `status` (pending, active, done, cancelled) and `priority` (low, normal, high, urgent) enums. All other note types accept any string values for these fields.
 
@@ -313,14 +316,14 @@ File layout:
 │   ├── hooks.json          # Hook registrations (SessionStart, SubagentStart, PostToolUse)
 │   ├── session-start.js    # Loads project context at session start
 │   ├── resolve-project.js  # Maps the working directory to a vault project (annotation, repos:, folder name)
-│   ├── load-context.js     # Reads index, devlog and tasks for the context block
+│   ├── load-context.js     # Reads the index and the newest devlog items for the context block
 │   ├── capture-context.js  # SubagentStart: gives pkm-capture its project and new session activity
 │   ├── capture-state.js    # Per-session capture cursor, delta file paths and pruning
 │   ├── transcript.js       # Condenses a session transcript into a short digest
 │   └── capture-reminder.js # Prompts pkm-capture after a successful `gh pr create`
 ├── agents/           # Specialized agents (vault-explorer, pkm-capture, link-auditor)
 ├── skills/           # PKM workflow skills (pkm-write, pkm-explore, pkm-session-end, add-task, triage-tasks, tackle-task)
-├── commands/         # Slash commands (setup, init-project)
+├── commands/         # Slash commands (setup, init-project, migrate-devlog)
 ├── templates/        # Obsidian note templates
 ├── scripts/          # Release tooling (publish-time tag/version check)
 ├── tests/            # Test suite (Node.js built-in test runner)
@@ -341,7 +344,7 @@ File layout:
 
 **Session memory** records every tool call with timestamps and session IDs, so Claude can recall what was read, written, or searched in previous conversations. This turns ephemeral chat sessions into a continuous thread of work.
 
-**Knowledge capture** uses the `pkm-capture` agent to update the project devlog and persist PKM-worthy content from a session (decisions, research findings, tasks, bug root causes) in one pass. It is triggered automatically when you open a pull request: a PostToolUse hook watches for a successful `gh pr create` and asks Claude to dispatch the agent with the PR URL. You can also dispatch it manually after significant work blocks. It runs in the background on Haiku without interrupting the coding flow.
+**Knowledge capture** uses the `pkm-capture` agent to add a section to the session's own devlog note and persist PKM-worthy content from a session (decisions, research findings, tasks, bug root causes) in one pass. It is triggered automatically when you open a pull request: a PostToolUse hook watches for a successful `gh pr create` and asks Claude to dispatch the agent with the PR URL. You can also dispatch it manually after significant work blocks. It runs in the background on Haiku without interrupting the coding flow.
 
 Whoever dispatches it, the capture itself goes through one path. A SubagentStart hook resolves the project, condenses the session since the previous capture into a short digest file (what you and Claude said, one line per tool call, and the first line of each error; tool output is never included) and gives the agent the project, the session and the digest path as its start-up context. The hook also records the new capture position in a small per-session state file (under `$CLAUDE_PLUGIN_DATA/captures`, or `~/.claude/vault-pkm/captures`), so the next capture starts where this one ended and a range is normally not captured twice (two captures that start at the same moment can cover the same range). A capture that finds no project leaves the position where it was, so the first capture after you link the repo still covers that range. Claude Code's SubagentStop input carries no final message, so success can't be checked when the agent stops: the position advances when the agent starts, and a capture that fails is not retried automatically. The agent ends with a status line (`Status: captured`, `nothing new`, `no project` or `failed - <reason>`) that tells the main conversation what happened. A failed capture names its digest file in the reason, and because the position has already moved past that range, the main conversation passes that path to the next dispatch, which reads it along with its own. State files are pruned after 30 days and digests after 7, and both are readable only by your user account.
 
@@ -353,9 +356,13 @@ Whoever dispatches it, the capture itself goes through one path. A SubagentStart
 
 Session start shows the full project path and how it was found (`via repos: …`, `via # PKM in …`, `via folder name: …`). In a git repo that matches nothing it adds a hint to run `/vault-pkm:init-project`; an ambiguous remote (listed by two projects) says so. `npx obsidian-pkm doctor` prints the same resolution for the folder you run it in. Git lookups time out after 2 seconds, so a slow git never blocks a session.
 
-**Server instructions** carry the vault rules the plugin used to ask each repo's `CLAUDE.md` to repeat: how to link notes, always create notes from a template, where each kind of note goes, when capture runs, and that session start already loads the index, devlog and tasks, so there's no need to read them just to get oriented. Claude Code delivers them to every session that has the server connected, so a repo needs no `## PKM Integration` section any more (an existing one is harmless and can be deleted). Subagents may not receive server instructions, so `pkm-write` keeps its own copy of the routing table. The `vault_semantic_search` description explains the score scale: embeddings compress hard, so even a verbatim title scores about 0.55-0.65 and absolute scores can't separate relevant from tangential hits.
+**Server instructions** carry the vault rules the plugin used to ask each repo's `CLAUDE.md` to repeat: how to link notes, always create notes from a template, where each kind of note goes, when capture runs, and that session start already loads the index and recent devlog, so there's no need to read them just to get oriented. Claude Code delivers them to every session that has the server connected, so a repo needs no `## PKM Integration` section any more (an existing one is harmless and can be deleted). Subagents may not receive server instructions, so `pkm-write` keeps its own copy of the routing table. The `vault_semantic_search` description explains the score scale: embeddings compress hard, so even a verbatim title scores about 0.55-0.65 and absolute scores can't separate relevant from tangential hits.
 
-**Session context** is loaded by a SessionStart hook. It injects the project's `_index.md` (Overview and Current Status first, up to 2,500 characters), the three newest devlog entries by the date in their headings (up to 1,500 characters each) and up to ten open tasks, about 8 KB at most. After a compaction only the project path and task titles are injected. Activity entries are kept for 90 days by default (`VAULT_PKM_ACTIVITY_RETENTION_DAYS`), and long arguments such as note bodies are stored as `<N chars>`. The `path` filter of `vault_activity` matches the stored argument exactly (full vault-relative paths, case-sensitive; a folder matches everything under it), so a short name or partial folder finds nothing.
+**Session context** is loaded by a SessionStart hook. It injects the project's `_index.md` (Overview and Current Status first, up to 2,500 characters), the 10 newest devlog items (session notes, migrated day notes, or the entries of an unmigrated `devlog.md`), newest first, about 9,500 characters in all; unused room goes to the items that need it, and long ones end with a `vault_read` pointer. Tasks are not loaded; ask for them with `vault_query`. After a compaction only the project path and the names of the 10 newest devlog items are injected. Activity entries are kept for 90 days by default (`VAULT_PKM_ACTIVITY_RETENTION_DAYS`), and long arguments such as note bodies are stored as `<N chars>`. The `path` filter of `vault_activity` matches the stored argument exactly (full vault-relative paths, case-sensitive; a folder matches everything under it), so a short name or partial folder finds nothing.
+
+**Devlog** lives in `<project>/development/devlog/`: each session gets its own note, `YYYY-MM-DD HHmm <Title>.md`, and each capture adds one section to it. `development/devlog.md` is the hub: a table of that folder, newest first, built with an embedded Obsidian Bases view.
+
+**Migrating an existing devlog.** Projects with a single-file `devlog.md` keep working: session start still shows the newest entries, and new sessions write their notes beside the old file. To split the old file into one note per day, first upgrade the plugin on every device that uses the vault, because an older version would write old-style entries into the hub. Then run `/vault-pkm:migrate-devlog <project>` (or `npx obsidian-pkm migrate-devlog <project>`). It previews by default and writes nothing; add `--apply` (the command asks first) to write one note per day, move the original to `.trash/`, and turn `devlog.md` into the hub. Text in the old file that is not an entry is kept under `## Kept from the old devlog`. If a step fails, the vault is put back as it was.
 
 **Fuzzy path resolution** lets read-only tools accept short names instead of full vault paths. `vault_read({ path: "devlog" })` resolves to `01-Projects/MyApp/development/devlog.md` automatically (`.md` extension optional). Folder-scoped tools like `vault_list`, `vault_search`, and `vault_query` accept partial folder names — `folder: "MyApp"` resolves to `01-Projects/MyApp`. A short name containing `/` must match the end of the real path (`development/devlog` finds `01-Projects/MyApp/development/devlog.md`). Ambiguous matches return an error listing candidates; pass the full path. Write/destructive tools always require exact paths and only accept `.md` notes outside dot-folders.
 

@@ -1,6 +1,7 @@
 import fs from "fs/promises";
 import { resolveLexical } from "./vault-fs.js";
 import path from "path";
+import { fileURLToPath } from "node:url";
 import {
   DANGEROUS_KEYS,
   assertSafeFrontmatterKey,
@@ -234,39 +235,55 @@ export function extractTemplateDescription(content, frontmatter) {
   return `Template for ${frontmatter?.type || "notes"}`;
 }
 
+const BUNDLED_TEMPLATES_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), "templates");
+
+async function readTemplateDir(dir, pathPrefix, source, into, { onlyMissing }) {
+  const files = await fs.readdir(dir);
+  for (const file of files) {
+    if (!file.endsWith(".md")) continue;
+
+    const shortName = path.basename(file, ".md");
+    if (onlyMissing && into.has(shortName)) continue;
+    const content = await fs.readFile(path.join(dir, file), "utf-8");
+    const frontmatter = extractFrontmatter(content);
+
+    into.set(shortName, {
+      shortName,
+      path: `${pathPrefix}/${file}`,
+      description: extractTemplateDescription(content, frontmatter),
+      frontmatter,
+      content,
+      source
+    });
+  }
+}
+
 /**
- * Load all templates from the vault's 05-Templates/ directory.
+ * Load the vault's 05-Templates/ templates, then fill names the vault lacks
+ * from the templates bundled with the package. The vault's copy always wins.
  *
  * @param {string} vaultPath - absolute vault root path
- * @returns {Promise<Map<string, Object>>} template name -> { shortName, path, description, frontmatter, content }
+ * @param {{ bundledDir?: string }} [options]
+ * @returns {Promise<Map<string, Object>>} template name -> { shortName, path, description, frontmatter, content, source }
  */
-export async function loadTemplates(vaultPath) {
+export async function loadTemplates(vaultPath, { bundledDir = BUNDLED_TEMPLATES_DIR } = {}) {
   const templatesDir = resolveLexical("05-Templates", vaultPath);
   const templateMap = new Map();
 
   try {
-    const files = await fs.readdir(templatesDir);
-    for (const file of files) {
-      if (!file.endsWith(".md")) continue;
-
-      const shortName = path.basename(file, ".md");
-      const content = await fs.readFile(path.join(templatesDir, file), "utf-8");
-      const frontmatter = extractFrontmatter(content);
-
-      templateMap.set(shortName, {
-        shortName,
-        path: `05-Templates/${file}`,
-        description: extractTemplateDescription(content, frontmatter),
-        frontmatter,
-        content
-      });
-    }
+    await readTemplateDir(templatesDir, "05-Templates", "vault", templateMap, { onlyMissing: false });
   } catch (e) {
     if (e.code === "ENOENT") {
       console.error("Warning: 05-Templates/ not found in vault");
     } else {
       console.error(`Error loading templates: ${e.message}`);
     }
+  }
+
+  try {
+    await readTemplateDir(bundledDir, "templates", "bundled", templateMap, { onlyMissing: true });
+  } catch (e) {
+    console.error(`Warning: bundled templates unavailable: ${e.message}`);
   }
 
   return templateMap;

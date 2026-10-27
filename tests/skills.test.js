@@ -73,6 +73,55 @@ describe("skill wording and triggering", () => {
       assert.doesNotMatch(body, /key links/i);
     });
   }
+  const stepOf = (body, from, to) => body.slice(body.indexOf(from), body.indexOf(to));
+
+  it("pkm-session-end Step 1 writes per-session notes: the three Devlog forms, creation, lookup, one section, titles and the hub", async () => {
+    const { body } = await loadSkill("pkm-session-end");
+    const step1 = stepOf(body, "## Step 1", "## Step 2");
+    assert.match(step1, /Devlog: <[^>]+> \(add a section\)|\(add a section\)/);
+    assert.match(step1, /Devlog: new note/);
+    assert.match(step1, /Devlog: unavailable/);
+    assert.match(step1, /template: "devlog-session"/);
+    assert.match(step1, /project: "<Project>"/);
+    assert.match(step1, /session: "<[^>]*id[^>]*>"/);
+    assert.match(step1, /vault_query\(\{[^}]*development\/devlog[^}]*custom_fields: \{ session:/);
+    assert.match(step1, /## YYYY-MM-DD HH:mm <[^>]*heading>/);
+    for (const h of ["### Summary", "### Decisions", "### Blockers", "### Next steps"]) {
+      assert.ok(step1.includes(h), `missing ${h}`);
+    }
+    assert.match(step1, /3 to 6 words/);
+    assert.match(step1, /never rename/i);
+    assert.match(step1, /already exists|taken/i);
+    assert.match(step1, /devlog_folder/);
+    assert.doesNotMatch(step1, /heading: "## Sessions"/);
+    assert.doesNotMatch(step1, /Heading not found/);
+    assert.match(step1, /never (append|write)[^.]*devlog\.md/i);
+  });
+
+  it("pkm-session-end Step 1 defines <project> and <Project> and spells out the unavailable branch's note path", async () => {
+    const { body } = await loadSkill("pkm-session-end");
+    const step1 = stepOf(body, "## Step 1", "## Step 2");
+    assert.match(step1, /`<project>` is the vault path from the `Project:` line \(e\.g\. `01-Projects\/MyApp`\)/);
+    assert.match(step1, /`<Project>` is its last segment, the project folder's name \(`MyApp`\)/);
+    const unavailable = stepOf(step1, "- `Devlog: unavailable", "Then append");
+    assert.ok(unavailable.includes("`<project>/development/devlog/<YYYY-MM-DD HHmm> <Title>.md`"), unavailable);
+  });
+
+  it("pkm-session-end Step 3d backlinks to the session note's section heading, not the hub", async () => {
+    const { body } = await loadSkill("pkm-session-end");
+    const step3d = stepOf(body, "### 3d", "## Step 4");
+    assert.match(step3d, /\[\[<project>\/development\/devlog\/<[^>]+>#YYYY-MM-DD HH:mm <[^>]*heading>\]\]/);
+    assert.doesNotMatch(step3d, /development\/devlog#/);
+  });
+
+  it("pkm-write sends devlog entries to the session's own note, not a Sessions heading", async () => {
+    const { body } = await loadSkill("pkm-write");
+    const line = body.split("\n").find((l) => l.startsWith("- **Devlog entries**")) ?? "";
+    assert.match(line, /development\/devlog\//);
+    assert.match(line, /never appended to|never append/i);
+    assert.doesNotMatch(body, /## Sessions/);
+  });
+
 });
 
 describe("project linking", () => {
@@ -94,6 +143,27 @@ describe("project linking", () => {
     assert.match(content, /CLAUDE\.local\.md/);
     assert.match(content, /Never edit `CLAUDE\.md`/);
     assert.doesNotMatch(content, /obsidian:\/\/|Referring to vault files|pkm-capture/);
+  });
+
+  it("migrate-devlog previews, asks before --apply, warns to upgrade every device, and allows every tool it names", async () => {
+    const content = await read("commands/migrate-devlog.md");
+    const frontmatter = extractFrontmatter(content) ?? {};
+    assert.equal(frontmatter.name, "migrate-devlog");
+    assert.ok(String(frontmatter.description ?? "").length > 0);
+    assert.ok(String(frontmatter["argument-hint"] ?? "").length > 0);
+    const body = content.slice(content.indexOf("\n---", 3) + 4);
+    const allowed = [].concat(frontmatter["allowed-tools"]);
+    const preview = body.indexOf('node "${CLAUDE_PLUGIN_ROOT}/cli.js" migrate-devlog');
+    const ask = body.indexOf("AskUserQuestion");
+    const apply = body.indexOf("--apply");
+    assert.ok(preview >= 0, "runs the plugin's own cli.js");
+    assert.ok(preview < ask && ask < apply, "preview, then ask, then --apply");
+    assert.match(body, /upgrade[^.]*every device/i);
+    assert.match(body, /without a trailing ` \(compact\)`/);
+    for (const tool of ["Bash", "AskUserQuestion"]) {
+      if (body.includes(tool)) assert.ok(allowed.includes(tool), `${tool} must be allowed`);
+    }
+    for (const name of body.match(/mcp__[\w-]+/g) ?? []) assert.ok(allowed.includes(name), `${name} must be allowed`);
   });
 
   it("init-project works out how a linked folder was linked and offers a relink", async () => {

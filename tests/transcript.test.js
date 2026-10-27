@@ -136,6 +136,7 @@ describe("condenseTranscript", () => {
     const r = condenseTranscript(jsonl(e), { afterUuid: e[1].uuid });
     assert.deepEqual(r, {
       text: "", lastUuid: e[1].uuid, entryCount: 0, truncated: false, firstTimestamp: null, lastTimestamp: null,
+      sessionStart: e[0].timestamp,
     });
   });
 
@@ -202,5 +203,21 @@ describe("condenseTranscript", () => {
     assert.ok(!r.text.includes("RRRR"));
     assert.ok(r.text.length <= 40000);
     assert.equal(r.truncated, true);
+  });
+
+  it("reports the file's first timestamp as sessionStart whatever the cursor, or null without timestamps", () => {
+    const e = [
+      user("one", { timestamp: "2026-10-21T08:00:00.000Z" }),
+      assistant([text("two")], { timestamp: "2026-10-21T08:05:00.000Z" }),
+      user("three", { timestamp: "2026-10-21T08:10:00.000Z" }),
+    ];
+    for (const afterUuid of [null, e[0].uuid, e[1].uuid, e[2].uuid, "unknown"]) {
+      assert.equal(condenseTranscript(jsonl(e), { afterUuid }).sessionStart, "2026-10-21T08:00:00.000Z", String(afterUuid));
+    }
+    const sidechainFirst = [user("side", { isSidechain: true, timestamp: "2026-10-21T07:00:00.000Z" }), e[0]];
+    assert.equal(condenseTranscript(jsonl(sidechainFirst)).sessionStart, "2026-10-21T07:00:00.000Z");
+    const bare = [user("a", { timestamp: undefined }), assistant([text("b")], { timestamp: undefined })];
+    assert.equal(condenseTranscript(jsonl(bare)).sessionStart, null);
+    assert.equal(condenseTranscript("").sessionStart, null);
   });
 });

@@ -11,34 +11,53 @@ Workflow for session wrap-up, run by the pkm-capture agent. Its capture context 
 
 ## Step 1: Devlog Entry
 
-Append a session summary to the project devlog, most recent entry first.
+Each Claude Code session has its own note in `<project>/development/devlog/`. Add one section to it per capture. `<project>` is the vault path from the `Project:` line (e.g. `01-Projects/MyApp`), without the `(via ...)` part; `<Project>` is its last segment, the project folder's name (`MyApp`). `devlog.md` is a hub that embeds a table of those notes: never append or write to `devlog.md`, except to create it once when it is missing (below).
 
-**If the devlog file doesn't exist yet** (new project, first session), create it first:
+Read the `Devlog:` line of your capture context and act on its form:
+
+- `Devlog: <note vault path> (add a section)`: the session's note exists. Append to it.
+- `Devlog: new note <folder>/<prefix> <Title>.md (session: <id>)`: no note yet. Replace `<Title>` with a title of 3 to 6 words (letters, digits, spaces and hyphens) that names the session's work, then create the note:
+
+  ```
+  vault_write({
+    template: "devlog-session",
+    path: "<folder>/<prefix> <Title>.md",
+    frontmatter: { tags: ["devlog"], project: "<Project>", session: "<id>" }
+  })
+  ```
+
+  Never rename a note later. If `vault_write` fails with "File already exists", pick another title.
+- `Devlog: unavailable (<reason>); ...`: the plugin could not look. Find this session's note first:
+
+  ```
+  vault_query({ folder: "<project>/development/devlog", custom_fields: { session: "<id>" } })
+  ```
+
+  If it returns a note, append to it. Otherwise create one as above at `<project>/development/devlog/<YYYY-MM-DD HHmm> <Title>.md`, with the current local time as `<YYYY-MM-DD HHmm>`.
+
+Then append exactly one section at the end of the note (`vault_append` with no heading):
+
+```
+vault_append({
+  path: "<note vault path>",
+  content: "\n## YYYY-MM-DD HH:mm <short heading>\n\n### Summary\n- <what was accomplished>\n\n### Decisions\n- <decisions made, link to ADRs if created>\n\n### Blockers\n- <problems encountered, or \"None\">\n\n### Next steps\n- <what remains>\n"
+})
+```
+
+Use the **actual local date and time** and fill in real content from the session. The short heading says what this capture covers. Keep sections concise but specific. Read back any multi-line `vault_append` section and fix literal `\n` sequences left in the text.
+
+**Missing hub**: if `<project>/development/devlog.md` doesn't exist, create it once:
 
 ```
 vault_write({
   template: "devlog",
-  path: "01-Projects/<Project>/development/devlog.md",
-  frontmatter: { tags: ["devlog"], project: "<Project>" }
+  path: "<project>/development/devlog.md",
+  frontmatter: { tags: ["devlog"], project: "<Project>" },
+  variables: { devlog_folder: "<project>/development/devlog" }
 })
 ```
 
-Then append the session entry:
-
-```
-vault_append({
-  path: "01-Projects/<Project>/development/devlog.md",
-  heading: "## Sessions",
-  position: "after_heading",
-  content: "### YYYY-MM-DD HH:mm\n\n#### Session Summary\n- <what was accomplished>\n\n#### Key Decisions\n- <decisions made, link to ADRs if created>\n\n#### Blockers / Issues\n- <problems encountered, or \"None\">\n\n#### Next Steps\n- <what remains>\n\n---\n"
-})
-```
-
-Use the **actual date** and fill in real content from the session. Keep entries concise but specific. Using `after_heading` inserts each new entry at the top, keeping the log in reverse-chronological order. Read back any multi-line `vault_append` section and fix literal `\n` sequences left in the text.
-
-**Wikilinks in devlog entries**: Include `[[wikilinks]]` to tasks, ADRs, research notes, and other vault notes that were completed, created, or significantly updated during the session. For example: `- Completed [[task-api-refactor]]` or `- Decided on caching strategy ([[ADR-003-caching]])`. Link only notes that exist in the vault, never repo files or agent memory.
-
-**Existing devlogs**: Older devlogs may use `## YYYY-MM-DD` entries without a `## Sessions` heading. If `vault_append` fails with "Heading not found", add the heading first: `vault_append({ path: "...", content: "\n## Sessions\n" })`.
+**Wikilinks in devlog sections**: Include `[[wikilinks]]` to tasks, ADRs, research notes, and other vault notes that were completed, created, or significantly updated during the session. For example: `- Completed [[task-api-refactor]]` or `- Decided on caching strategy ([[ADR-003-caching]])`. Link only notes that exist in the vault, never repo files or agent memory.
 
 ## Step 2: Review Session Work
 
@@ -108,14 +127,14 @@ When a task's status, priority, or details changed during the session:
 1. `vault_query({ type: "task", custom_fields: { project: "<Project>" } })` to find the task
 2. `vault_update_frontmatter` to update status/priority
 3. Optionally `vault_append` to add context about what changed
-4. Add a heading-anchored backlink from the task to the devlog entry. Important: `vault_add_links` resolves `target` by file basename only — `#heading` suffixes in `target` are not parsed and the call will fail with `not found`. To link to a specific session entry, use `vault_append` to add an inline wikilink in the task body. Use the disambiguated devlog path (`<project>/development/devlog`) rather than the bare basename, since vaults can have multiple `devlog.md` files (one per project) and Obsidian's basename resolver may pick the wrong one:
+4. Add a heading-anchored backlink from the task to the devlog section. Important: `vault_add_links` resolves `target` by file basename only — `#heading` suffixes in `target` are not parsed and the call will fail with `not found`. To link to a specific session section, use `vault_append` to add an inline wikilink in the task body. Use the note's path under the devlog folder (`<project>/development/devlog/<note name>`) rather than the bare basename, since vaults can have several notes with similar names:
    ```
    vault_append({
      path: "<task-path>",
-     content: "\n**Status change**: pending → done on YYYY-MM-DD HH:mm. See [[<project>/development/devlog#YYYY-MM-DD HH:mm]] for the session that completed this."
+     content: "\n**Status change**: pending → done on YYYY-MM-DD HH:mm. See [[<project>/development/devlog/<note name without .md>#YYYY-MM-DD HH:mm <short heading>]] for the session that completed this."
    })
    ```
-   Substitute the actual project path and timestamp. Use the same `### YYYY-MM-DD HH:mm` heading from Step 1 as the wikilink target. This produces a clickable heading-anchored backlink that Obsidian renders correctly. Bidirectional traceability: the devlog entry links to the task (Step 1), the task body links back to the specific session heading.
+   Substitute the actual project path, note name and the section heading from Step 1. This produces a clickable heading-anchored backlink that Obsidian renders correctly. Bidirectional traceability: the devlog section links to the task (Step 1), the task body links back to the specific session section.
 
 ## Step 4: Quality Check
 
