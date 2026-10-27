@@ -11,7 +11,7 @@ Workflow for session wrap-up, run by the pkm-capture agent. Its capture context 
 
 ## Step 1: Devlog Entry
 
-Each Claude Code session has its own note in `<project>/development/devlog/`. Add one section to it per capture. `devlog.md` is a hub that embeds a table of those notes: never append or write to `devlog.md`, except to create it once when it is missing (below).
+Each Claude Code session has its own note in `<project>/development/devlog/`. Add one section to it per capture. `<project>` is the vault path from the `Project:` line (e.g. `01-Projects/MyApp`), without the `(via ...)` part; `<Project>` is its last segment, the project folder's name (`MyApp`). `devlog.md` is a hub that embeds a table of those notes: never append or write to `devlog.md`, except to create it once when it is missing (below).
 
 Read the `Devlog:` line of your capture context and act on its form:
 
@@ -33,7 +33,7 @@ Read the `Devlog:` line of your capture context and act on its form:
   vault_query({ folder: "<project>/development/devlog", custom_fields: { session: "<id>" } })
   ```
 
-  If it returns a note, append to it. Otherwise create one as above, using the current local time as the `YYYY-MM-DD HHmm` prefix.
+  If it returns a note, append to it. Otherwise create one as above at `<project>/development/devlog/<YYYY-MM-DD HHmm> <Title>.md`, with the current local time as `<YYYY-MM-DD HHmm>`.
 
 Then append exactly one section at the end of the note (`vault_append` with no heading):
 

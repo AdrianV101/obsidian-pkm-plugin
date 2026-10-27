@@ -103,7 +103,7 @@ The semantic index is a regenerable cache — deleting `semantic-index.db` trigg
 Notes must be created from templates to ensure proper frontmatter. The tool:
 - Loads templates from `05-Templates/` at startup; a template missing there falls back to the bundled copy in `templates/` (the vault copy wins; entries carry `source: "vault" | "bundled"`)
 - Auto-substitutes `<% tp.date.now("YYYY-MM-DD") %>` and `<% tp.file.title %>`
-- Accepts `frontmatter` param for tags and other fields (`status`, `priority`, `project`, `deciders`, `due`, `source`)
+- Accepts `frontmatter` param for tags and other fields (`session`, `status`, `priority`, `project`, `deciders`, `due`, `source`)
 - Validates required fields: `type`, `created`, `tags`
 - Validates enum fields for task notes: `status` (pending/active/done/cancelled), `priority` (low/normal/high/urgent)
 - Errors if file already exists (use `vault_edit` or `vault_append` to modify)

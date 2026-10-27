@@ -98,6 +98,15 @@ describe("skill wording and triggering", () => {
     assert.match(step1, /never (append|write)[^.]*devlog\.md/i);
   });
 
+  it("pkm-session-end Step 1 defines <project> and <Project> and spells out the unavailable branch's note path", async () => {
+    const { body } = await loadSkill("pkm-session-end");
+    const step1 = stepOf(body, "## Step 1", "## Step 2");
+    assert.match(step1, /`<project>` is the vault path from the `Project:` line \(e\.g\. `01-Projects\/MyApp`\)/);
+    assert.match(step1, /`<Project>` is its last segment, the project folder's name \(`MyApp`\)/);
+    const unavailable = stepOf(step1, "- `Devlog: unavailable", "Then append");
+    assert.ok(unavailable.includes("`<project>/development/devlog/<YYYY-MM-DD HHmm> <Title>.md`"), unavailable);
+  });
+
   it("pkm-session-end Step 3d backlinks to the session note's section heading, not the hub", async () => {
     const { body } = await loadSkill("pkm-session-end");
     const step3d = stepOf(body, "### 3d", "## Step 4");
