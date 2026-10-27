@@ -624,6 +624,63 @@ describe("migrate-devlog", () => {
     });
   });
 
+  describe("project spelling", () => {
+    /** Whether `dir`'s filesystem finds a name typed in another case, or in another Unicode form. */
+    async function filesystemFolds(dir) {
+      const probe = path.join(dir, "Probe\u00e9");
+      await fs.writeFile(probe, "");
+      try {
+        const found = async (name) => fs.lstat(path.join(dir, name)).then(() => true, () => false);
+        return { case: await found("pROBE\u00e9"), unicode: await found("Probee\u0301") };
+      } finally {
+        await fs.rm(probe);
+      }
+    }
+
+    it("uses the project folder's name as it is on disk when the argument differs only in case or Unicode form", async (t) => {
+      const folds = await filesystemFolds(vault);
+      const nfd = "Cafe\u0301 Notes";
+      const cases = [
+        { onDisk: P, arg: "my project", needs: "case" },
+        { onDisk: P, arg: "01-projects/MY PROJECT", needs: "case" },
+        { onDisk: nfd, arg: nfd.normalize("NFC"), needs: "unicode" },
+      ].filter((c) => folds[c.needs]);
+      if (cases.length === 0) {
+        t.skip("the filesystem tells these spellings apart");
+        return;
+      }
+      for (const { onDisk, arg } of cases) {
+        const v = await makeVault();
+        try {
+          const project = `01-Projects/${onDisk}`;
+          const folder = `${project}/development/devlog`;
+          await put(v, `${project}/development/devlog.md`, "## 2026-10-05: Only\n- x\n");
+          const result = await run([arg, "--apply"], { vault: v });
+          assert.equal(result.code, 0, `${arg}: ${result.stderr}`);
+          assert.equal(
+            result.stdout,
+            [
+              `Wrote 1 day note to ${folder}`,
+              `Moved the old devlog to .trash/${project}/development/devlog.md`,
+              `Wrote the hub at ${project}/development/devlog.md`,
+            ].join("\n") + "\n",
+            arg,
+          );
+          // Names as the folders list them: a case-insensitive lookup would match any spelling.
+          const name = `2026-10-05 ${onDisk} devlog.md`;
+          assert.deepEqual(await filesIn(v, folder), [name], arg);
+          assert.deepEqual(await filesIn(v, ".trash/01-Projects"), [onDisk], arg);
+          const projectLine = (await read(v, `${folder}/${name}`)).split("\n")[2];
+          const value = projectLine.slice("project: ".length);
+          assert.equal(value.startsWith('"') ? JSON.parse(value) : value, onDisk, arg);
+          assert.ok((await read(v, `${project}/development/devlog.md`)).includes(`file.inFolder("${folder}")`), arg);
+        } finally {
+          await fs.rm(v, { recursive: true, force: true });
+        }
+      }
+    });
+  });
+
   describe("scale", () => {
     it("previews and applies a Scope-sized devlog (2 MB, 800 entries, 96 days) in under 10 s", async () => {
       const pieces = [["fm", FM], ["scaffold", "\n# Development Log\n\n## Sessions\n\n"]];

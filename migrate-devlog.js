@@ -134,7 +134,7 @@ function parseArgs(args) {
  *
  * @param {string} vaultPath
  * @param {string} arg
- * @returns {{ projectPath: string, name: string } | { error: string }}
+ * @returns {{ projectPath: string } | { error: string }}
  */
 function resolveProject(vaultPath, arg) {
   const projectPath = arg.includes("/") ? arg.replace(/\/+$/, "") : `01-Projects/${arg}`;
@@ -145,7 +145,7 @@ function resolveProject(vaultPath, arg) {
   }
   const relative = path.relative(vaultPath, path.join(vaultPath, ...segments));
   if (relative === "" || relative.startsWith("..") || path.isAbsolute(relative)) return invalid;
-  return { projectPath, name: segments[segments.length - 1] };
+  return { projectPath };
 }
 
 /** @param {string} value */
@@ -170,14 +170,37 @@ async function lstatOrNull(abs) {
 }
 
 /**
+ * Each segment of an existing path as its parent folder lists it. A
+ * case- or Unicode-form-insensitive filesystem finds the folder under the typed
+ * spelling, but the names, properties and hub filter must carry the real one.
+ *
+ * @param {string} vaultPath
+ * @param {string[]} segments
+ * @returns {Promise<string[]>}
+ */
+async function onDiskSegments(vaultPath, segments) {
+  const fold = (s) => s.normalize("NFC").toLowerCase();
+  const resolved = [];
+  for (const segment of segments) {
+    const names = await fs.readdir(path.join(vaultPath, ...resolved));
+    const matches = names.includes(segment) ? [segment] : names.filter((n) => fold(n) === fold(segment));
+    resolved.push(matches.length === 1 ? matches[0] : segment);
+  }
+  return resolved;
+}
+
+/**
  * Reads and parses the devlog and builds every file the migration would write.
  *
- * @param {{ abs: (rel: string) => string, now: Date }} ctx
- * @param {{ projectPath: string, name: string }} project
+ * @param {{ vaultPath: string, abs: (rel: string) => string, now: Date }} ctx
+ * @param {{ projectPath: string }} project
  */
-async function buildPlan(ctx, { projectPath, name }) {
-  const folderStat = await lstatOrNull(ctx.abs(projectPath));
-  if (!folderStat?.isDirectory()) return { kind: "blocked", reason: `project folder ${projectPath} does not exist` };
+async function buildPlan(ctx, { projectPath: typedPath }) {
+  const folderStat = await lstatOrNull(ctx.abs(typedPath));
+  if (!folderStat?.isDirectory()) return { kind: "blocked", reason: `project folder ${typedPath} does not exist` };
+  const segments = await onDiskSegments(ctx.vaultPath, typedPath.split("/"));
+  const projectPath = segments.join("/");
+  const name = segments[segments.length - 1];
 
   const devlogRel = `${projectPath}/development/devlog.md`;
   let raw;
