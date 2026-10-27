@@ -7,6 +7,9 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { buildCaptureContext } from "../hooks/capture-context.js";
 import { cursorPath, deltaPath } from "../hooks/capture-state.js";
+import { loadProjectContext } from "../hooks/load-context.js";
+import { createHandlers } from "../handlers.js";
+import { loadTemplates } from "../helpers.js";
 import { makeProject } from "./git-fixture.js";
 
 const pad2 = (n) => String(n).padStart(2, "0");
@@ -326,6 +329,45 @@ describe("Devlog line", () => {
     assert.match(devlogLine(out), /^Devlog: new note .*\(session: sess-1\)$/);
     assert.ok(contextOf(out).length < 2000);
     for (const line of linesOf(out)) assert.ok(line.length <= 480, line.length);
+  });
+});
+
+describe("from capture to session start", () => {
+  it("a note created and filled as the Devlog line says is found by the next capture and shown at session start", async (t) => {
+    await writeTranscript([entry("u1", "user", 1, "first prompt"), entry("u2", "assistant", 5, "first answer")]);
+    const prefix = prefixOf("2026-10-22T09:01:00.000Z");
+    const devlogLine = (out) => linesOf(out).find((l) => l.startsWith("Devlog:"));
+
+    const proposed = /^Devlog: new note (.+) \(session: sess-1\)$/.exec(devlogLine(await run()) ?? "");
+    assert.ok(proposed, "the first capture proposes a new note");
+    assert.equal(proposed[1], `01-Projects/MyApp/development/devlog/${prefix} <Title>.md`);
+    const rel = proposed[1].replace("<Title>", "Wire capture seam");
+
+    t.mock.method(console, "error", () => {}); // the vault has no 05-Templates/, which loadTemplates reports
+    const templateRegistry = await loadTemplates(vault);
+    assert.equal(templateRegistry.get("devlog-session")?.source, "bundled");
+    const handlers = await createHandlers({ vaultPath: vault, templateRegistry, semanticIndex: null, activityLog: null, sessionId: "seam-test" });
+    await handlers.get("vault_write")({
+      template: "devlog-session",
+      path: rel,
+      frontmatter: { tags: ["devlog"], project: "MyApp", session: SESSION },
+    });
+    const stamp = `${prefix.slice(0, 10)} ${prefix.slice(11, 13)}:${prefix.slice(13)}`;
+    await handlers.get("vault_append")({
+      path: rel,
+      content: `\n## ${stamp} Wire the capture seam\n\n### Summary\n- SEAMSUMMARY\n\n### Decisions\n- SEAMDECISION\n\n### Blockers\n- None\n\n### Next steps\n- SEAMNEXT\n`,
+    });
+
+    await fs.appendFile(transcript, JSON.stringify(entry("u3", "user", 9, "later prompt")) + "\n");
+    const second = await run({ agent_id: "agent2" }, {}, NOW + 60_000);
+    assert.match(linesOf(second)[2], /previous capture/);
+    assert.equal(devlogLine(second), `Devlog: ${rel} (add a section)`);
+
+    const { context } = await loadProjectContext(vault, "01-Projects/MyApp");
+    const part = context.split("### Recent Development Activity\n")[1];
+    assert.ok(part.startsWith(`#### ${prefix} Wire capture seam\n## ${stamp} Wire the capture seam\n`), part);
+    assert.ok(part.includes("### Summary\n- SEAMSUMMARY") && part.includes("### Next steps\n- SEAMNEXT"), part);
+    assert.ok(!part.includes("SEAMDECISION"), part);
   });
 });
 
