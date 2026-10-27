@@ -256,7 +256,7 @@ Vault/
 
 14 included templates: `adr`, `daily-note`, `devlog`, `devlog-session`, `fleeting-note`, `literature-note`, `meeting-notes`, `moc`, `note`, `permanent-note`, `project-index`, `research-note`, `task`, `troubleshooting-log`. Add your own templates to `05-Templates/` and they become available to `vault_write` automatically.
 
-A template missing from your vault's `05-Templates/` falls back to the copy bundled with the plugin, so `devlog-session` works in vaults set up before it existed. A copy in your vault always wins over the bundled one; to get the new hub-style `devlog` template, replace your vault's copy.
+A template missing from your vault's `05-Templates/` falls back to the copy bundled with the plugin, so `devlog-session` works in vaults set up before it existed. A copy in your vault always wins over the bundled one. A vault set up before `devlog.md` became a hub still has the old `devlog` template, which would create a hub without its table: delete `05-Templates/devlog.md` (the bundled hub template then applies) or replace it with the package's `templates/devlog.md`. `obsidian-pkm doctor` warns while the old one is there.
 
 Task notes enforce `status` (pending, active, done, cancelled) and `priority` (low, normal, high, urgent) enums. All other note types accept any string values for these fields.
 
