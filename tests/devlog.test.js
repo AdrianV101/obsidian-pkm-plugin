@@ -46,7 +46,7 @@ describe("sessionPrefix", () => {
 describe("classifyNoteName", () => {
   it("classifies session notes, day notes and non-matches", () => {
     const cases = [
-      ["2026-10-27 0914 SP4 devlog brainstorm.md", { kind: "session", date: "2026-10-27", time: "09:14", title: "SP4 devlog brainstorm" }],
+      ["2026-10-27 0914 Parser devlog brainstorm.md", { kind: "session", date: "2026-10-27", time: "09:14", title: "Parser devlog brainstorm" }],
       ["2026-10-27 0914 Fix the devlog.md", { kind: "session", date: "2026-10-27", time: "09:14", title: "Fix the devlog" }],
       ["2026-10-27 2359 Late night.md", { kind: "session", date: "2026-10-27", time: "23:59", title: "Late night" }],
       ["2026-10-27 My App devlog.md", { kind: "day", date: "2026-10-27", project: "My App" }],
