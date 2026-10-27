@@ -48,7 +48,7 @@ The project consists of three parts:
 **MCP Server**: A Node.js ES module server implementing the Model Context Protocol. The main entry point is `index.js` (server setup and request routing); tool definitions live in `tools.js` and handlers in `handlers.js`. `instructions.js` builds the server instructions (the vault rules every session receives, and the note routing table that `skills/pkm-write/SKILL.md` must match; `tests/instructions.test.js` keeps them equal), passed to the SDK in `index.js`. Shared modules: `vault-fs.js` (path containment, write-target rules, the live `FileIndex`, and `mutateFile`/`writeNew`, the only way notes are modified or created), `markdown.js` (dependency-free frontmatter splitting, heading parsing and section lookup; the hooks import it, so it must stay free of package imports), `frontmatter.js` (all YAML work, using `yaml`), `semantic-health.js` (dependency-free health formatting shared by the server, the hooks and doctor) and `helpers.js` (filtering, templates, peek). It provides 20 tools for vault interaction:
 - `vault_read` - Read note contents (supports pagination: `heading`, `tail`, `tail_sections` [with optional `section_level` param, default: 2], `chunk`, `lines`; auto-redirects to peek data for files >80k chars; `force` bypasses redirect; `heading` matches `## Foo` (level + text) or `Foo` (text at any level) and errors on duplicates; every mode's output is capped at 80k chars (400k with `force`) with a `[truncated: …; continue with lines: {start: N}]` marker)
 - `vault_peek` - Inspect file metadata/structure without reading full content (size, frontmatter, indented heading tree, preview)
-- `vault_write` - Create new notes from templates (enforces frontmatter; settable fields: `status`, `priority`, `project`, `deciders`, `due`, `source`; `variables` param for custom `<%...%>` substitution in template body)
+- `vault_write` - Create new notes from templates (enforces frontmatter; settable fields: `session`, `status`, `priority`, `project`, `deciders`, `due`, `source`; `variables` param for custom `<%...%>` substitution in template body)
 - `vault_append` - Add content to existing files, with optional positional insert (after/before heading, end of section)
 - `vault_edit` - Surgical string replacement (exact match, single occurrence)
 - `vault_update_frontmatter` - Update YAML frontmatter fields atomically (set, create, remove fields)
@@ -101,7 +101,7 @@ The semantic index is a regenerable cache — deleting `semantic-index.db` trigg
 ### vault_write (Template-Based Note Creation)
 
 Notes must be created from templates to ensure proper frontmatter. The tool:
-- Loads templates from `05-Templates/` at startup
+- Loads templates from `05-Templates/` at startup; a template missing there falls back to the bundled copy in `templates/` (the vault copy wins; entries carry `source: "vault" | "bundled"`)
 - Auto-substitutes `<% tp.date.now("YYYY-MM-DD") %>` and `<% tp.file.title %>`
 - Accepts `frontmatter` param for tags and other fields (`status`, `priority`, `project`, `deciders`, `due`, `source`)
 - Validates required fields: `type`, `created`, `tags`
@@ -262,14 +262,17 @@ The plugin provides 3 specialized agents (visible in `/agents`). Delegate to the
 | `pkm-capture` | When a PR is opened (automatic via PostToolUse hook after a successful `gh pr create`), after significant work blocks, before session ends | Background |
 | `link-auditor` | After creating/modifying multiple vault notes, periodic health checks | Background |
 
-**pkm-capture context:** The prompt needs only an optional focus note, the PR URL and, after a failed capture, the activity file it named. A SubagentStart hook (`hooks/capture-context.js`, matcher `^vault-pkm:pkm-capture$`) gives the agent its project, the session and a delta file with the condensed session activity since the previous capture, and records the capture position (`hooks/capture-state.js`) when the agent starts, because a stop hook receives no final message to judge success by; a capture with no project leaves the position alone. The agent ends with a `Status:` line, and a failed one names its activity file so the next dispatch can pass it on. It runs on haiku with user-scoped memory (the other agents have none). It handles both devlog entries and knowledge capture (decisions, research, tasks, bugs) in one pass. Conservative — most exchanges produce nothing worth capturing beyond the devlog entry. See `hooks/README.md` for the hook details.
+**pkm-capture context:** The prompt needs only an optional focus note, the PR URL and, after a failed capture, the activity file it named. A SubagentStart hook (`hooks/capture-context.js`, matcher `^vault-pkm:pkm-capture$`) gives the agent its project, the session, a delta file with the condensed session activity since the previous capture and a `Devlog:` line naming the session's note to add a section to (or the name of the note to create), and records the capture position (`hooks/capture-state.js`) when the agent starts, because a stop hook receives no final message to judge success by; a capture with no project leaves the position alone. The agent ends with a `Status:` line, and a failed one names its activity file so the next dispatch can pass it on. It runs on haiku with user-scoped memory (the other agents have none). It handles both the devlog section and knowledge capture (decisions, research, tasks, bugs) in one pass. Conservative — most exchanges produce nothing worth capturing beyond the devlog entry. See `hooks/README.md` for the hook details.
 
 **Project resolution** (`hooks/resolve-project.js`): a `# PKM:` annotation in `CLAUDE.local.md`/`CLAUDE.md`/`.claude/CLAUDE.md`, then a `repos:` list in a project's `_index.md` matched against normalised git remotes, then the main checkout's folder name. `/vault-pkm:init-project` links a repo by adding its remote to `repos:` and removing it from any other project's list (or writes a `CLAUDE.local.md` line in the main checkout when there is no remote) and never edits `CLAUDE.md`. `npx obsidian-pkm doctor` reports the project for the current folder.
+
+**Devlog**: each session has its own note in `<project>/development/devlog/` (`YYYY-MM-DD HHmm <Title>.md`); `devlog.md` is the hub. `devlog.js` holds the note names, folder listing, session-note lookup and the parser for the old single-file format. `migrate-devlog.js` (CLI: `obsidian-pkm migrate-devlog <project> [--apply]`, previews by default) splits an old `devlog.md` into day notes; `/vault-pkm:migrate-devlog` wraps it. Session start (`hooks/load-context.js`) loads the index and the 10 newest devlog items within 9,500 characters, and no tasks.
 
 **Templates** (`templates/`): Obsidian note templates for project documentation:
 - `project-index.md` - Project overview with YAML frontmatter
 - `adr.md` - Architecture Decision Record format
-- `devlog.md` - Development log with session entries
+- `devlog.md` - Devlog hub: an embedded Obsidian Bases table of the project's `development/devlog/` folder (`<% devlog_folder %>`)
+- `devlog-session.md` - One session's devlog note (`type: devlog-session`, `session`, sections per capture)
 - `permanent-note.md` - Atomic evergreen notes
 - `research-note.md` - Research findings and analysis
 - `troubleshooting-log.md` - Bug investigations and fixes
