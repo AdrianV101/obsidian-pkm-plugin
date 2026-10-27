@@ -364,13 +364,22 @@ async function createFile(abs, data, onCreated) {
   }
 }
 
-/** Directories from `first` (the one `mkdir -p` reported creating) down to `last`, deepest first. */
-function createdDirs(first, last) {
-  if (first === undefined) return [];
+/**
+ * The folders from `dir` up to, but not including, the first one that exists,
+ * deepest first, never above `root`. Computed before `mkdir -p` so that the
+ * restore removes exactly what this run creates, whatever path spelling
+ * `mkdir` reports.
+ *
+ * @returns {Promise<string[]>}
+ */
+export async function missingDirs(root, dir) {
   const dirs = [];
-  for (let dir = last; ; dir = path.dirname(dir)) {
-    dirs.push(dir);
-    if (dir === first || path.dirname(dir) === dir) return dirs;
+  for (let d = dir; ; d = path.dirname(d)) {
+    const rel = path.relative(root, d);
+    if (rel === "" || rel.startsWith("..") || path.isAbsolute(rel)) return dirs;
+    if (await lstatOrNull(d)) return dirs;
+    dirs.push(d);
+    if (path.dirname(d) === d) return dirs;
   }
 }
 
@@ -381,11 +390,13 @@ function trashTimestamp(now) {
 async function applyPlan(ctx, plan) {
   const { abs, checkpoint, out, err } = ctx;
   const { devlogRel, folderRel } = plan;
-  const done = { folderCreated: false, notes: [], trashDirs: [], trashRel: null, hubCreated: false };
+  const done = { folderDirs: [], notes: [], trashDirs: [], trashRel: null, hubCreated: false };
   let step = "";
   try {
     step = `creating ${folderRel}`;
-    done.folderCreated = (await fs.mkdir(abs(folderRel), { recursive: true })) !== undefined;
+    const folderDirs = await missingDirs(ctx.vaultPath, abs(folderRel));
+    await fs.mkdir(abs(folderRel), { recursive: true });
+    done.folderDirs = folderDirs;
 
     for (const note of plan.notes) {
       step = `writing ${note.rel}`;
@@ -409,7 +420,9 @@ async function applyPlan(ctx, plan) {
       if (await lstatOrNull(abs(trashRel))) throw new Error(`${trashRel} already exists`);
     }
     const trashDir = path.dirname(abs(trashRel));
-    done.trashDirs = createdDirs(await fs.mkdir(trashDir, { recursive: true }), trashDir);
+    const trashDirs = await missingDirs(ctx.vaultPath, trashDir);
+    await fs.mkdir(trashDir, { recursive: true });
+    done.trashDirs = trashDirs;
     await fs.rename(abs(devlogRel), abs(trashRel));
     done.trashRel = trashRel;
 
@@ -474,6 +487,6 @@ async function restore(ctx, plan, done) {
     for (const dir of done.trashDirs) if (!(await remove(dir, fs.rmdir))) left.push(toRel(dir));
   }
   for (const rel of done.notes) if (!(await remove(abs(rel), fs.unlink))) left.push(rel);
-  if (done.folderCreated && !(await remove(abs(plan.folderRel), fs.rmdir))) left.push(`${plan.folderRel}/`);
+  for (const dir of done.folderDirs) if (!(await remove(dir, fs.rmdir))) left.push(toRel(dir));
   return left;
 }

@@ -5,7 +5,7 @@ import path from "node:path";
 import os from "node:os";
 import { Buffer } from "node:buffer";
 import { performance } from "node:perf_hooks";
-import { runMigrateDevlog } from "../migrate-devlog.js";
+import { runMigrateDevlog, missingDirs } from "../migrate-devlog.js";
 
 const ROOT = path.join(import.meta.dirname, "..");
 const P = "My Project";
@@ -485,6 +485,29 @@ describe("migrate-devlog", () => {
       }
     });
 
+    it("restores the starting state when the vault is given by another spelling of its path", async () => {
+      const fx = devlog(MIXED);
+      const real = await makeVault();
+      const link = `${real}-link`;
+      try {
+        await fs.symlink(real, link, "junction");
+        await put(real, DEVLOG, fx.content);
+        const before = await snapshot(real);
+        const result = await run([P, "--apply"], {
+          vault: link,
+          checkpoint: async (step) => {
+            if (step === "hub-write") throw new Error("disk full");
+          },
+        });
+        assert.equal(result.code, 1);
+        assert.match(result.stderr, /^Restored the starting state\.$/m, result.stderr);
+        assert.deepEqual(await snapshot(real), before);
+      } finally {
+        await fs.rm(link, { force: true });
+        await fs.rm(real, { recursive: true, force: true });
+      }
+    });
+
     it(
       "lists every file left behind when the restore itself fails",
       { skip: process.platform === "win32" || process.getuid?.() === 0 },
@@ -716,6 +739,41 @@ describe("migrate-devlog", () => {
       const joined = (await Promise.all(newestFirst.map((rel) => read(vault, rel)))).map((c) => c.slice(dayHeader("0000-00-00").length)).join("");
       assert.equal(fx.beforeEntries + joined, fx.content);
       assert.ok(elapsed < 10_000, `took ${Math.round(elapsed)} ms`);
+    });
+  });
+
+  describe("missingDirs", () => {
+    it("lists only the levels that do not exist, deepest first, and stops at the first that does", async () => {
+      const v = await makeVault();
+      try {
+        await fs.mkdir(path.join(v, "a"));
+        const dirs = await missingDirs(v, path.join(v, "a", "b", "c"));
+        assert.deepEqual(dirs, [path.join(v, "a", "b", "c"), path.join(v, "a", "b")]);
+      } finally {
+        await fs.rm(v, { recursive: true, force: true });
+      }
+    });
+
+    it("is empty when the folder already exists", async () => {
+      const v = await makeVault();
+      try {
+        await fs.mkdir(path.join(v, "a"));
+        assert.deepEqual(await missingDirs(v, path.join(v, "a")), []);
+        assert.deepEqual(await missingDirs(v, v), []);
+      } finally {
+        await fs.rm(v, { recursive: true, force: true });
+      }
+    });
+
+    it("never reaches above the vault root, even when the root itself is missing", async () => {
+      const v = await makeVault();
+      const root = path.join(v, "gone");
+      try {
+        assert.deepEqual(await missingDirs(root, path.join(root, "x")), [path.join(root, "x")]);
+        assert.deepEqual(await missingDirs(root, path.join(v, "elsewhere")), []);
+      } finally {
+        await fs.rm(v, { recursive: true, force: true });
+      }
     });
   });
 });
