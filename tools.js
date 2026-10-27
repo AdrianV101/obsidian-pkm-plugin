@@ -64,7 +64,7 @@ Built-in variables (auto-substituted):
 - <% tp.file.title %> - Derived from output path filename
 
 Required: frontmatter.tags - provide at least one tag for the note.
-Optional: frontmatter.status, frontmatter.priority, frontmatter.project, frontmatter.deciders, frontmatter.due, frontmatter.source (depending on template type).
+Optional: frontmatter.session, frontmatter.status, frontmatter.priority, frontmatter.project, frontmatter.deciders, frontmatter.due, frontmatter.source (depending on template type).
 Pass custom <%...%> variables via the 'variables' parameter.` + LINK_FORMAT_NOTE,
       inputSchema: {
         type: "object",

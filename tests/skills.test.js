@@ -136,6 +136,26 @@ describe("project linking", () => {
     assert.doesNotMatch(content, /obsidian:\/\/|Referring to vault files|pkm-capture/);
   });
 
+  it("migrate-devlog previews, asks before --apply, warns to upgrade every device, and allows every tool it names", async () => {
+    const content = await read("commands/migrate-devlog.md");
+    const frontmatter = extractFrontmatter(content) ?? {};
+    assert.equal(frontmatter.name, "migrate-devlog");
+    assert.ok(String(frontmatter.description ?? "").length > 0);
+    assert.ok(String(frontmatter["argument-hint"] ?? "").length > 0);
+    const body = content.slice(content.indexOf("\n---", 3) + 4);
+    const allowed = [].concat(frontmatter["allowed-tools"]);
+    const preview = body.indexOf('node "${CLAUDE_PLUGIN_ROOT}/cli.js" migrate-devlog');
+    const ask = body.indexOf("AskUserQuestion");
+    const apply = body.indexOf("--apply");
+    assert.ok(preview >= 0, "runs the plugin's own cli.js");
+    assert.ok(preview < ask && ask < apply, "preview, then ask, then --apply");
+    assert.match(body, /upgrade[^.]*every device/i);
+    for (const tool of ["Bash", "AskUserQuestion"]) {
+      if (body.includes(tool)) assert.ok(allowed.includes(tool), `${tool} must be allowed`);
+    }
+    for (const name of body.match(/mcp__[\w-]+/g) ?? []) assert.ok(allowed.includes(name), `${name} must be allowed`);
+  });
+
   it("init-project works out how a linked folder was linked and offers a relink", async () => {
     const content = await read("commands/init-project.md");
     const step1 = content.slice(content.indexOf("## Step 1"), content.indexOf("## Step 2"));
