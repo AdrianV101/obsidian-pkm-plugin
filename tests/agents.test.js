@@ -127,6 +127,15 @@ describe("pkm-capture", () => {
   const step0Of = (body) => body.slice(body.indexOf("**Step 0"), body.indexOf("**Supplementary sources**"));
   const lineWith = (text, needle) => text.split("\n").find((l) => l.includes(needle)) ?? "";
 
+  it("explains the Devlog line in its three forms in Step 0", async () => {
+    const { body } = await loadAgent("pkm-capture");
+    const step0 = step0Of(body);
+    assert.match(step0, /Devlog: <[^>]+> \(add a section\)/);
+    assert.match(step0, /Devlog: new note/);
+    assert.match(step0, /Devlog: unavailable/);
+    assert.match(step0, /pkm-session-end Step 1/);
+  });
+
   it("has a failed capture name the path of its activity file, so the main conversation can pass it on", async () => {
     const { body } = await loadAgent("pkm-capture");
     const failed = lineWith(body, "- `Status: failed - <reason>`");

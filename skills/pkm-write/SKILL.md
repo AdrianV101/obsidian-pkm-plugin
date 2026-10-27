@@ -150,7 +150,7 @@ Guidelines for edits, appends, and frontmatter updates. These don't require the 
 
 ### vault_append — Adding Content
 
-- **Devlog entries**: Use `vault_append({ heading: "## Sessions", position: "after_heading" })` for reverse-chronological ordering
+- **Devlog entries**: pkm-capture writes them into the session's own note in `<project>/development/devlog/` (pkm-session-end Step 1). `devlog.md` is a hub that is never appended to
 - **Section additions**: Specify the `heading` param to insert in the right location rather than appending at EOF
 
 ### vault_update_frontmatter — Atomic Field Updates
