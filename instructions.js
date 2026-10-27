@@ -36,6 +36,6 @@ ${routingTable()}
 
 4. Capture. pkm-capture runs automatically when a PR is created. Dispatch it in the background after significant work blocks or before ending. Don't run pkm-session-end in the main conversation and don't edit the devlog by hand.
 
-5. Agents and context. vault-explorer researches what the vault knows; link-auditor checks links after many note changes. The project's context is loaded at session start, so there's no need to read _index.md, the devlog or tasks just to get oriented; follow a truncation marker when you need more.
+5. Agents and context. vault-explorer researches what the vault knows; link-auditor checks links after many note changes. The project's index and recent devlog sessions are loaded at session start, so there's no need to read _index.md or the devlog just to get oriented; follow a truncation marker when you need more.
 `;
 }

@@ -3,23 +3,15 @@
 // and ../markdown.js is dependency-free for that reason.
 import fs from "node:fs/promises";
 import path from "node:path";
-import { splitFrontmatter, parseHeadings, sectionRange } from "../markdown.js";
+import { splitFrontmatter, parseHeadings } from "../markdown.js";
+import { devlogFolder, listDevlogNotes, parseDevlog } from "../devlog.js";
 
-export const CONTEXT_BUDGET = 8000, INDEX_BUDGET = 2500, ENTRY_BUDGET = 1500, MAX_TASKS = 10, COMPACT_BUDGET = 1500;
+// Claude Code caps a hook's additionalContext at 10,000 characters.
+export const CONTEXT_BUDGET = 9500, INDEX_BUDGET = 2500, COMPACT_BUDGET = 1500;
 
-const MAX_TITLE_CHARS = 150;
-const DATE_RE = /^(\d{4}-\d{2}-\d{2})(?:[ T]+(\d{1,2}):(\d{2}))?/;
-const STATUS_RANK = { active: 0, pending: 1 };
-const PRIORITY_RANK = { urgent: 0, high: 1, normal: 2, low: 3 };
+const MAX_ITEMS = 10;
 const INDEX_FIRST = ["overview", "current status"];
 const INDEX_SKIP = new Set(["key links", "related"]);
-
-/** "YYYY-MM-DD" or "YYYY-MM-DD HH:mm" from the start of a heading, else null. Sorts as a string. */
-function headingDate(text) {
-  const m = DATE_RE.exec(text);
-  if (!m) return null;
-  return m[2] === undefined ? m[1] : `${m[1]} ${m[2].padStart(2, "0")}:${m[3]}`;
-}
 
 /**
  * Cut `text` so the result, marker included, fits `budget`: at a line boundary, or, when the
@@ -39,68 +31,6 @@ function truncateAtLine(text, budget, marker) {
     if (before >= 0xD800 && before <= 0xDBFF) cut--;
   }
   return text.slice(0, cut).trimEnd() + "\n" + marker;
-}
-
-/**
- * The newest devlog entries, newest first. Entries are level-3 headings inside a
- * `## Sessions` section or inside a dated `## YYYY-MM-DD` day section, and level-2
- * headings elsewhere; a dated day section without dated level-3 children is itself
- * an entry. Entries are ranked by the date (and time) at the start of the heading,
- * whatever order the file is in; for equal dates the one later in the file wins.
- * Without any dated entry: the first n entries under `## Sessions`, else the last n
- * level-2 sections.
- * @param {string} devlogContent
- * @param {number} [n=3]
- * @returns {string[]} entry texts (heading line through the end of its section)
- */
-export function selectRecentEntries(devlogContent, n = 3) {
-  const headings = parseHeadings(devlogContent);
-  const dated = [];
-  const sessionEntries = [];
-  const level2 = [];
-  let hasSessions = false;
-  let parent = null;
-
-  for (const h of headings) {
-    if (h.level === 1) {
-      parent = null;
-    } else if (h.level === 2) {
-      level2.push(h);
-      const date = headingDate(h.text);
-      if (/^sessions$/i.test(h.text)) {
-        hasSessions = true;
-        parent = { kind: "sessions" };
-      } else if (date) {
-        const entry = { heading: h, key: date, container: false };
-        dated.push(entry);
-        parent = { kind: "day", entry };
-      } else {
-        parent = { kind: "other" };
-      }
-    } else if (h.level === 3 && parent && parent.kind !== "other") {
-      if (parent.kind === "sessions") sessionEntries.push(h);
-      const date = headingDate(h.text);
-      if (!date) continue;
-      if (parent.kind === "day") parent.entry.container = true;
-      dated.push({ heading: h, key: date, container: false });
-    }
-  }
-
-  let chosen;
-  const entries = dated.filter(e => !e.container);
-  if (entries.length > 0) {
-    entries.sort((a, b) => (a.key === b.key ? b.heading.offset - a.heading.offset : a.key < b.key ? 1 : -1));
-    chosen = entries.slice(0, n).map(e => e.heading);
-  } else if (hasSessions) {
-    chosen = sessionEntries.slice(0, n);
-  } else {
-    chosen = level2.slice(-n).reverse();
-  }
-
-  return chosen.map(h => {
-    const { headingStart, sectionEnd } = sectionRange(devlogContent, headings, h);
-    return devlogContent.slice(headingStart, sectionEnd).trim();
-  });
 }
 
 /** Overview and Current Status first, Key Links and Related dropped, capped at INDEX_BUDGET. */
@@ -123,87 +53,104 @@ function buildIndexText(content, relPath) {
   return truncateAtLine(text || "(empty)", INDEX_BUDGET, `[truncated — vault_read ${relPath}]`);
 }
 
-/** Scalar `key: value` lines only; enough for status/priority/due. */
-function parseSimpleFrontmatter(text) {
-  const fm = {};
-  if (!text) return fm;
-  for (const line of text.split(/\r?\n/)) {
-    const m = /^([A-Za-z_][\w-]*):[ \t]*(.*?)[ \t]*$/.exec(line);
-    if (!m) continue;
-    let value = m[2].replace(/^(["'])(.*)\1$/, "$2");
-    if (value === "" || value === "null" || value === "~") value = null;
-    fm[m[1]] = value;
-  }
-  return fm;
+/** Entries with text after their heading line; a day heading that only groups dated children is not one. */
+function contentEntries(content, entries) {
+  return entries.filter(e => content.slice(e.start, e.end).replace(/^[^\n]*/, "").trim() !== "");
 }
 
-function compareTasks(a, b) {
-  return (STATUS_RANK[a.status] - STATUS_RANK[b.status])
-    || ((PRIORITY_RANK[a.priority] ?? PRIORITY_RANK.normal) - (PRIORITY_RANK[b.priority] ?? PRIORITY_RANK.normal))
-    || (a.due === b.due ? 0 : a.due === null ? 1 : b.due === null ? -1 : a.due < b.due ? -1 : 1)
-    || a.title.localeCompare(b.title);
+/** A session section: heading line, Summary and Next steps; the whole section when either is missing. */
+function renderSessionSection(text) {
+  const headings = parseHeadings(text).filter(h => h.level <= 3);
+  const find = (name) => {
+    const i = headings.findIndex(h => h.level === 3 && h.text.trim().toLowerCase() === name);
+    if (i === -1) return null;
+    return text.slice(headings[i].offset, headings[i + 1]?.offset ?? text.length).trim();
+  };
+  const summary = find("summary");
+  const next = find("next steps");
+  if (summary === null || next === null) return text.trim();
+  return [text.slice(0, text.indexOf("\n") === -1 ? text.length : text.indexOf("\n")).trim(), summary, next].join("\n\n");
 }
 
-/** Open (active/pending) tasks in display order. */
-async function loadTasks(projectDir) {
-  const taskDir = path.join(projectDir, "tasks");
-  let names;
+/** The text shown for a listed note, or null when it has no entry. */
+async function renderNote(dirAbs, note) {
+  const content = await fs.readFile(path.join(dirAbs, note.name), "utf-8");
+  const entries = contentEntries(content, parseDevlog(content).entries);
+  if (entries.length === 0) return null;
+  if (note.kind === "day") return content.slice(entries[0].start, entries[0].end).trim();
+  const last = entries[entries.length - 1];
+  return renderSessionSection(content.slice(last.start, last.end));
+}
+
+/** Entries of an unmigrated devlog.md as candidates; none for a missing file or a hub. */
+async function loadLegacyEntries(projectDir, projectPath) {
+  let content;
   try {
-    names = (await fs.readdir(taskDir)).filter(name => name.endsWith(".md")).sort();
+    content = await fs.readFile(path.join(projectDir, "development", "devlog.md"), "utf-8");
   } catch (e) {
-    if (e.code !== "ENOENT") console.error("PKM load-context: error reading tasks:", e.message);
+    if (e.code !== "ENOENT") console.error("PKM load-context: error reading devlog.md:", e.message);
     return [];
   }
+  const vaultRel = `${projectPath}/development/devlog.md`;
+  return contentEntries(content, parseDevlog(content).entries).map((e, index) => ({
+    key: e.key,
+    index,
+    label: `devlog.md: ${e.heading}`,
+    vaultRel,
+    legacy: true,
+    render: async () => content.slice(e.start, e.end).trim(),
+  }));
+}
 
-  const tasks = [];
-  for (const name of names) {
-    let content;
+/** Notes and legacy entries merged newest first; on equal keys a note precedes an entry, a later entry an earlier one. */
+function mergeCandidates(notes, legacy, dirAbs, folder) {
+  const noteItems = notes.map(n => ({
+    key: n.key,
+    label: n.name.replace(/\.md$/, ""),
+    vaultRel: `${folder}/${n.name}`,
+    render: () => renderNote(dirAbs, n),
+  }));
+  const entries = [...legacy].sort((a, b) => (a.key !== b.key ? (a.key < b.key ? 1 : -1) : b.index - a.index));
+  const merged = [];
+  let i = 0, j = 0;
+  while (i < noteItems.length || j < entries.length) {
+    if (j >= entries.length || (i < noteItems.length && noteItems[i].key >= entries[j].key)) merged.push(noteItems[i++]);
+    else merged.push(entries[j++]);
+  }
+  return merged;
+}
+
+async function listNotes(dirAbs) {
+  try {
+    return await listDevlogNotes(dirAbs);
+  } catch (e) {
+    console.error("PKM load-context: error listing the devlog folder:", e.message);
+    return [];
+  }
+}
+
+/** Renders up to MAX_ITEMS items, each getting an equal share of what is left of `room`. */
+async function renderItems(candidates, room) {
+  const items = [];
+  let remaining = room;
+  for (let i = 0; i < candidates.length && items.length < MAX_ITEMS; i++) {
+    const c = candidates[i];
+    let body;
     try {
-      content = await fs.readFile(path.join(taskDir, name), "utf-8");
+      body = await c.render();
     } catch (e) {
-      console.error(`PKM load-context: error reading task ${name}:`, e.message);
+      console.error(`PKM load-context: error reading ${c.label}:`, e.message);
       continue;
     }
-    const { frontmatterText, body } = splitFrontmatter(content);
-    const fm = parseSimpleFrontmatter(frontmatterText);
-    if (fm.status !== "active" && fm.status !== "pending") continue;
-    const titleLine = body.split("\n").find(l => l.startsWith("# "));
-    const title = (titleLine ? titleLine.slice(2).trim() : name.slice(0, -3)).slice(0, MAX_TITLE_CHARS);
-    const priority = (fm.priority ?? "normal").toLowerCase();
-    const due = /^\d{4}-\d{2}-\d{2}/.test(fm.due ?? "") ? fm.due.slice(0, 10) : null;
-    tasks.push({ title, status: fm.status, priority, due });
+    if (body === null) continue;
+    const separator = items.length === 0 ? 0 : 2;
+    const itemsLeft = Math.min(MAX_ITEMS - items.length, candidates.length - i);
+    const share = Math.floor(remaining / itemsLeft) - separator;
+    const text = truncateAtLine(`#### ${c.label}\n${body}`, share, `[truncated — vault_read ${c.vaultRel}]`);
+    items.push(text);
+    remaining -= text.length + separator;
   }
-  return tasks.sort(compareTasks);
-}
-
-function taskLines(tasks, taskFolder, format) {
-  const lines = tasks.slice(0, MAX_TASKS).map(format);
-  if (tasks.length > MAX_TASKS) {
-    lines.push(`+${tasks.length - MAX_TASKS} more (vault_query type: "task", folder: "${taskFolder}")`);
-  }
-  return lines;
-}
-
-function assembleContext({ projectPath, indexText, indexRel, devlogText, devlogRel, tasksText }) {
-  const build = (index, devlog) => [
-    `## PKM Project Context: ${projectPath}`,
-    index === null ? null : `### Project Index\n${index}`,
-    devlog === null ? null : `### Recent Development Activity\n${devlog}`,
-    `### Active Tasks\n${tasksText}`,
-  ].filter(s => s !== null).join("\n\n");
-
-  // Over budget: trim the devlog first, then the index.
-  let index = indexText;
-  let devlog = devlogText;
-  let over = build(index, devlog).length - CONTEXT_BUDGET;
-  if (over > 0 && devlog !== null) {
-    devlog = truncateAtLine(devlog, Math.max(0, devlog.length - over), `[truncated — vault_read ${devlogRel}]`);
-    over = build(index, devlog).length - CONTEXT_BUDGET;
-  }
-  if (over > 0 && index !== null) {
-    index = truncateAtLine(index, Math.max(0, index.length - over), `[truncated — vault_read ${indexRel}]`);
-  }
-  return truncateAtLine(build(index, devlog), CONTEXT_BUDGET, "[truncated]");
+  return items;
 }
 
 /**
@@ -212,50 +159,39 @@ function assembleContext({ projectPath, indexText, indexRel, devlogText, devlogR
  * @param {string} vaultPath
  * @param {string} projectPath - vault-relative project folder, "/"-separated
  * @param {{ source?: string }} [opts] - SessionStart hook `source` (startup|resume|clear|compact)
- * @returns {Promise<{ context: string, meta: { index: boolean, devlog: boolean, tasks: number, source: string } }>}
+ * @returns {Promise<{ context: string, meta: { index: boolean, devlog: number, source: string } }>}
  */
 export async function loadProjectContext(vaultPath, projectPath, { source = "startup" } = {}) {
   const projectDir = path.join(vaultPath, projectPath);
-  const meta = { index: false, devlog: false, tasks: 0, source };
-  const taskFolder = `${projectPath}/tasks`;
-
-  const tasks = await loadTasks(projectDir);
-  meta.tasks = tasks.length;
+  const meta = { index: false, devlog: 0, source };
+  const folder = devlogFolder(projectPath);
+  const dirAbs = path.join(vaultPath, ...folder.split("/"));
+  const candidates = mergeCandidates(await listNotes(dirAbs), await loadLegacyEntries(projectDir, projectPath), dirAbs, folder);
 
   if (source === "compact") {
+    const shown = candidates.slice(0, MAX_ITEMS);
+    meta.devlog = shown.length;
     const lines = [
       `## PKM Project Context: ${projectPath} (compact)`,
-      "### Active Tasks",
-      ...(tasks.length > 0 ? taskLines(tasks, taskFolder, t => `- ${t.title}`) : ["No active tasks"]),
+      "### Recent sessions",
+      ...(shown.length > 0 ? shown.map(c => `- ${c.label}`) : ["No devlog entries found."]),
     ];
     return { context: truncateAtLine(lines.join("\n"), COMPACT_BUDGET, "[truncated]"), meta };
   }
 
   const indexRel = `${projectPath}/_index.md`;
-  let indexText = null;
+  let indexSection = null;
   try {
-    indexText = buildIndexText(await fs.readFile(path.join(projectDir, "_index.md"), "utf-8"), indexRel);
+    indexSection = `### Project Index\n${buildIndexText(await fs.readFile(path.join(projectDir, "_index.md"), "utf-8"), indexRel)}`;
     meta.index = true;
   } catch (e) {
     if (e.code !== "ENOENT") console.error("PKM load-context: error reading _index.md:", e.message);
   }
 
-  const devlogRel = `${projectPath}/development/devlog.md`;
-  let devlogText = null;
-  try {
-    const devlog = await fs.readFile(path.join(projectDir, "development", "devlog.md"), "utf-8");
-    const marker = `[truncated — vault_read ${devlogRel}]`;
-    const entries = selectRecentEntries(devlog).map(entry => truncateAtLine(entry, ENTRY_BUDGET, marker));
-    devlogText = entries.length > 0 ? entries.join("\n\n") : "No devlog entries found.";
-    meta.devlog = true;
-  } catch (e) {
-    if (e.code !== "ENOENT") console.error("PKM load-context: error reading devlog:", e.message);
-  }
-
-  const tasksText = tasks.length > 0
-    ? taskLines(tasks, taskFolder, t => `- ${t.title} (status: ${t.status}, priority: ${t.priority})`).join("\n")
-    : "No active tasks";
-
-  const context = assembleContext({ projectPath, indexText, indexRel, devlogText, devlogRel, tasksText });
-  return { context, meta };
+  const head = [`## PKM Project Context: ${projectPath}`, indexSection, "### Recent Development Activity"]
+    .filter(s => s !== null).join("\n\n") + "\n";
+  const items = await renderItems(candidates, CONTEXT_BUDGET - head.length);
+  meta.devlog = items.length;
+  const context = head + (items.length > 0 ? items.join("\n\n") : "No devlog entries found.");
+  return { context: truncateAtLine(context, CONTEXT_BUDGET, "[truncated]"), meta };
 }

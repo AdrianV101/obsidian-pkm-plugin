@@ -191,7 +191,7 @@ describe("plugin manifest contracts", () => {
         await fs.mkdir(vault);
         await fs.cp(path.join(ROOT, "hooks"), path.join(pluginRoot, "hooks"), { recursive: true });
         // Dependency-free modules the hooks import from the plugin root.
-        for (const file of ["markdown.js", "semantic-health.js"]) {
+        for (const file of ["markdown.js", "semantic-health.js", "devlog.js"]) {
           await fs.copyFile(path.join(ROOT, file), path.join(pluginRoot, file));
         }
 
