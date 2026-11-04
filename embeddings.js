@@ -127,6 +127,8 @@ function disabledReason(err) {
  * Stores embeddings in SQLite + sqlite-vec for fast KNN lookups.
  * Automatically indexes on startup and watches for file changes.
  */
+const basenameOf = (p) => p.slice(p.lastIndexOf("/") + 1);
+
 export class SemanticIndex {
   /**
    * @param {Object} opts
@@ -324,6 +326,11 @@ export class SemanticIndex {
         this.db.prepare("DELETE FROM files WHERE path = ?").run(newPath);
         this.db.prepare("UPDATE chunks SET file_path = ? WHERE file_path = ?").run(newPath, oldPath);
         this.db.prepare("UPDATE files SET path = ? WHERE path = ?").run(newPath, oldPath);
+        // The embedded text starts with the file name: a rename must re-chunk, while the rows
+        // stay searchable until the new set is stored.
+        if (basenameOf(newPath) !== basenameOf(oldPath)) {
+          this.db.prepare("UPDATE files SET content_hash = '' WHERE path = ?").run(newPath);
+        }
       }
     });
     txn();
@@ -595,25 +602,50 @@ export class SemanticIndex {
       return;
     }
 
-    if (this._disabled) {
-      this._stale.add(relativePath);
-      throw new Error(formatDisabledMessage(this.health()));
+    // Vectors are keyed by chunk hash across the whole index, so an edit, a moved section or
+    // identical text in another note sends nothing the index already holds.
+    const known = this._storedVectors(chunks.map(c => c.hash));
+    const missing = [];
+    for (const chunk of chunks) {
+      if (!known.has(chunk.hash) && !missing.some(m => m.hash === chunk.hash)) missing.push(chunk);
     }
 
-    let embeddings;
-    try {
-      embeddings = await getEmbeddings(chunks.map(c => c.text), this.openaiApiKey, this._embeddingOptions());
-    } catch (err) {
-      this._stale.add(relativePath);
-      this._noteFailure(err);
-      if (err instanceof EmbeddingError && err.kind === "rate_limit" && (err.retryAfterMs ?? 0) > MAX_RETRY_WAIT_MS) {
-        this._pauseSync = true;
+    if (missing.length > 0) {
+      if (this._disabled) {
+        this._stale.add(relativePath);
+        throw new Error(formatDisabledMessage(this.health()));
       }
-      throw err;
+      let fresh;
+      try {
+        fresh = await getEmbeddings(missing.map(c => c.text), this.openaiApiKey, this._embeddingOptions());
+      } catch (err) {
+        this._stale.add(relativePath);
+        this._noteFailure(err);
+        if (err instanceof EmbeddingError && err.kind === "rate_limit" && (err.retryAfterMs ?? 0) > MAX_RETRY_WAIT_MS) {
+          this._pauseSync = true;
+        }
+        throw err;
+      }
+      this._noteSuccess();
+      missing.forEach((chunk, i) => known.set(chunk.hash, fresh[i]));
     }
-    this._noteSuccess();
 
+    const embeddings = chunks.map(c => known.get(c.hash));
     this._storeFile(relativePath, mtimeMs, hash, chunks, embeddings);
+  }
+
+  /** @returns {Map<string, Float32Array>} stored vector for each of the given chunk hashes that has one */
+  _storedVectors(hashes) {
+    const found = new Map();
+    const select = this.db.prepare(`
+      SELECT v.embedding FROM chunks c JOIN vec_chunks v ON v.rowid = c.id WHERE c.chunk_hash = ? LIMIT 1
+    `);
+    for (const hash of hashes) {
+      if (found.has(hash)) continue;
+      const row = select.get(hash);
+      if (row) found.set(hash, new Float32Array(new Uint8Array(row.embedding).buffer));
+    }
+    return found;
   }
 
   _storeFile(relativePath, mtimeMs, hash, chunks, embeddings) {

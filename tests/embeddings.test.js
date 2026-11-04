@@ -5,6 +5,7 @@ import fsSync from "fs";
 import path from "path";
 import os from "os";
 import { EventEmitter } from "node:events";
+import { Buffer } from "node:buffer";
 import {
   SemanticIndex,
   contentHash,
@@ -1607,5 +1608,148 @@ describe("SemanticIndex freshness", () => {
     await idx.reindexFile("link.md");
 
     assert.deepEqual(indexedPaths(idx), ["real.md"]);
+  });
+
+  describe("re-embedding only changed chunks", () => {
+    const section = (name, filler) => `## ${name}\n\n${(`${name} ${filler} words. `).repeat(100)}\n\n`;
+    const longNote = (fillers = ["one", "two", "three", "four", "five"]) =>
+      "Intro line.\n\n" + fillers.map((f, i) => section(`Part${i}`, f)).join("");
+    const sentTexts = (from = 0) => fake.calls.slice(from).flat();
+    const rowsFor = (idx, rel) => idx.db.prepare("SELECT id, chunk_hash FROM chunks WHERE file_path = ? ORDER BY chunk_index").all(rel);
+    const vecBytes = (idx, id) => Buffer.from(idx.db.prepare("SELECT embedding FROM vec_chunks WHERE rowid = ?").get(BigInt(id)).embedding);
+
+    it("editing one section sends only that chunk and keeps the other vectors", async () => {
+      const vault = await vaultWith({ "n.md": longNote() });
+      fake = installFakeOpenAI();
+      const idx = await openIndex(vault);
+      const before = rowsFor(idx, "n.md");
+      assert.ok(before.length >= 5);
+      const callsBefore = fake.calls.length;
+
+      await fs.writeFile(path.join(vault, "n.md"), longNote(["one", "two", "CHANGED", "four", "five"]));
+      await idx.reindexFile("n.md");
+
+      const sent = sentTexts(callsBefore);
+      assert.equal(sent.length, 1);
+      assert.ok(sent[0].includes("CHANGED"));
+      const after = rowsFor(idx, "n.md");
+      assert.equal(after.length, before.length);
+      for (let i = 0; i < after.length; i++) {
+        if (after[i].chunk_hash === before[i].chunk_hash) {
+          assert.deepEqual(vecBytes(idx, after[i].id), vecBytes(idx, before[i].id));
+        }
+      }
+      assert.equal(after.filter((r, i) => r.chunk_hash === before[i].chunk_hash).length, before.length - 1);
+    });
+
+    it("appending to a long note sends one chunk, or two when a new piece starts", async () => {
+      const vault = await vaultWith({ "n.md": longNote() });
+      fake = installFakeOpenAI();
+      const idx = await openIndex(vault);
+      const callsBefore = fake.calls.length;
+
+      await fs.appendFile(path.join(vault, "n.md"), "Closing words.\n");
+      await idx.reindexFile("n.md");
+      assert.equal(sentTexts(callsBefore).length, 1);
+
+      const mid = fake.calls.length;
+      await fs.appendFile(path.join(vault, "n.md"), section("Extra", "six"));
+      await idx.reindexFile("n.md");
+      assert.ok(sentTexts(mid).length <= 2);
+      assert.ok(sentTexts(mid).length >= 1);
+    });
+
+    it("identical text in another note reuses the stored vector", async () => {
+      const vault = await vaultWith({ "n.md": longNote() });
+      fake = installFakeOpenAI();
+      const idx = await openIndex(vault);
+      const callsBefore = fake.calls.length;
+
+      // Same file name in another folder: every chunk text, title included, is identical.
+      await fs.mkdir(path.join(vault, "sub"), { recursive: true });
+      await fs.writeFile(path.join(vault, "sub", "n.md"), longNote());
+      await idx.reindexFile("sub/n.md");
+
+      assert.equal(sentTexts(callsBefore).length, 0);
+      assert.equal(rowsFor(idx, "sub/n.md").length, rowsFor(idx, "n.md").length);
+    });
+
+    it("a note stays searchable while its new chunks are being embedded", async () => {
+      const vault = await vaultWith({ "n.md": "Alpha original text about gardens." });
+      fake = installFakeOpenAI();
+      const idx = await openIndex(vault);
+      const gate = deferred();
+      fake.handler = async (inputs) => {
+        if (inputs.some(i => i.includes("REPLACED"))) await gate.promise;
+        return embeddingsResponse(inputs);
+      };
+
+      await fs.writeFile(path.join(vault, "n.md"), "REPLACED text entirely.");
+      const pending = idx.reindexFile("n.md");
+      while (requestsMentioning("REPLACED") === 0) await new Promise(r => setTimeout(r, 5));
+      const during = await idx.searchRaw({ query: "gardens", limit: 5, threshold: 0 });
+      assert.deepEqual(during.map(r => r.path), ["n.md"]);
+
+      gate.resolve();
+      await pending;
+    });
+
+    it("a move keeps the vectors when the title is unchanged and re-sends on a rename", async () => {
+      const vault = await vaultWith({ "n.md": longNote() });
+      fake = installFakeOpenAI();
+      const idx = await openIndex(vault);
+      const callsBefore = fake.calls.length;
+
+      await fs.mkdir(path.join(vault, "archive"));
+      await fs.rename(path.join(vault, "n.md"), path.join(vault, "archive", "n.md"));
+      idx.notifyMoved("n.md", "archive/n.md");
+      await idx.whenIdle();
+      assert.equal(sentTexts(callsBefore).length, 0);
+      assert.ok(rowsFor(idx, "archive/n.md").length >= 5);
+
+      await fs.rename(path.join(vault, "archive", "n.md"), path.join(vault, "archive", "renamed.md"));
+      idx.notifyMoved("archive/n.md", "archive/renamed.md");
+      await idx.whenIdle();
+      const sent = sentTexts(callsBefore);
+      assert.ok(sent.length >= 5);
+      assert.ok(sent.every(t => t.startsWith("renamed")));
+      assert.equal(idx.db.prepare("SELECT COUNT(*) AS n FROM chunks WHERE file_path = 'archive/renamed.md'").get().n, sent.length);
+    });
+
+    it("startup catch-up with a changed mtime but the same content sends nothing", async () => {
+      const vault = await vaultWith({ "n.md": longNote() });
+      fake = installFakeOpenAI();
+      const idx = await openIndex(vault);
+      await idx.shutdown();
+      const callsBefore = fake.calls.length;
+      const touched = new Date("2026-10-03T10:00:00Z");
+      await fs.utimes(path.join(vault, "n.md"), touched, touched);
+
+      const reopened = await openIndex(vault);
+      assert.equal(fake.calls.length, callsBefore);
+      assert.equal(reopened.db.prepare("SELECT mtime_ms FROM files WHERE path = 'n.md'").get().mtime_ms, touched.getTime());
+    });
+
+    it("content changed on disk during the embed is not stored with stale chunks", async () => {
+      const vault = await vaultWith({ "n.md": "Original body." });
+      fake = installFakeOpenAI();
+      const idx = await openIndex(vault);
+      const gate = deferred();
+      fake.handler = async (inputs) => {
+        if (inputs.some(i => i.includes("FIRSTEDIT"))) await gate.promise;
+        return embeddingsResponse(inputs);
+      };
+
+      await fs.writeFile(path.join(vault, "n.md"), "FIRSTEDIT body.");
+      const pending = idx.reindexFile("n.md");
+      while (requestsMentioning("FIRSTEDIT") === 0) await new Promise(r => setTimeout(r, 5));
+      await fs.writeFile(path.join(vault, "n.md"), "SECONDEDIT body.");
+      gate.resolve();
+      await pending;
+
+      const previews = idx.db.prepare("SELECT content_preview FROM chunks WHERE file_path = 'n.md'").all();
+      assert.ok(!previews.some(r => r.content_preview.includes("FIRSTEDIT")));
+      assert.ok(idx._stale.has("n.md"));
+    });
   });
 });
