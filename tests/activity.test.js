@@ -8,6 +8,11 @@ import { ActivityLog, summarizeArgs, buildActivityQuery } from "../activity.js";
 
 let tmpDir;
 
+const stateOf = (vaultPath) => path.join(vaultPath, "state");
+function mkLog(opts) {
+  return new ActivityLog({ stateDir: stateOf(opts.vaultPath), ...opts });
+}
+
 before(async () => {
   tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "activity-test-"));
   await fs.mkdir(path.join(tmpDir, ".obsidian"), { recursive: true });
@@ -18,7 +23,7 @@ after(async () => {
 });
 
 function createLog(sessionId = "test-session") {
-  return new ActivityLog({ vaultPath: tmpDir, sessionId });
+  return mkLog({ vaultPath: tmpDir, sessionId });
 }
 
 describe("initialize", () => {
@@ -102,7 +107,7 @@ describe("query", () => {
     await log1.initialize();
     log1.log("vault_read", {});
 
-    const log2 = new ActivityLog({ vaultPath: tmpDir, sessionId: "session-b" });
+    const log2 = mkLog({ vaultPath: tmpDir, sessionId: "session-b" });
     await log2.initialize();
     log2.log("vault_write", {});
 
@@ -235,7 +240,7 @@ describe("clear", () => {
     await log.initialize();
     log.log("vault_read", {});
 
-    const log2 = new ActivityLog({ vaultPath: tmpDir, sessionId: "clear-session-b" });
+    const log2 = mkLog({ vaultPath: tmpDir, sessionId: "clear-session-b" });
     await log2.initialize();
     log2.log("vault_write", {});
 
@@ -334,7 +339,7 @@ function createOldSchemaDb(vaultDir, rows) {
 }
 
 function openRaw(vaultDir) {
-  return new Database(path.join(vaultDir, ".obsidian", "activity-log.db"));
+  return new Database(path.join(stateOf(vaultDir), "activity-log.db"));
 }
 
 describe("summarizeArgs", () => {
@@ -399,7 +404,7 @@ describe("summarizeArgs", () => {
 describe("log (summarized storage)", () => {
   it("stores summarized args, never the long string itself", async () => {
     const dir = await freshVault();
-    const log = new ActivityLog({ vaultPath: dir, sessionId: "s" });
+    const log = mkLog({ vaultPath: dir, sessionId: "s" });
     await log.initialize();
     log.log("vault_write", { path: "notes/a.md", content: "x".repeat(5000) });
     log.shutdown();
@@ -412,7 +417,7 @@ describe("log (summarized storage)", () => {
 
   it("records the row's vault path from path, else old_path, else folder", async () => {
     const dir = await freshVault();
-    const log = new ActivityLog({ vaultPath: dir, sessionId: "s" });
+    const log = mkLog({ vaultPath: dir, sessionId: "s" });
     await log.initialize();
     const cases = [
       ["vault_read", { path: "notes/a.md" }, "notes/a.md"],
@@ -438,7 +443,7 @@ describe("migration from the pre-path-column schema", () => {
       { tool: "vault_search", args: { query: "q", folder: "01-Projects" } },
       { tool: "vault_tags", args: { pattern: "dev*" } },
     ]).close();
-    const log = new ActivityLog({ vaultPath: dir, sessionId: "new" });
+    const log = mkLog({ vaultPath: dir, sessionId: "new" });
     await log.initialize();
     const byTool = new Map(log.query({ limit: 50 }).map(r => [r.tool_name, r.path]));
     assert.equal(byTool.get("vault_read"), "notes/a.md");
@@ -461,7 +466,7 @@ describe("migration from the pre-path-column schema", () => {
       { tool: "vault_append", timestamp: ts, args: { path: "notes/a.md", content: body } },
       ...filler,
     ]).close();
-    const log = new ActivityLog({ vaultPath: dir, sessionId: "new" });
+    const log = mkLog({ vaultPath: dir, sessionId: "new" });
     await log.initialize();
     log.shutdown();
 
@@ -482,7 +487,7 @@ describe("migration from the pre-path-column schema", () => {
   it("records schema version 1 and leaves a migrated DB unchanged on the next start", async () => {
     const dir = await freshVault();
     createOldSchemaDb(dir, [{ tool: "vault_append", args: { path: "a.md", content: "c".repeat(5000) } }]).close();
-    const first = new ActivityLog({ vaultPath: dir, sessionId: "one" });
+    const first = mkLog({ vaultPath: dir, sessionId: "one" });
     await first.initialize();
     first.shutdown();
     const raw1 = openRaw(dir);
@@ -490,7 +495,7 @@ describe("migration from the pre-path-column schema", () => {
     assert.equal(raw1.pragma("user_version", { simple: true }), 1);
     raw1.close();
 
-    const second = new ActivityLog({ vaultPath: dir, sessionId: "two" });
+    const second = mkLog({ vaultPath: dir, sessionId: "two" });
     await second.initialize();
     second.shutdown();
     const raw2 = openRaw(dir);
@@ -503,12 +508,12 @@ describe("migration from the pre-path-column schema", () => {
   // The migration drops note bodies from rows; their old bytes must not survive in freed pages
   // of the database file or in the WAL.
   const MARKER = "PRIVATE-BODY-MARKER";
-  const bodyBytesLeft = async (dir) => {
+  const bodyBytesLeft = async (dir, folder = stateOf(dir)) => {
     let count = 0;
     for (const suffix of ["", "-wal"]) {
       let bytes;
       try {
-        bytes = await fs.readFile(path.join(dir, ".obsidian", `activity-log.db${suffix}`));
+        bytes = await fs.readFile(path.join(folder, `activity-log.db${suffix}`));
       } catch (e) {
         if (e.code === "ENOENT") continue;
         throw e;
@@ -528,13 +533,13 @@ describe("migration from the pre-path-column schema", () => {
     const db = createOldSchemaDb(dir, [...small, ...bodies]);
     db.pragma("wal_checkpoint(TRUNCATE)");
     db.close();
-    assert.ok(await bodyBytesLeft(dir) > 0, "the old database holds the bodies");
+    assert.ok(await bodyBytesLeft(dir, path.join(dir, ".obsidian")) > 0, "the old database holds the bodies");
     return dir;
   };
 
   it("leaves no byte of a note body in the database file or WAL once initialize returns", async () => {
     const dir = await oldDbWithBodies();
-    const log = new ActivityLog({ vaultPath: dir, sessionId: "new" });
+    const log = mkLog({ vaultPath: dir, sessionId: "new" });
     await log.initialize();
     try {
       assert.equal(await bodyBytesLeft(dir), 0);
@@ -551,7 +556,7 @@ describe("migration from the pre-path-column schema", () => {
       if (/^\s*VACUUM\b/i.test(sql)) throw new Error("injected VACUUM failure (database is locked)");
       return exec.call(this, sql);
     };
-    const log = new ActivityLog({ vaultPath: dir, sessionId: "new" });
+    const log = mkLog({ vaultPath: dir, sessionId: "new" });
     try {
       await log.initialize();
     } finally {
@@ -578,7 +583,7 @@ describe("migration from the pre-path-column schema", () => {
     const before = db.prepare("SELECT * FROM activity ORDER BY id").all();
     db.close();
 
-    const log = new ActivityLog({ vaultPath: dir, sessionId: "new" });
+    const log = mkLog({ vaultPath: dir, sessionId: "new" });
     await assert.rejects(() => log.initialize(), /injected failure/);
     assert.equal(log.db, null);
 
@@ -603,7 +608,7 @@ describe("retention", () => {
   }
 
   async function survivingTools(dir, opts) {
-    const log = new ActivityLog({ vaultPath: dir, sessionId: "s", ...opts });
+    const log = mkLog({ vaultPath: dir, sessionId: "s", ...opts });
     await log.initialize();
     const tools = log.query({ limit: 100 }).map(r => r.tool_name).sort();
     log.shutdown();
@@ -645,11 +650,11 @@ describe("retention", () => {
     try {
       for (const value of ["abc", "-5", "", "   "]) {
         process.env.VAULT_PKM_ACTIVITY_RETENTION_DAYS = value;
-        assert.equal(new ActivityLog({ vaultPath: tmpDir, sessionId: "s" }).retentionDays, 90, `env ${JSON.stringify(value)}`);
+        assert.equal(mkLog({ vaultPath: tmpDir, sessionId: "s" }).retentionDays, 90, `env ${JSON.stringify(value)}`);
       }
       delete process.env.VAULT_PKM_ACTIVITY_RETENTION_DAYS;
-      assert.equal(new ActivityLog({ vaultPath: tmpDir, sessionId: "s" }).retentionDays, 90, "unset");
-      assert.equal(new ActivityLog({ vaultPath: tmpDir, sessionId: "s", retentionDays: -1 }).retentionDays, 90, "option -1");
+      assert.equal(mkLog({ vaultPath: tmpDir, sessionId: "s" }).retentionDays, 90, "unset");
+      assert.equal(mkLog({ vaultPath: tmpDir, sessionId: "s", retentionDays: -1 }).retentionDays, 90, "option -1");
     } finally {
       if (saved === undefined) delete process.env.VAULT_PKM_ACTIVITY_RETENTION_DAYS;
       else process.env.VAULT_PKM_ACTIVITY_RETENTION_DAYS = saved;
@@ -663,7 +668,7 @@ describe("space reclamation", () => {
     createOldSchemaDb(upgraded, [{ tool: "vault_read", args: { path: "a.md" } }]).close();
     const created = await freshVault();
     for (const dir of [upgraded, created]) {
-      const log = new ActivityLog({ vaultPath: dir, sessionId: "s" });
+      const log = mkLog({ vaultPath: dir, sessionId: "s" });
       await log.initialize();
       log.shutdown();
       const raw = openRaw(dir);
@@ -675,7 +680,7 @@ describe("space reclamation", () => {
 
   it("returns pages freed by retention to the filesystem", async () => {
     const dir = await freshVault();
-    const seed = new ActivityLog({ vaultPath: dir, sessionId: "seed" });
+    const seed = mkLog({ vaultPath: dir, sessionId: "seed" });
     await seed.initialize();
     seed.shutdown();
     const raw = openRaw(dir);
@@ -686,11 +691,102 @@ describe("space reclamation", () => {
     const pagesBefore = raw.pragma("page_count", { simple: true });
     raw.close();
 
-    const log = new ActivityLog({ vaultPath: dir, sessionId: "s", retentionDays: 90 });
+    const log = mkLog({ vaultPath: dir, sessionId: "s", retentionDays: 90 });
     await log.initialize();
     assert.equal(log.db.pragma("freelist_count", { simple: true }), 0);
     assert.ok(log.db.pragma("page_count", { simple: true }) < pagesBefore);
     log.shutdown();
+    await fs.rm(dir, { recursive: true });
+  });
+});
+
+// ── Location and copy from the vault-side log ────────────────────────
+
+async function listFiles(dir) {
+  const out = [];
+  for (const e of await fs.readdir(dir, { withFileTypes: true })) {
+    const p = path.join(dir, e.name);
+    if (e.isDirectory()) out.push(...await listFiles(p));
+    else out.push(p);
+  }
+  return out.sort();
+}
+
+describe("state folder location", () => {
+  it("A1: stores its database in stateDir and creates nothing under .obsidian", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "activity-loc-"));
+    const state = path.join(dir, "elsewhere", "state");
+    const log = new ActivityLog({ vaultPath: dir, sessionId: "s", stateDir: state });
+    await log.initialize();
+    log.log("vault_read", { path: "a.md" });
+    log.shutdown();
+    assert.ok((await fs.stat(path.join(state, "activity-log.db"))).isFile());
+    await assert.rejects(fs.stat(path.join(dir, ".obsidian")), { code: "ENOENT" });
+    await fs.rm(dir, { recursive: true });
+  });
+
+  it("A2: copies every row, WAL rows included, from a held-open old log and leaves the original unchanged", async () => {
+    const dir = await freshVault();
+    const old = createOldSchemaDb(dir, [{ tool: "vault_read", args: { path: "in-main.md" } }]);
+    old.pragma("wal_checkpoint(TRUNCATE)");
+    old.pragma("wal_autocheckpoint = 0");
+    old.prepare("INSERT INTO activity (timestamp, session_id, tool_name, args_json) VALUES (?, ?, ?, ?)")
+      .run(new Date().toISOString(), "old-session", "vault_read", JSON.stringify({ path: "in-wal.md" }));
+    const oldDir = path.join(dir, ".obsidian");
+    const walStat = await fs.stat(path.join(oldDir, "activity-log.db-wal"));
+    assert.ok(walStat.size > 0, "row must still be in the WAL");
+    const before = new Map();
+    for (const f of ["activity-log.db", "activity-log.db-wal"]) before.set(f, await fs.readFile(path.join(oldDir, f)));
+
+    const log = mkLog({ vaultPath: dir, sessionId: "new" });
+    await log.initialize();
+    const paths = log.query({ limit: 10 }).map(r => r.path).sort();
+    log.shutdown();
+    assert.deepEqual(paths, ["in-main.md", "in-wal.md"]);
+    for (const [f, bytes] of before) {
+      assert.ok(bytes.equals(await fs.readFile(path.join(oldDir, f))), `${f} unchanged`);
+    }
+    old.close();
+    await fs.rm(dir, { recursive: true });
+  });
+
+  it("A3: does not read the old log again once the state folder has one", async () => {
+    const dir = await freshVault();
+    createOldSchemaDb(dir, [{ tool: "vault_read", args: { path: "old.md" } }]).close();
+    const first = mkLog({ vaultPath: dir, sessionId: "one" });
+    await first.initialize();
+    first.shutdown();
+    const extra = new Database(path.join(dir, ".obsidian", "activity-log.db"));
+    extra.prepare("INSERT INTO activity (timestamp, session_id, tool_name, args_json) VALUES (?, ?, ?, ?)")
+      .run(new Date().toISOString(), "late", "vault_read", JSON.stringify({ path: "late.md" }));
+    extra.close();
+    const second = mkLog({ vaultPath: dir, sessionId: "two" });
+    await second.initialize();
+    const paths = second.query().map(r => r.path);
+    second.shutdown();
+    assert.deepEqual(paths, ["old.md"]);
+    await fs.rm(dir, { recursive: true });
+  });
+
+  it("A4: a copy failure leaves an empty new log, writes one stderr line and still starts", async () => {
+    const dir = await freshVault();
+    await fs.writeFile(path.join(dir, ".obsidian", "activity-log.db"), "this is not a database".repeat(50));
+    const lines = [];
+    const orig = console.error;
+    console.error = (...a) => lines.push(a.join(" "));
+    let log;
+    try {
+      log = mkLog({ vaultPath: dir, sessionId: "new" });
+      await log.initialize();
+    } finally {
+      console.error = orig;
+    }
+    log.log("vault_read", { path: "x.md" });
+    assert.equal(log.query().length, 1);
+    log.shutdown();
+    assert.equal(lines.length, 1);
+    assert.match(lines[0], /activity/);
+    assert.deepEqual((await listFiles(stateOf(dir))).map(f => path.basename(f)).filter(f => f.includes("tmp") || f.includes("copy")), []);
     await fs.rm(dir, { recursive: true });
   });
 });

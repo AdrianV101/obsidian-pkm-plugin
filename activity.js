@@ -1,6 +1,7 @@
 import Database from "better-sqlite3";
 import fs from "fs/promises";
 import path from "path";
+import { stateDir as defaultStateDir } from "./local-paths.js";
 
 const MAX_ARG_CHARS = 200;
 // Top-level arguments whose value is a vault path. The same names inside free-text containers
@@ -126,14 +127,17 @@ export class ActivityLog {
    * @param {Object} opts
    * @param {string} opts.vaultPath - absolute path to vault root
    * @param {string} opts.sessionId - UUID for the current session
+   * @param {string} [opts.stateDir] - per-machine state folder holding the log; defaults to the
+   *   folder for this vault from local-paths.js
    * @param {number|string} [opts.retentionDays] - days of history kept at startup; 0 keeps everything.
    *   Defaults to VAULT_PKM_ACTIVITY_RETENTION_DAYS, else 90. Invalid values fall back to 90.
    */
-  constructor({ vaultPath, sessionId, retentionDays = process.env.VAULT_PKM_ACTIVITY_RETENTION_DAYS }) {
+  constructor({ vaultPath, sessionId, stateDir, retentionDays = process.env.VAULT_PKM_ACTIVITY_RETENTION_DAYS }) {
     this.vaultPath = vaultPath;
     this.sessionId = sessionId;
     this.retentionDays = normalizeRetentionDays(retentionDays);
-    this.dbPath = path.join(vaultPath, ".obsidian", "activity-log.db");
+    this.dbPath = path.join(stateDir ?? defaultStateDir(vaultPath), "activity-log.db");
+    this.legacyDbPath = path.join(vaultPath, ".obsidian", "activity-log.db");
     this.db = null;
   }
 
@@ -141,6 +145,7 @@ export class ActivityLog {
   async initialize() {
     const dbDir = path.dirname(this.dbPath);
     await fs.mkdir(dbDir, { recursive: true });
+    await this.#copyLegacyLog();
 
     this.db = new Database(this.dbPath);
     try {
@@ -172,6 +177,38 @@ export class ActivityLog {
       this.db.close();
       this.db = null;
       throw e;
+    }
+  }
+
+  /**
+   * First start with no log in the state folder: copy the vault-side log with SQLite's online
+   * backup, which includes rows still in its WAL. The original stays, since older sessions may
+   * still hold it open. A failure leaves an empty new log.
+   */
+  async #copyLegacyLog() {
+    try {
+      await fs.access(this.dbPath);
+      return;
+    } catch { /* no log yet */ }
+    try {
+      await fs.access(this.legacyDbPath);
+    } catch {
+      return;
+    }
+    // Copy to a temporary name so a crash never leaves a half-copied file that looks like a log.
+    const tmpPath = `${this.dbPath}.copying`;
+    let legacy;
+    try {
+      // Read-only so this connection cannot checkpoint or otherwise alter the original.
+      legacy = new Database(this.legacyDbPath, { readonly: true, fileMustExist: true });
+      await legacy.backup(tmpPath);
+      legacy.close();
+      legacy = null;
+      await fs.rename(tmpPath, this.dbPath);
+    } catch (e) {
+      try { legacy?.close(); } catch { /* already closed */ }
+      await fs.rm(tmpPath, { force: true });
+      console.error(`[activity] could not copy the previous activity log, starting empty: ${e.message}`);
     }
   }
 
