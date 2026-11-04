@@ -95,6 +95,15 @@ async function start(m) {
   return m;
 }
 
+const GRACE_MS = 60_000;
+
+/** Lets a change nobody here wrote wait out the same-machine grace, then runs the holder's tick. */
+async function afterGrace(m) {
+  m.clock.t += GRACE_MS;
+  await m.index._tick();
+  await m.index.whenIdle();
+}
+
 const cacheDirAbs = () => path.join(vault, CACHE_FOLDER);
 const packEvent = (name) => `${CACHE_FOLDER}/${name}`;
 const rows = (m, table) => m.localIndex.db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get().n;
@@ -189,7 +198,8 @@ describe("shared embedding cache", () => {
   it("a non-holder skips chunks the index already holds", async () => {
     const content = note("Already indexed by the housekeeper.");
     vault = await makeVault({ "a.md": content });
-    await start(machine("one"));
+    const holder = await start(machine("one"));
+    await afterGrace(holder);
     const before = fake.calls.length;
     const packs = await listPacks(cacheDirAbs());
     const reader = await start(machine("one", { holder: false }));
@@ -232,14 +242,51 @@ describe("shared embedding cache", () => {
     });
   }
 
-  it("a change is embedded at once when no pack from another device exists", async () => {
+  it("a hand edit with no other device's pack is sent after the grace and not before", async () => {
     vault = await makeVault({ "a.md": note("seed") });
     const m = await start(machine("one"));
+    await afterGrace(m);
     const before = fake.calls.length;
+    const t0 = m.clock.t;
     await fs.writeFile(path.join(vault, "a.md"), note("Edited with nobody else around."));
     await m.index.reindexFile("a.md");
+    assert.equal(fake.calls.length, before);
+    m.clock.t = t0 + GRACE_MS - 1;
+    await m.index._tick();
+    assert.equal(fake.calls.length, before);
+    m.clock.t = t0 + GRACE_MS;
+    await m.index._tick();
     assert.equal(fake.calls.length, before + 1);
+    assert.deepEqual(storedPaths(m), ["a.md"]);
   });
+
+  it("with the shared cache off a change is sent at once", async () => {
+    vault = await makeVault({ "a.md": note("seed") });
+    const m = await start(machine("one", { env: { VAULT_PKM_SHARED_CACHE: "off" } }));
+    assert.equal(fake.calls.length, 1);
+    await fs.writeFile(path.join(vault, "a.md"), note("Edited, cache off."));
+    await m.index.reindexFile("a.md");
+    assert.equal(fake.calls.length, 2);
+  });
+
+  for (const order of ["holder event first", "tool write first"]) {
+    it(`a non-holder tool write that the holder also sees is sent once (${order})`, async () => {
+      vault = await makeVault({});
+      const holder = await start(machine("one"));
+      const reader = await start(machine("one", { holder: false }));
+      const body = "Written by a tool while the housekeeper watches the file.";
+      await fs.writeFile(path.join(vault, "a.md"), note(body));
+      const sendTool = async () => { reader.index.notifyChanged("a.md"); await reader.index.whenIdle(); };
+      const seeEvent = async () => { holder.emit("a.md"); await holder.index.whenIdle(); };
+      if (order === "tool write first") { await sendTool(); await seeEvent(); } else { await seeEvent(); await sendTool(); }
+      const pack = (await listPacks(cacheDirAbs())).at(-1).name;
+      holder.emit(packEvent(pack));
+      await holder.index.whenIdle();
+      await afterGrace(holder);
+      assert.equal(sentTexts().filter(t => t.includes(body)).length, 1);
+      assert.deepEqual(storedPaths(holder), ["a.md"]);
+    });
+  }
 
   it("W4: a pack carrying the waiting chunks that arrives during the wait means nothing is sent", async () => {
     vault = await makeVault({ "a.md": note("seed") });
@@ -307,7 +354,7 @@ describe("shared embedding cache", () => {
   });
 
   it("W5: pack files in the cache folder go to pack import, never to note reindexing", async () => {
-    vault = await makeVault({ "a.md": note("seed") });
+    vault = await makeVault({});
     const m = await start(machine("one"));
     let reconciled = 0;
     let reindexed = 0;
@@ -427,6 +474,8 @@ describe("shared embedding cache", () => {
     vault = await makeVault({ "a.md": note("Embedded by the startup catch-up.") });
     const m = machine("one");
     await start(m);
+    m.clock.t += GRACE_MS;
+    await m.index.reindexFile("a.md");
     await m.index.shutdown();
     const own = (await listPacks(cacheDirAbs())).filter(p => p.deviceId === m.settings.deviceId);
     assert.ok(own.length >= 1);
@@ -435,6 +484,7 @@ describe("shared embedding cache", () => {
   it("W9: when most of this device's entries are dead the holder compacts once and other devices' packs survive", async () => {
     vault = await makeVault({ "n/a.md": note("v0 a"), "n/b.md": note("v0 b"), "n/c.md": note("v0 c") });
     const m = await start(machine("one"));
+    await afterGrace(m);
     const theirs = await foreignPack("dev-other", { "q.md": note("Their own note.") });
     const theirsBytes = await fs.readFile(path.join(cacheDirAbs(), theirs));
     for (const v of [1, 2]) {

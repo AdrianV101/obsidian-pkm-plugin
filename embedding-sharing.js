@@ -136,17 +136,20 @@ export class SharedPacks {
 /** When the index first saw each chunk it lacks a vector for. */
 export class WaitTracker {
   constructor() {
-    /** @type {Map<string, { since: number, path: string }>} */
+    /** @type {Map<string, { since: number, path: string, waitMs: number }>} */
     this._waits = new Map();
   }
 
   get size() { return this._waits.size; }
 
   /** @returns {number} the time the chunk was first seen without a vector */
-  firstSeen(hash, notePath, now) {
+  firstSeen(hash, notePath, now, waitMs) {
     const existing = this._waits.get(hash);
-    if (existing) return existing.since;
-    this._waits.set(hash, { since: now, path: notePath });
+    if (existing) {
+      existing.waitMs = waitMs;
+      return existing.since;
+    }
+    this._waits.set(hash, { since: now, path: notePath, waitMs });
     return now;
   }
 
@@ -163,9 +166,10 @@ export class WaitTracker {
     return min;
   }
 
-  isDue(now, waitMs) {
-    const oldest = this.oldest();
-    return oldest !== null && now - oldest >= waitMs;
+  /** Whether any chunk has waited as long as it was told to. */
+  isDue(now) {
+    for (const w of this._waits.values()) if (now - w.since >= w.waitMs) return true;
+    return false;
   }
 
   paths() {

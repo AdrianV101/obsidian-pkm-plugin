@@ -22,6 +22,8 @@ const DEBOUNCE_MS = 2000;
 const TICK_MS = 30000;
 // Vectors embedded outside tool writes are written to a pack in batches of about this many.
 const PACK_FLUSH_ENTRIES = 500;
+// How long a change this process did not write waits for another local session's pack.
+const SAME_MACHINE_GRACE_MS = 60 * 1000;
 const COMPACT_CHECK_MS = 10 * 60 * 1000;
 // A younger pack may hold entries another local process wrote that the index has not stored yet.
 const COMPACT_MIN_AGE_MS = 60 * 60 * 1000;
@@ -729,14 +731,14 @@ export class SemanticIndex {
   }
 
   /**
-   * Chunks to embed now. Another machine's change gets that machine's wait for its vectors to arrive
-   * in a pack first; with no pack from another device in the folder none can arrive, so nothing waits.
+   * Chunks to embed now. A change this process did not write gets time for its vectors to arrive in a
+   * pack first: this machine's wait when another device has packs in the folder, otherwise a short
+   * grace for another session on this machine that wrote the note through a tool.
    */
   async _dueForEmbedding(relativePath, missing) {
-    if (!(await this._packs.hasOtherDevices())) return missing;
     const now = this._now();
-    const waitMs = otherMachineWaitMs(this.settings);
-    return missing.filter(c => now - this._waits.firstSeen(c.hash, relativePath, now) >= waitMs);
+    const waitMs = await this._packs.hasOtherDevices() ? otherMachineWaitMs(this.settings) : SAME_MACHINE_GRACE_MS;
+    return missing.filter(c => now - this._waits.firstSeen(c.hash, relativePath, now, waitMs) >= waitMs);
   }
 
   /** Embeds `toEmbed` into `known` and queues the vectors for this device's pack. */
@@ -1080,7 +1082,7 @@ export class SemanticIndex {
   async _runTick() {
     if (!this.db || this._closing || !this.lease.isHolder || !this._sharing) return;
     const imported = await this._packs.importNew();
-    if (imported > 0 || this._waits.isDue(this._now(), otherMachineWaitMs(this.settings))) {
+    if (imported > 0 || this._waits.isDue(this._now())) {
       await this._retryWaiting();
     }
     await this._packs.flush();
