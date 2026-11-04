@@ -359,6 +359,63 @@ describe("session-start.js context budget and semantic health", () => {
   }
 });
 
+describe("session-start.js semantic coverage warning", () => {
+  let tmpDir, vaultPath, cwdDir;
+  const REASON = "OpenAI quota exhausted. Add credits; it re-enables automatically.";
+  const hoursAgo = (h) => new Date(Date.now() - h * 3600 * 1000).toISOString();
+  const base = { indexed_files: 50, vault_files: 60, status: "ok", reason: null, since: null, last_success_at: null, stale_files: 0 };
+
+  beforeEach(async () => {
+    tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "pkm-ss-cov-"));
+    vaultPath = path.join(tmpDir, "vault");
+    await makeProject(vaultPath, "MyApp", "repos: [github.com/acme/myapp]");
+    cwdDir = path.join(tmpDir, "MyApp");
+    await fs.mkdir(cwdDir, { recursive: true });
+    await fs.writeFile(path.join(cwdDir, "CLAUDE.md"), "# PKM: 01-Projects/MyApp\n");
+  });
+
+  afterEach(async () => {
+    await fs.rm(tmpDir, { recursive: true, force: true });
+  });
+
+  async function run(stats) {
+    if (stats) await writeStatsFile(vaultPath, tmpDir, JSON.stringify(stats));
+    const { stdout } = await runScript([SCRIPT], { ...process.env, VAULT_PATH: vaultPath, ...stateEnv(tmpDir) }, JSON.stringify({ cwd: cwdDir }));
+    return JSON.parse(stdout);
+  }
+
+  const cases = [
+    {
+      name: "disabled, counts reported",
+      stats: { ...base, status: "disabled", reason: REASON, since: "2026-07-03T09:12:00.000Z", notes_total: 60, notes_embedded: 50, chunks_waiting: 0 },
+      line: `Semantic search disabled since 2026-07-03: ${REASON}\nSemantic index: 50 of 60 notes embedded`,
+    },
+    {
+      name: "disabled, old-format stats",
+      stats: { ...base, status: "disabled", reason: REASON, since: "2026-07-03T09:12:00.000Z" },
+      line: `Semantic search disabled since 2026-07-03: ${REASON}`,
+    },
+    {
+      name: "chunks waiting for over an hour",
+      stats: { ...base, notes_total: 60, notes_embedded: 55, chunks_waiting: 4, oldest_wait_since: hoursAgo(2) },
+      line: "Semantic index: 55 of 60 notes embedded; 4 chunks waiting",
+    },
+    { name: "chunks waiting for 10 minutes", stats: { ...base, notes_total: 60, notes_embedded: 55, chunks_waiting: 4, oldest_wait_since: hoursAgo(0.17) }, line: null },
+    { name: "healthy", stats: { ...base, notes_total: 60, notes_embedded: 60, chunks_waiting: 0, oldest_wait_since: null }, line: null },
+    { name: "old-format stats", stats: base, line: null },
+    { name: "no stats", stats: null, line: null },
+  ];
+  for (const c of cases) {
+    it(`${c.line ? "warns" : "stays quiet"}: ${c.name}`, async () => {
+      const result = await run(c.stats);
+      const context = result.hookSpecificOutput.additionalContext;
+      if (c.line) assert.ok(context.endsWith(`\n\n${c.line}`), context);
+      else assert.ok(!context.includes("Semantic "), context);
+      assert.ok(!result.systemMessage.includes("Semantic index:"), result.systemMessage);
+    });
+  }
+});
+
 describe("session-start.js project resolution output", () => {
   const HINT = "vault-pkm: this repo isn't linked to a vault project. Run /vault-pkm:init-project to link it.";
   let tmpDir, vaultPath;

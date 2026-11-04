@@ -7,9 +7,11 @@
  * @property {string|null} since - ISO timestamp when the index was disabled
  * @property {number} staleFiles - notes changed or missing since they were last indexed
  * @property {string|null} lastSuccessAt - ISO timestamp of the last successful embedding request
+ * @property {number|null} [notesTotal] - notes with a non-empty body; null when not reported yet
+ * @property {number|null} [notesEmbedded] - notes whose chunks all have stored vectors; null when not reported yet
  * @property {number} [chunksWaiting] - chunks waiting for another machine's vectors before being embedded here
  * @property {string|null} [oldestWaitSince] - ISO time the longest-waiting chunk was first seen
- * @property {boolean} [sharedCache] - whether this machine reads and writes embedding packs
+ * @property {boolean|null} [sharedCache] - whether this machine reads and writes embedding packs
  */
 
 function day(iso) {
@@ -40,14 +42,26 @@ export function describeHealth(health) {
 }
 
 /**
- * Footer appended to semantic search output when some notes are not yet re-indexed.
- * @param {number} staleFiles
- * @returns {string}
+ * The coverage line shown in search results and doctor.
+ * @param {SemanticHealth} health
+ * @returns {string|null} null when coverage is complete and embedding is enabled, or when counts are not reported yet
  */
-export function formatStaleFooter(staleFiles) {
-  if (!(staleFiles > 0)) return "";
-  const subject = staleFiles === 1 ? "1 note has" : `${staleFiles} notes have`;
-  return `\n\n*${subject} changed since last indexed; results may be stale.*`;
+export function formatCoverageLine(health) {
+  const { notesTotal, notesEmbedded } = health;
+  if (typeof notesTotal !== "number" || typeof notesEmbedded !== "number") return null;
+  const waiting = health.chunksWaiting > 0 ? health.chunksWaiting : 0;
+  if (notesEmbedded >= notesTotal && waiting === 0 && health.status !== "disabled") return null;
+  const line = `Semantic index: ${notesEmbedded} of ${notesTotal} notes embedded`;
+  return waiting > 0 ? `${line}; ${waiting} chunks waiting` : line;
+}
+
+/**
+ * @param {SemanticHealth} health
+ * @returns {string} the coverage line after a blank line, or "" when there is none
+ */
+export function formatCoverageFooter(health) {
+  const line = formatCoverageLine(health);
+  return line ? `\n\n${line}` : "";
 }
 
 /**
@@ -63,5 +77,10 @@ export function healthFromStats(stats) {
     since: stats.since ?? null,
     staleFiles: Number(stats.stale_files) || 0,
     lastSuccessAt: stats.last_success_at ?? null,
+    notesTotal: Number.isFinite(stats.notes_total) ? stats.notes_total : null,
+    notesEmbedded: Number.isFinite(stats.notes_embedded) ? stats.notes_embedded : null,
+    chunksWaiting: Number(stats.chunks_waiting) || 0,
+    oldestWaitSince: stats.oldest_wait_since ?? null,
+    sharedCache: typeof stats.shared_cache === "boolean" ? stats.shared_cache : null,
   };
 }

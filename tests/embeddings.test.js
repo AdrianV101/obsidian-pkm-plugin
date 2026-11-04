@@ -28,6 +28,7 @@ import {
   holderLease,
 } from "./fake-openai.js";
 import { HousekeeperLease } from "../lease.js";
+import { formatCoverageLine } from "../semantic-health.js";
 
 const { Response, Headers } = globalThis;
 
@@ -902,21 +903,21 @@ describe("SemanticIndex health", () => {
     assert.equal(fake.calls.length, before, "an empty note is not re-read as stale on restart");
   });
 
-  it("search output gains a stale footer only when notes are stale", async () => {
+  it("search output gains the coverage line only while some notes are not embedded", async () => {
     const vault = await vaultWith(manyNotes(2));
     fake = installFakeOpenAI();
     const idx = await openIndex(vault);
     await idx.whenSynced();
-    const footer = "*1 note has changed since last indexed; results may be stale.*";
+    const line = "Semantic index: 1 of 2 notes embedded";
 
-    assert.ok(!(await idx.search({ query: "note" })).includes("changed since last indexed"));
+    assert.ok(!(await idx.search({ query: "note" })).includes("Semantic index:"));
 
     await fs.writeFile(path.join(vault, "notes", "n00.md"), "Changed body.");
     fake.handler = () => errorResponse(500, "server error");
     await assert.rejects(() => idx.reindexFile("notes/n00.md"));
     fake.handler = (inputs) => embeddingsResponse(inputs);
 
-    assert.ok((await idx.search({ query: "note" })).endsWith(footer));
+    assert.ok((await idx.search({ query: "note" })).endsWith(line));
   });
 });
 
@@ -1906,5 +1907,108 @@ describe("SemanticIndex housekeeper roles", () => {
     assert.equal(mine.isHolder, false);
     assert.equal(await other.tryAcquire(), true);
     await other.release();
+  });
+});
+
+describe("SemanticIndex coverage health", () => {
+  let fake;
+  const opened = [];
+  const vaults = [];
+  const reader = () => ({ isHolder: false, onAcquired() {}, onLost() {}, async tryAcquire() { return false; }, async release() {} });
+  const readStats = (vault) => JSON.parse(fsSync.readFileSync(statsFile(vault), "utf-8"));
+
+  async function open(vault, lease) {
+    const idx = newIndex({ vaultPath: vault, openaiApiKey: "test-key", sleep: async () => {}, lease });
+    opened.push(idx);
+    await idx.initialize();
+    return idx;
+  }
+
+  afterEach(async () => {
+    for (const idx of opened.splice(0)) await idx.shutdown();
+    fake?.restore();
+    fake = null;
+    for (const dir of vaults.splice(0)) await fs.rm(dir, { recursive: true, force: true });
+  });
+
+  async function syncedVault(files) {
+    const vault = await makeVault(files);
+    vaults.push(vault);
+    fake = installFakeOpenAI();
+    const holder = await open(vault);
+    await holder.whenSynced();
+    return { vault, holder };
+  }
+
+  it("counts notes with a body, leaves out empty notes, and writes the counts to the stats file", async () => {
+    const { vault, holder } = await syncedVault({ ...manyNotes(3), "empty.md": "" });
+    const h = holder.health();
+    assert.equal(h.notesTotal, 3);
+    assert.equal(h.notesEmbedded, 3);
+    assert.equal(h.chunksWaiting, 0);
+    const stats = readStats(vault);
+    assert.deepEqual(
+      [stats.notes_total, stats.notes_embedded, stats.chunks_waiting, stats.oldest_wait_since, stats.shared_cache],
+      [3, 3, 0, null, false],
+    );
+    assert.equal(stats.status, "ok");
+  });
+
+  it("a changed note whose embedding failed is not counted as embedded, and a new one counts in the total", async () => {
+    const { vault, holder } = await syncedVault(manyNotes(2));
+    await fs.writeFile(path.join(vault, "notes", "n00.md"), "Changed body.");
+    await fs.writeFile(path.join(vault, "notes", "fresh.md"), "A brand new note.");
+    fake.handler = () => errorResponse(500, "server error");
+    await assert.rejects(() => holder.reindexFile("notes/n00.md"));
+    await assert.rejects(() => holder.reindexFile("notes/fresh.md"));
+    const h = holder.health();
+    assert.equal(h.notesTotal, 3);
+    assert.equal(h.notesEmbedded, 1);
+  });
+
+  it("a reader reports the holder's stats with counts from the local index, never complete by default", async () => {
+    const { vault, holder } = await syncedVault(manyNotes(2));
+    await fs.writeFile(path.join(vault, "notes", "n00.md"), "Changed body.");
+    fake.handler = () => errorResponse(500, "server error");
+    await assert.rejects(() => holder.reindexFile("notes/n00.md"));
+    holder._writeStats();
+
+    const r = await open(vault, reader());
+    const h = r.health();
+    assert.equal(h.notesTotal, 2);
+    assert.equal(h.notesEmbedded, 1);
+    assert.equal(h.staleFiles, 1);
+  });
+
+  it("a reader with no stats file reports no totals and no completeness", async () => {
+    const { vault, holder } = await syncedVault(manyNotes(2));
+    await holder.shutdown();
+    fsSync.rmSync(statsFile(vault));
+    const r = await open(vault, reader());
+    const h = r.health();
+    assert.equal(h.notesTotal, null);
+    assert.equal(formatCoverageLine(h), null);
+    assert.equal(fsSync.existsSync(statsFile(vault)), false, "a reader never writes stats");
+  });
+
+  it("a reader takes the disabled state from the holder's stats", async () => {
+    const { vault, holder } = await syncedVault(manyNotes(1));
+    await holder.shutdown();
+    const stats = readStats(vault);
+    fsSync.writeFileSync(statsFile(vault), JSON.stringify({ ...stats, status: "disabled", reason: "no credits", since: "2026-10-01T00:00:00.000Z" }));
+    const r = await open(vault, reader());
+    assert.equal(r.health().status, "disabled");
+    assert.equal(r.health().reason, "no credits");
+  });
+
+  it("an old-format stats file is carried as not reported yet", async () => {
+    const vault = await makeVault(manyNotes(1));
+    vaults.push(vault);
+    fsSync.mkdirSync(sidecarDir(vault), { recursive: true });
+    fsSync.writeFileSync(statsFile(vault), JSON.stringify({ indexed_files: 1, vault_files: 1, status: "ok", stale_files: 0 }));
+    fake = installFakeOpenAI(() => new Promise(() => {}));
+    const idx = await open(vault);
+    assert.equal(idx.health().notesTotal, null);
+    assert.equal(readStats(vault).notes_total, null);
   });
 });

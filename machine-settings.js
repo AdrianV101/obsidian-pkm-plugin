@@ -47,12 +47,20 @@ function loadDeviceId(stateDir) {
   throw new Error(`Could not create a device id in ${stateDir}`);
 }
 
-export function loadMachineSettings(stateDir, env = process.env) {
+function settingsFromEnv(env) {
   return {
-    deviceId: loadDeviceId(stateDir),
     backstop: env.VAULT_PKM_BACKSTOP === "1" || env.VAULT_PKM_BACKSTOP === "true",
     sharedCache: !["off", "0", "false"].includes(env.VAULT_PKM_SHARED_CACHE),
   };
+}
+
+export function loadMachineSettings(stateDir, env = process.env) {
+  return { deviceId: loadDeviceId(stateDir), ...settingsFromEnv(env) };
+}
+
+/** Like loadMachineSettings, but creates nothing: `deviceId` is null until a server has made one. */
+export function readMachineSettings(stateDir, env = process.env) {
+  return { deviceId: readId(path.join(stateDir, DEVICE_FILE)), ...settingsFromEnv(env) };
 }
 
 export function otherMachineWaitMs(settings) {

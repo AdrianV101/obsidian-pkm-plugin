@@ -373,6 +373,101 @@ describe("doctor semantic health", () => {
   }
 });
 
+describe("doctor embedding sharing and coverage", () => {
+  let tmpDir, vaultPath;
+  const SYNC = 'Obsidian Sync: turn on "Sync all other types" on every device so embedding packs reach your other machines.';
+  const OFF = "Shared embedding cache is off on this machine; it neither reads nor writes embedding packs.";
+  const current = { indexed_files: 50, vault_files: 60, status: "ok", reason: null, since: null, last_success_at: null, stale_files: 10, notes_total: 60, notes_embedded: 50, chunks_waiting: 7, oldest_wait_since: null, shared_cache: true };
+
+  beforeEach(async () => {
+    tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "pkm-doctor-share-"));
+    fakeHome = path.join(tmpDir, "home");
+    await fs.mkdir(fakeHome);
+    vaultPath = path.join(tmpDir, "vault");
+    await fs.mkdir(vaultPath, { recursive: true });
+  });
+
+  afterEach(async () => {
+    await fs.rm(tmpDir, { recursive: true, force: true });
+  });
+
+  async function run(extraEnv = {}, stats = current) {
+    if (stats) {
+      const dir = stateDirFor(vaultPath, fakeHome);
+      await fs.mkdir(dir, { recursive: true });
+      await fs.writeFile(path.join(dir, "semantic-stats.json"), JSON.stringify(stats));
+    }
+    const env = { ...process.env, VAULT_PATH: vaultPath, VAULT_PKM_OPENAI_KEY: "sk-test" };
+    delete env.VAULT_PKM_BACKSTOP;
+    delete env.VAULT_PKM_SHARED_CACHE;
+    return runDoctor({ ...env, ...extraEnv });
+  }
+
+  it("prints the coverage line, the role, the cache folders and the Sync reminder", async () => {
+    const { stdout, code } = await run();
+    assert.equal(code, 0, stdout);
+    assert.ok(stdout.includes("Semantic index: 50 of 60 notes embedded; 7 chunks waiting"), stdout);
+    assert.ok(stdout.includes("This machine embeds other machines' changes after 30 minutes."), stdout);
+    assert.ok(stdout.includes("06-System/vault-pkm/embeddings"), stdout);
+    assert.ok(stdout.includes(stateDirFor(vaultPath, fakeHome)), stdout);
+    assert.ok(stdout.includes(SYNC), stdout);
+    assert.ok(!stdout.includes(OFF), stdout);
+  });
+
+  it("names the backstop role", async () => {
+    const { stdout } = await run({ VAULT_PKM_BACKSTOP: "1" });
+    assert.ok(stdout.includes("This machine embeds other machines' changes after 5 minutes (backstop)."), stdout);
+  });
+
+  it("says when the shared cache is off", async () => {
+    const { stdout } = await run({ VAULT_PKM_SHARED_CACHE: "off" });
+    assert.ok(stdout.includes(OFF), stdout);
+  });
+
+  it("reads the machine settings from the Claude settings env block too", async () => {
+    await fs.mkdir(path.join(fakeHome, ".claude"), { recursive: true });
+    await fs.writeFile(path.join(fakeHome, ".claude", "settings.json"), JSON.stringify({ env: { VAULT_PKM_BACKSTOP: "1" } }));
+    const { stdout } = await run();
+    assert.ok(stdout.includes("(backstop)"), stdout);
+  });
+
+  it("creates no state of its own", async () => {
+    await run({}, null);
+    assert.equal(await fs.stat(stateDirFor(vaultPath, fakeHome)).then(() => true, () => false), false);
+  });
+
+  it("reports an old-format stats file as not reported yet, without an error", async () => {
+    const { stdout, code } = await run({}, { indexed_files: 50, vault_files: 60, status: "ok", reason: null, since: null, last_success_at: null, stale_files: 0 });
+    assert.equal(code, 0, stdout);
+    assert.match(stdout, /Semantic index coverage not reported yet/);
+    assert.ok(!stdout.includes("\u2717"), stdout);
+  });
+
+  it("reports a complete index plainly", async () => {
+    const { stdout } = await run({}, { ...current, stale_files: 0, notes_embedded: 60, chunks_waiting: 0 });
+    assert.ok(stdout.includes("Semantic index: 60 of 60 notes embedded"), stdout);
+  });
+
+  it("reports the old index file and leaves it alone", async () => {
+    const old = path.join(vaultPath, ".obsidian", "semantic-index.db");
+    await fs.mkdir(path.dirname(old), { recursive: true });
+    await fs.writeFile(old, "old index");
+    await fs.writeFile(path.join(vaultPath, ".obsidian", "semantic-stats.json"), "{}");
+    const before = await fs.stat(old);
+    const { stdout } = await run();
+    assert.ok(stdout.includes("Old semantic index found at .obsidian/semantic-index.db (not used since the upgrade); you can delete it and .obsidian/semantic-stats.json."), stdout);
+    const after = await fs.stat(old);
+    assert.equal(await fs.readFile(old, "utf-8"), "old index");
+    assert.equal(after.mtimeMs, before.mtimeMs);
+    assert.deepEqual((await fs.readdir(path.join(vaultPath, ".obsidian"))).sort(), ["semantic-index.db", "semantic-stats.json"]);
+  });
+
+  it("says nothing about an old index when there is none", async () => {
+    const { stdout } = await run();
+    assert.ok(!stdout.includes("Old semantic index"), stdout);
+  });
+});
+
 describe("doctor project line", () => {
   let tmpDir;
 

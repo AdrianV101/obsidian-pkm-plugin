@@ -3,7 +3,7 @@
 import { resolveProject, describeVia } from "./resolve-project.js";
 import { loadProjectContext } from "./load-context.js";
 import { stateDir } from "../local-paths.js";
-import { healthFromStats, describeHealth } from "../semantic-health.js";
+import { healthFromStats, describeHealth, formatCoverageLine, formatDisabledMessage } from "../semantic-health.js";
 import fs from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
@@ -20,6 +20,21 @@ async function getSemanticStats(vaultPath) {
   } catch {
     return null;
   }
+}
+
+const WAIT_WARN_MS = 60 * 60 * 1000;
+
+/**
+ * The one line Claude should see when embedding is off or has been stuck behind unembedded chunks.
+ * @param {import("../semantic-health.js").SemanticHealth|null} health
+ * @returns {string|null}
+ */
+function coverageWarning(health) {
+  if (!health) return null;
+  const coverage = formatCoverageLine(health);
+  if (health.status === "disabled") return [formatDisabledMessage(health), coverage].filter(Boolean).join("\n");
+  const waitingSince = Date.parse(health.oldestWaitSince);
+  return coverage && Date.now() - waitingSince > WAIT_WARN_MS ? coverage : null;
 }
 
 const UNLINKED_HINT = "vault-pkm: this repo isn't linked to a vault project. Run /vault-pkm:init-project to link it.";
@@ -144,6 +159,9 @@ async function main() {
       msg += ` | semantic: ${stats.indexed_files} notes`;
     }
   }
+
+  const warning = coverageWarning(health);
+  if (warning) context += `\n\n${warning}`;
 
   const output = {
     hookSpecificOutput: {

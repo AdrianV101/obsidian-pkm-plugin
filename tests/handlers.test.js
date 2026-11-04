@@ -3525,7 +3525,7 @@ describe("semantic tools while the semantic index is disabled", () => {
   let vault;
   let idx;
   let semanticHandlers;
-  const disabledError = /^Semantic search disabled since \d{4}-\d{2}-\d{2}: OpenAI quota exhausted\. Add credits; it re-enables automatically\.$/;
+  const disabledError = /^Semantic search disabled since \d{4}-\d{2}-\d{2}: OpenAI quota exhausted\. Add credits; it re-enables automatically\.\nSemantic index: 0 of 2 notes embedded$/;
 
   beforeEach(async () => {
     vault = await makeVault({ "a.md": "Alpha body. [[b]]", "b.md": "Beta body." });
@@ -3576,19 +3576,60 @@ describe("semantic tools while the semantic index is disabled", () => {
   });
 });
 
-describe("anchored semantic search footer", () => {
-  it("carries the stale-notes footer when the index reports stale notes", async () => {
-    const staleIndex = {
-      isAvailable: true,
-      health: () => ({ status: "ok", reason: null, since: null, staleFiles: 2, lastSuccessAt: null }),
-      searchRaw: async () => [{ path: "notes/alpha.md", heading: null, score: 0.9, preview: "Alpha" }],
-    };
-    const anchoredHandlers = await createHandlers({
-      vaultPath: tmpDir, templateRegistry: new Map(), semanticIndex: staleIndex, activityLog: null, sessionId: "stale-footer",
-    });
-    const result = await anchoredHandlers.get("vault_semantic_search")({ query: "x", anchor: "notes/beta.md" });
-    assert.ok(result.content[0].text.endsWith("*2 notes have changed since last indexed; results may be stale.*"), result.content[0].text);
+describe("semantic tool coverage line", () => {
+  const LINE = "Semantic index: 2103 of 2550 notes embedded; 41 chunks waiting";
+  const health = (over = {}) => ({
+    status: "ok", reason: null, since: null, staleFiles: 0, lastSuccessAt: null,
+    notesTotal: 2550, notesEmbedded: 2103, chunksWaiting: 41, ...over,
   });
+  const fakeIndex = (h, extra = {}) => ({
+    isAvailable: true,
+    health: () => h,
+    searchRaw: async () => [{ path: "notes/alpha.md", heading: null, score: 0.9, preview: "Alpha" }],
+    ...extra,
+  });
+  const make = (index) => createHandlers({
+    vaultPath: tmpDir, templateRegistry: new Map(), semanticIndex: index, activityLog: null, sessionId: "coverage",
+  });
+
+  const calls = [
+    { name: "anchored vault_semantic_search", tool: "vault_semantic_search", args: { query: "x", anchor: "notes/beta.md" } },
+    { name: "vault_suggest_links", tool: "vault_suggest_links", args: { content: "Some text about alpha." } },
+    { name: "vault_suggest_links with graph context", tool: "vault_suggest_links", args: { path: "notes/beta.md", graph_context: true } },
+  ];
+  for (const c of calls) {
+    it(`${c.name} ends with the coverage line when coverage is incomplete`, async () => {
+      const h = await make(fakeIndex(health()));
+      const result = await h.get(c.tool)(c.args);
+      assert.ok(result.content[0].text.endsWith(`\n\n${LINE}`), result.content[0].text);
+    });
+
+    it(`${c.name} adds nothing when coverage is complete`, async () => {
+      const h = await make(fakeIndex(health({ notesEmbedded: 2550, chunksWaiting: 0 })));
+      const result = await h.get(c.tool)(c.args);
+      assert.ok(!result.content[0].text.includes("Semantic index:"), result.content[0].text);
+    });
+  }
+
+  it("an empty suggestion list still carries the line", async () => {
+    const h = await make(fakeIndex(health(), { searchRaw: async () => [] }));
+    const result = await h.get("vault_suggest_links")({ content: "Some text about alpha." });
+    assert.equal(result.content[0].text, `No link suggestions found.\n\n${LINE}`);
+  });
+
+  for (const tool of ["vault_semantic_search", "vault_suggest_links"]) {
+    it(`${tool} while disabled returns the disabled message plus the coverage line`, async () => {
+      const h = await make({
+        isAvailable: false,
+        probe: async () => false,
+        health: () => health({ status: "disabled", reason: "OpenAI quota exhausted. Add credits; it re-enables automatically.", since: "2026-07-03T09:12:00.000Z" }),
+      });
+      await assert.rejects(
+        () => h.get(tool)({ query: "x", content: "text" }),
+        { message: `Semantic search disabled since 2026-07-03: OpenAI quota exhausted. Add credits; it re-enables automatically.\n${LINE}` },
+      );
+    });
+  }
 });
 
 describe("vault_neighborhood when its own semantic search fails", () => {

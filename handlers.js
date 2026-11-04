@@ -35,7 +35,7 @@ import {
   DEFAULT_MAX_NODES,
 } from "./graph.js";
 import { getAllMarkdownFiles, extractFrontmatter } from "./utils.js";
-import { formatDisabledMessage, formatStaleFooter } from "./semantic-health.js";
+import { formatDisabledMessage, formatCoverageLine, formatCoverageFooter } from "./semantic-health.js";
 import { EmbeddingError } from "./embeddings.js";
 
 import { mutateFile, writeNew, withNoteLock, normalizeVaultRoot, resolveSafe, resolveLexical, hasDotSegment, assertWritableReal, FileIndex, toVaultRel } from "./vault-fs.js";
@@ -233,7 +233,10 @@ export async function createHandlers({ vaultPath: rawVaultPath, templateRegistry
     if (semanticIndex?.isAvailable) return null;
     if (semanticIndex?.health?.().status === "disabled") {
       await semanticIndex.probe();
-      return semanticIndex.isAvailable ? null : formatDisabledMessage(semanticIndex.health());
+      if (semanticIndex.isAvailable) return null;
+      const health = semanticIndex.health();
+      const coverage = formatCoverageLine(health);
+      return formatDisabledMessage(health) + (coverage ? `\n${coverage}` : "");
     }
     return NO_SEMANTIC_KEY;
   }
@@ -878,6 +881,11 @@ export async function createHandlers({ vaultPath: rawVaultPath, templateRegistry
     throw new Error(`Unknown action: ${action}. Use 'query' or 'clear'.`);
   }
 
+  const coverageFooter = () => {
+    const health = semanticIndex?.health?.();
+    return health ? formatCoverageFooter(health) : "";
+  };
+
   async function handleSemanticSearch(args) {
     await requireSemantic("Semantic search");
 
@@ -917,10 +925,9 @@ export async function createHandlers({ vaultPath: rawVaultPath, templateRegistry
         throw new Error(`graph_weight must be a number between 0 and 1, got: ${args.graph_weight}`);
       }
       const trimmed = blendWithGraph(rawResults, neighborhood, graphWeight, targetLimit);
-      const staleFooter = formatStaleFooter(semanticIndex.health?.().staleFiles ?? 0);
 
       if (trimmed.length === 0) {
-        return { content: [{ type: "text", text: `No semantically related notes found.${staleFooter}` }] };
+        return { content: [{ type: "text", text: `No semantically related notes found.${coverageFooter()}` }] };
       }
 
       const formatted = trimmed.map(r => {
@@ -929,7 +936,7 @@ export async function createHandlers({ vaultPath: rawVaultPath, templateRegistry
       }).join("\n\n");
 
       return {
-        content: [{ type: "text", text: `Found ${trimmed.length} result${trimmed.length === 1 ? "" : "s"} (anchored to ${linkFor(args.anchor)}):\n\n${formatted}${staleFooter}` }]
+        content: [{ type: "text", text: `Found ${trimmed.length} result${trimmed.length === 1 ? "" : "s"} (anchored to ${linkFor(args.anchor)}):\n\n${formatted}${coverageFooter()}` }]
       };
     }
 
@@ -1003,7 +1010,7 @@ export async function createHandlers({ vaultPath: rawVaultPath, templateRegistry
       const trimmedBlended = blended.map(r => ({ ...r, missingLink: r.depth === null }));
 
       if (trimmedBlended.length === 0) {
-        return { content: [{ type: "text", text: "No link suggestions found." }] };
+        return { content: [{ type: "text", text: `No link suggestions found.${coverageFooter()}` }] };
       }
 
       const formatted = trimmedBlended.map(r => {
@@ -1012,12 +1019,12 @@ export async function createHandlers({ vaultPath: rawVaultPath, templateRegistry
       }).join("\n\n");
 
       return {
-        content: [{ type: "text", text: `Found ${trimmedBlended.length} link suggestion${trimmedBlended.length === 1 ? "" : "s"} for ${linkFor(sourcePath)}:\n\n${formatted}` }]
+        content: [{ type: "text", text: `Found ${trimmedBlended.length} link suggestion${trimmedBlended.length === 1 ? "" : "s"} for ${linkFor(sourcePath)}:\n\n${formatted}${coverageFooter()}` }]
       };
     }
 
     if (suggestions.length === 0) {
-      return { content: [{ type: "text", text: "No link suggestions found." }] };
+      return { content: [{ type: "text", text: `No link suggestions found.${coverageFooter()}` }] };
     }
 
     const formatted = suggestions.map(r =>
@@ -1025,7 +1032,7 @@ export async function createHandlers({ vaultPath: rawVaultPath, templateRegistry
     ).join("\n\n");
 
     return {
-      content: [{ type: "text", text: `Found ${suggestions.length} link suggestion${suggestions.length === 1 ? "" : "s"}:\n\n${formatted}` }]
+      content: [{ type: "text", text: `Found ${suggestions.length} link suggestion${suggestions.length === 1 ? "" : "s"}:\n\n${formatted}${coverageFooter()}` }]
     };
   }
 

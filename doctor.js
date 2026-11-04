@@ -3,8 +3,10 @@ import os from "os";
 import path from "path";
 import { loadTemplates } from "./helpers.js";
 import { resolveProject, describeVia } from "./hooks/resolve-project.js";
-import { healthFromStats, describeHealth } from "./semantic-health.js";
-import { stateDir } from "./local-paths.js";
+import { healthFromStats, describeHealth, formatCoverageLine } from "./semantic-health.js";
+import { cacheDir, stateDir } from "./local-paths.js";
+import { readMachineSettings, otherMachineWaitMs } from "./machine-settings.js";
+import { CACHE_FOLDER } from "./embedding-cache.js";
 
 const SETTINGS_LABEL = "~/.claude/settings.json";
 // Same precedence as the server's key lookup in index.js.
@@ -196,6 +198,44 @@ export async function runDoctor() {
       ok(`Semantic index ${describeHealth(health)} (${stats.indexed_files}/${stats.vault_files} notes indexed, last success ${health.lastSuccessAt ?? "never"})`);
       passed++;
     }
+    if (health) {
+      const coverage = formatCoverageLine(health);
+      if (typeof health.notesTotal !== "number" || typeof health.notesEmbedded !== "number") {
+        ok("Semantic index coverage not reported yet (the server that wrote these stats predates it); restart the MCP server");
+        passed++;
+      } else if (coverage) {
+        warn(coverage);
+        warnings++;
+      } else {
+        ok(`Semantic index: ${health.notesEmbedded} of ${health.notesTotal} notes embedded`);
+        passed++;
+      }
+    }
+
+    // 5c. This machine's role and where embeddings are kept
+    const machine = readMachineSettings(stateDir(vaultPath), { ...stringEnv(settings.env), ...process.env });
+    const minutes = otherMachineWaitMs(machine) / 60000;
+    ok(`This machine embeds other machines' changes after ${minutes} minutes${machine.backstop ? " (backstop)" : ""}.`);
+    passed++;
+    if (machine.sharedCache) {
+      ok(`Embedding packs are shared through ${CACHE_FOLDER} in the vault`);
+      passed++;
+      info('Obsidian Sync: turn on "Sync all other types" on every device so embedding packs reach your other machines.');
+    } else {
+      warn("Shared embedding cache is off on this machine; it neither reads nor writes embedding packs.");
+      warnings++;
+    }
+    info(`Local index and cache: ${cacheDir(vaultPath)}`);
+    info(`Local state: ${stateDir(vaultPath)}`);
+  }
+
+  // 5d. The index the previous version kept inside the vault is no longer used
+  try {
+    await fs.access(path.join(vaultPath, ".obsidian", "semantic-index.db"));
+    warn("Old semantic index found at .obsidian/semantic-index.db (not used since the upgrade); you can delete it and .obsidian/semantic-stats.json.");
+    warnings++;
+  } catch {
+    // none, or the vault is unreadable (reported above)
   }
 
   // 6. better-sqlite3
@@ -235,6 +275,11 @@ export async function runDoctor() {
   if (failed > 0) process.exit(1);
 }
 
+function stringEnv(env) {
+  return Object.fromEntries(Object.entries(env).filter(([, v]) => typeof v === "string" || typeof v === "number").map(([k, v]) => [k, String(v)]));
+}
+
+function info(msg) { console.log(`  \u2139 ${msg}`); }
 function ok(msg) { console.log(`  \u2713 ${msg}`); }
 function warn(msg) { console.log(`  \u26A0 ${msg}`); }
 function fail(msg) { console.log(`  \u2717 ${msg}`); }

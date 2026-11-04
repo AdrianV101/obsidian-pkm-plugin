@@ -5,7 +5,7 @@ import { setInterval, clearInterval } from "node:timers";
 import crypto from "crypto";
 import { getAllMarkdownFiles } from "./utils.js";
 import { chunkNote } from "./chunker.js";
-import { formatDisabledMessage, formatStaleFooter } from "./semantic-health.js";
+import { formatDisabledMessage, formatCoverageFooter, healthFromStats } from "./semantic-health.js";
 import { toVaultRel } from "./vault-fs.js";
 import { EMBEDDING_MODEL, EMBEDDING_DIMENSIONS } from "./local-index.js";
 import { CACHE_FOLDER, compactOwnPacks, inspectOwnPacks } from "./embedding-cache.js";
@@ -217,6 +217,7 @@ export class SemanticIndex {
     this._pauseSync = false; // a long rate limit stops the current sync; files stay stale
     this._scanned = false;
     this._staleCarry = 0; // persisted stale count, reported until the first scan completes
+    this._coverageCarry = { notesTotal: null, notesEmbedded: null };
   }
 
   get isAvailable() {
@@ -225,20 +226,72 @@ export class SemanticIndex {
 
   /** @returns {import("./semantic-health.js").SemanticHealth} */
   health() {
+    return this.lease.isHolder ? this._holderHealth() : this._readerHealth();
+  }
+
+  _holderHealth() {
     /** @type {"ok"|"syncing"|"disabled"} */
     let status = "ok";
     if (this._disabled) status = "disabled";
     else if (this._syncState.syncing) status = "syncing";
+    const { notesTotal, notesEmbedded } = this._coverage();
     return {
       status,
       reason: this._disabled?.reason ?? null,
       since: this._disabled?.since ?? null,
       staleFiles: this._scanned ? this._stale.size : this._staleCarry,
       lastSuccessAt: this._lastSuccessAt,
+      notesTotal,
+      notesEmbedded,
       chunksWaiting: this._waits.size,
       oldestWaitSince: this._waits.oldest() === null ? null : new Date(this._waits.oldest()).toISOString(),
       sharedCache: this._sharing,
     };
+  }
+
+  /**
+   * Notes with a body, and how many of them have every chunk stored. A note that changed keeps its old
+   * rows until its new vectors arrive, so a stale note never counts as embedded. Before the first scan the
+   * counts of the previous run are carried (null when that run never reported them).
+   */
+  _coverage() {
+    if (!this.db) return { notesTotal: null, notesEmbedded: null };
+    if (!this._scanned) return this._coverageCarry;
+    const withBody = this.db.prepare("SELECT path FROM files WHERE chunk_count > 0").pluck().all();
+    if (this._stale.size === 0) return { notesTotal: withBody.length, notesEmbedded: withBody.length };
+    const indexed = new Set(withBody);
+    let staleIndexed = 0;
+    for (const rel of this._stale) if (indexed.has(rel)) staleIndexed++;
+    return {
+      notesTotal: withBody.length + this._stale.size - staleIndexed,
+      notesEmbedded: withBody.length - staleIndexed,
+    };
+  }
+
+  /**
+   * A process that is not the holder: the holder's stats, with embedded counts read from the shared local index.
+   * @returns {import("./semantic-health.js").SemanticHealth}
+   */
+  _readerHealth() {
+    const fromStats = healthFromStats(this._readPersistedStats());
+    const row = this.db?.prepare("SELECT COUNT(*) AS n, MAX(updated_at) AS t FROM files WHERE chunk_count > 0").get();
+    if (!fromStats) {
+      // Without the holder's stats nothing says how many notes the vault has, so no completeness is claimed.
+      /** @type {"ok"|"disabled"} */
+      const status = this._disabled ? "disabled" : "ok";
+      return {
+        status, reason: this._disabled?.reason ?? null,
+        since: this._disabled?.since ?? null, staleFiles: 0,
+        lastSuccessAt: row?.t ?? null, notesTotal: null, notesEmbedded: null,
+        chunksWaiting: 0, oldestWaitSince: null, sharedCache: this._sharing,
+      };
+    }
+    if (typeof fromStats.notesTotal === "number" && row) {
+      fromStats.notesEmbedded = Math.max(0, Math.min(row.n, fromStats.notesTotal - fromStats.staleFiles));
+    }
+    // This process's own failed probe is newer than the holder's file.
+    if (this._disabled) Object.assign(fromStats, { status: "disabled", ...this._disabled });
+    return fromStats;
   }
 
   initialize() {
@@ -270,6 +323,10 @@ export class SemanticIndex {
       this._disabled = { reason: persisted.reason, since: persisted.since };
     }
     this._staleCarry = Number(persisted?.stale_files) || 0;
+    this._coverageCarry = {
+      notesTotal: Number.isFinite(persisted?.notes_total) ? persisted.notes_total : null,
+      notesEmbedded: Number.isFinite(persisted?.notes_embedded) ? persisted.notes_embedded : null,
+    };
     this._lastKnownVaultFiles = Number(persisted?.vault_files) || 0;
     this._lastSuccessAt = persisted?.last_success_at
       ?? this.db.prepare("SELECT MAX(updated_at) AS t FROM files").get().t
@@ -514,7 +571,7 @@ export class SemanticIndex {
     if (this._syncState.syncing) {
       syncNote = `\n\n*Index syncing (${this._syncState.done}/${this._syncState.total} files)...*`;
     }
-    const footer = syncNote + formatStaleFooter(this._stale.size);
+    const footer = syncNote + formatCoverageFooter(this.health());
 
     if (results.length === 0) {
       return `No semantically related notes found.${footer}`;
@@ -895,6 +952,11 @@ export class SemanticIndex {
         since: health.since,
         last_success_at: health.lastSuccessAt,
         stale_files: health.staleFiles,
+        notes_total: health.notesTotal,
+        notes_embedded: health.notesEmbedded,
+        chunks_waiting: health.chunksWaiting,
+        oldest_wait_since: health.oldestWaitSince,
+        shared_cache: health.sharedCache,
         updated_at: new Date().toISOString(),
       };
       fsSync.mkdirSync(path.dirname(this.statsPath), { recursive: true });

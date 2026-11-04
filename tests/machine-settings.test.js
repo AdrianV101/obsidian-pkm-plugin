@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { loadMachineSettings, otherMachineWaitMs } from "../machine-settings.js";
+import { loadMachineSettings, readMachineSettings, otherMachineWaitMs } from "../machine-settings.js";
 
 const run = promisify(execFile);
 const tmpDirs = [];
@@ -74,5 +74,16 @@ describe("otherMachineWaitMs", () => {
   it("P5", () => {
     assert.equal(otherMachineWaitMs({ backstop: true }), 300000);
     assert.equal(otherMachineWaitMs({ backstop: false }), 1800000);
+  });
+});
+
+describe("readMachineSettings", () => {
+  it("reads without creating anything, and sees an existing device id", () => {
+    const dir = path.join(tmp(), "state");
+    const before = readMachineSettings(dir, { VAULT_PKM_BACKSTOP: "1", VAULT_PKM_SHARED_CACHE: "off" });
+    assert.deepEqual(before, { deviceId: null, backstop: true, sharedCache: false });
+    assert.equal(fs.existsSync(dir), false);
+    const created = loadMachineSettings(dir, {});
+    assert.equal(readMachineSettings(dir, {}).deviceId, created.deviceId);
   });
 });
