@@ -14,6 +14,8 @@ import fs from "fs/promises";
 import { SemanticIndex } from "./embeddings.js";
 import { HousekeeperLease } from "./lease.js";
 import { openLocalIndex } from "./local-index.js";
+import { loadMachineSettings } from "./machine-settings.js";
+import { CACHE_FOLDER } from "./embedding-cache.js";
 import { cacheDir, stateDir } from "./local-paths.js";
 import { describeHealth } from "./semantic-health.js";
 import { ActivityLog } from "./activity.js";
@@ -122,7 +124,12 @@ export async function startServer() {
         await fs.mkdir(STATE_DIR, { recursive: true });
         lease = new HousekeeperLease({ stateDir: STATE_DIR });
         localIndex = openLocalIndex({ vaultPath: VAULT_PATH, dbPath: path.join(CACHE_DIR, "index.db") });
-        semanticIndex = new SemanticIndex({ vaultPath: VAULT_PATH, openaiApiKey, localIndex, lease, stateDir: STATE_DIR });
+        const settings = loadMachineSettings(STATE_DIR);
+        // The pack folder is created on the first pack write, not here.
+        semanticIndex = new SemanticIndex({
+          vaultPath: VAULT_PATH, openaiApiKey, localIndex, lease, stateDir: STATE_DIR,
+          settings, cacheDirAbs: path.join(VAULT_PATH, CACHE_FOLDER),
+        });
         await semanticIndex.initialize();
         // Not awaited: a slow state folder must not delay server startup.
         lease.tryAcquire().catch((e) => console.error(`Housekeeper lease: ${e.message}`));

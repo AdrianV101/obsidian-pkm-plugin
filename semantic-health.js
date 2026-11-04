@@ -7,6 +7,9 @@
  * @property {string|null} since - ISO timestamp when the index was disabled
  * @property {number} staleFiles - notes changed or missing since they were last indexed
  * @property {string|null} lastSuccessAt - ISO timestamp of the last successful embedding request
+ * @property {number} [chunksWaiting] - chunks waiting for another machine's vectors before being embedded here
+ * @property {string|null} [oldestWaitSince] - ISO time the longest-waiting chunk was first seen
+ * @property {boolean} [sharedCache] - whether this machine reads and writes embedding packs
  */
 
 function day(iso) {

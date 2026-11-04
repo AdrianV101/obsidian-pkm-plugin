@@ -1,12 +1,16 @@
 import fs from "fs/promises";
 import fsSync from "fs";
 import path from "path";
+import { setInterval, clearInterval } from "node:timers";
 import crypto from "crypto";
 import { getAllMarkdownFiles } from "./utils.js";
 import { chunkNote } from "./chunker.js";
 import { formatDisabledMessage, formatStaleFooter } from "./semantic-health.js";
 import { toVaultRel } from "./vault-fs.js";
-import { EMBEDDING_MODEL } from "./local-index.js";
+import { EMBEDDING_MODEL, EMBEDDING_DIMENSIONS } from "./local-index.js";
+import { CACHE_FOLDER, compactOwnPacks, inspectOwnPacks } from "./embedding-cache.js";
+import { SharedPacks, WaitTracker } from "./embedding-sharing.js";
+import { otherMachineWaitMs } from "./machine-settings.js";
 
 // OpenAI embeddings API: max 2048 inputs, max 300k tokens summed, 8192 tokens per input.
 // At CHUNK_MAX_CHARS (~1000 tokens), 128 chunks ≈ 128k tokens — safely under the
@@ -15,6 +19,13 @@ import { EMBEDDING_MODEL } from "./local-index.js";
 const BATCH_SIZE = 128;
 const REINDEX_BATCH_SIZE = 10; // files per batch during startup sync
 const DEBOUNCE_MS = 2000;
+const TICK_MS = 30000;
+// Vectors embedded outside tool writes are written to a pack in batches of about this many.
+const PACK_FLUSH_ENTRIES = 500;
+const COMPACT_CHECK_MS = 10 * 60 * 1000;
+// A younger pack may hold entries another local process wrote that the index has not stored yet.
+const COMPACT_MIN_AGE_MS = 60 * 60 * 1000;
+const COMPACT_MAX_PACKS = 100;
 const WATCHER_RESTART_BASE_MS = 1000;
 const MAX_WATCHER_RESTARTS = 5;
 // sqlite-vec rejects KNN queries with k above this.
@@ -144,10 +155,17 @@ export class SemanticIndex {
    * @param {typeof fsSync.watch} [opts.watch] - file watcher factory
    * @param {number} [opts.debounceMs] - delay before a changed path is reindexed
    * @param {number} [opts.maxKnnK] - largest k sent to a sqlite-vec KNN query
+   * @param {{ deviceId?: string, backstop?: boolean, sharedCache?: boolean }} [opts.settings] - machine settings;
+   *   without them (or with the shared cache off) no packs are read or written
+   * @param {string} [opts.cacheDirAbs] - absolute path of the shared pack folder
+   * @param {() => number} [opts.now] - clock for waits and compaction
+   * @param {number} [opts.tickMs] - period of the holder's housekeeping tick; 0 disables the timer
+   * @param {typeof compactOwnPacks} [opts.compact] - pack compaction, replaceable in tests
    */
   constructor({
     vaultPath, openaiApiKey, localIndex, lease, stateDir, statsPath, sleep = defaultSleep,
     watch = fsSync.watch, debounceMs = DEBOUNCE_MS, maxKnnK = MAX_KNN_K,
+    settings, cacheDirAbs, now = Date.now, tickMs = TICK_MS, compact = compactOwnPacks,
   }) {
     this.vaultPath = vaultPath;
     this.openaiApiKey = openaiApiKey;
@@ -160,6 +178,18 @@ export class SemanticIndex {
     lease.onLost(() => this._stopHousekeeping());
     this.statsPath = statsPath || path.join(stateDir, "semantic-stats.json");
     this.db = null;
+    this.settings = settings;
+    this.cacheDirAbs = cacheDirAbs;
+    this._now = now;
+    this._tickMs = tickMs;
+    this._compact = compact;
+    this._sharing = !!(settings?.sharedCache && cacheDirAbs && settings.deviceId);
+    this._packs = null;
+    this._waits = new WaitTracker();
+    this._written = new Set(); // notes this process wrote through a tool, until their reindex runs
+    this._tickTimer = null;
+    this._tickPromise = null;
+    this._lastCompactCheck = -Infinity;
     this.watcher = null;
     this._sleep = sleep;
     this._watch = watch;
@@ -203,6 +233,9 @@ export class SemanticIndex {
       since: this._disabled?.since ?? null,
       staleFiles: this._scanned ? this._stale.size : this._staleCarry,
       lastSuccessAt: this._lastSuccessAt,
+      chunksWaiting: this._waits.size,
+      oldestWaitSince: this._waits.oldest() === null ? null : new Date(this._waits.oldest()).toISOString(),
+      sharedCache: this._sharing,
     };
   }
 
@@ -223,6 +256,11 @@ export class SemanticIndex {
     this._watcherRestarts = 0;
 
     this.db = this.localIndex.db;
+    this._packs = new SharedPacks({
+      db: this.db, cacheDirAbs: this.cacheDirAbs, settings: this.settings,
+      model: EMBEDDING_MODEL, dims: EMBEDDING_DIMENSIONS, canWrite: () => this.lease.isHolder,
+    });
+    this._waits = new WaitTracker();
 
     // A disabled state outlives restarts so "disabled since" stays truthful.
     const persisted = this._readPersistedStats();
@@ -248,6 +286,12 @@ export class SemanticIndex {
     this._writeStats();
     this._startSync();
     if (!this.watcher) this._startWatcher();
+    if (this._sharing && this._tickMs > 0 && !this._tickTimer) {
+      this._tickTimer = setInterval(() => {
+        this._tick().catch((e) => console.error(`Semantic index: housekeeping tick failed: ${e.message}`));
+      }, this._tickMs);
+      this._tickTimer.unref();
+    }
   }
 
   async _onAcquired() {
@@ -258,6 +302,8 @@ export class SemanticIndex {
   }
 
   _stopHousekeeping() {
+    clearInterval(this._tickTimer);
+    this._tickTimer = null;
     if (this.watcher) {
       this.watcher.close();
       this.watcher = null;
@@ -279,6 +325,8 @@ export class SemanticIndex {
       this._abortController = null;
     }
     this._requestAbort?.abort();
+    clearInterval(this._tickTimer);
+    this._tickTimer = null;
     if (this.watcher) {
       this.watcher.close();
       this.watcher = null;
@@ -293,6 +341,7 @@ export class SemanticIndex {
     if (this._inflight.size > 0) {
       await Promise.allSettled([...this._inflight]);
     }
+    await this._packs?.flush();
     if (this.db) {
       this.localIndex.close();
       this.db = null;
@@ -317,12 +366,21 @@ export class SemanticIndex {
   }
 
   /**
-   * A write tool changed (or created) this note or folder; reindex it after the debounce.
+   * This process wrote this note or folder through a tool; embed what is missing after the debounce and
+   * share the vectors at once, without waiting for another machine to send them.
    * @param {string} relativePath - vault-relative path
    */
   notifyChanged(relativePath) {
-    if (!this.db || this._closing || !this.lease.isHolder) return;
-    this._enqueue(toVaultRel(relativePath));
+    if (!this.db || this._closing) return;
+    const rel = toVaultRel(relativePath);
+    if (this.lease.isHolder) {
+      this._written.add(rel);
+      this._enqueue(rel);
+    } else if (this._sharing && rel.endsWith(".md")) {
+      // Not the housekeeper: embed here and leave the vectors in a pack for it to import.
+      this._written.add(rel);
+      this._schedule(rel);
+    }
   }
 
   /**
@@ -587,12 +645,13 @@ export class SemanticIndex {
    * Rejects when embedding fails; the file then counts as stale.
    * @param {string} relativePath - vault-relative file path
    */
-  async reindexFile(relativePath) {
+  async reindexFile(relativePath, { written = false } = {}) {
     if (!this.db || !this.lease.isHolder) return;
-    return this._runExclusive(relativePath, () => this._reindexNow(relativePath));
+    return this._runExclusive(relativePath, () => this._reindexNow(relativePath, written));
   }
 
-  async _reindexNow(relativePath) {
+  /** @param {boolean} written - this process wrote the note through a tool */
+  async _reindexNow(relativePath, written = false) {
     if (!this.db) return;
 
     const absPath = path.resolve(this.vaultPath, relativePath);
@@ -629,40 +688,82 @@ export class SemanticIndex {
     const chunks = chunkNote(content, relativePath);
     if (chunks.length === 0) {
       // Nothing to embed: record the file so it does not count as stale.
+      this._waits.retain(relativePath, new Set());
       this._storeFile(relativePath, mtimeMs, hash, [], []);
       return;
     }
 
     // Vectors are keyed by chunk hash across the whole index, so an edit, a moved section or
     // identical text in another note sends nothing the index already holds.
-    const known = this._storedVectors(chunks.map(c => c.hash));
-    const missing = [];
-    for (const chunk of chunks) {
-      if (!known.has(chunk.hash) && !missing.some(m => m.hash === chunk.hash)) missing.push(chunk);
+    const hashes = chunks.map(c => c.hash);
+    let known = this._storedVectors(hashes);
+    const findMissing = () => {
+      const out = [];
+      for (const chunk of chunks) {
+        if (!known.has(chunk.hash) && !out.some(m => m.hash === chunk.hash)) out.push(chunk);
+      }
+      return out;
+    };
+    let missing = findMissing();
+    // A pack that has just arrived may already carry them.
+    if (missing.length > 0 && await this._packs.importNew() > 0) {
+      known = this._storedVectors(hashes);
+      missing = findMissing();
     }
 
+    let waiting = [];
     if (missing.length > 0) {
-      if (this._disabled) {
-        this._stale.add(relativePath);
-        throw new Error(formatDisabledMessage(this.health()));
-      }
-      let fresh;
-      try {
-        fresh = await getEmbeddings(missing.map(c => c.text), this.openaiApiKey, this._embeddingOptions());
-      } catch (err) {
-        this._stale.add(relativePath);
-        this._noteFailure(err);
-        if (err instanceof EmbeddingError && err.kind === "rate_limit" && (err.retryAfterMs ?? 0) > MAX_RETRY_WAIT_MS) {
-          this._pauseSync = true;
-        }
-        throw err;
-      }
-      this._noteSuccess();
-      missing.forEach((chunk, i) => known.set(chunk.hash, fresh[i]));
+      const toEmbed = written || !this._sharing ? missing : await this._dueForEmbedding(relativePath, missing);
+      waiting = missing.filter(c => !toEmbed.includes(c));
+      if (toEmbed.length > 0) await this._embedMissing(relativePath, toEmbed, known, written, waiting.length > 0);
+    }
+    this._waits.retain(relativePath, new Set(waiting.map(c => c.hash)));
+    if (waiting.length > 0) {
+      // The note's old rows stay searchable until every chunk has its vector.
+      this._stale.add(relativePath);
+      return;
     }
 
     const embeddings = chunks.map(c => known.get(c.hash));
     this._storeFile(relativePath, mtimeMs, hash, chunks, embeddings);
+  }
+
+  /**
+   * Chunks to embed now. Another machine's change gets that machine's wait for its vectors to arrive
+   * in a pack first; with no pack from another device in the folder none can arrive, so nothing waits.
+   */
+  async _dueForEmbedding(relativePath, missing) {
+    if (!(await this._packs.hasOtherDevices())) return missing;
+    const now = this._now();
+    const waitMs = otherMachineWaitMs(this.settings);
+    return missing.filter(c => now - this._waits.firstSeen(c.hash, relativePath, now) >= waitMs);
+  }
+
+  /** Embeds `toEmbed` into `known` and queues the vectors for this device's pack. */
+  async _embedMissing(relativePath, toEmbed, known, flushNow, keepLocal) {
+    if (this._disabled) {
+      this._stale.add(relativePath);
+      throw new Error(formatDisabledMessage(this.health()));
+    }
+    let fresh;
+    try {
+      fresh = await getEmbeddings(toEmbed.map(c => c.text), this.openaiApiKey, this._embeddingOptions());
+    } catch (err) {
+      this._stale.add(relativePath);
+      this._noteFailure(err);
+      if (err instanceof EmbeddingError && err.kind === "rate_limit" && (err.retryAfterMs ?? 0) > MAX_RETRY_WAIT_MS) {
+        this._pauseSync = true;
+      }
+      throw err;
+    }
+    this._noteSuccess();
+    toEmbed.forEach((chunk, i) => {
+      known.set(chunk.hash, fresh[i]);
+      this._packs.add(chunk.hash, fresh[i]);
+      // The note is not stored yet, so keep the vector where the next lookup finds it.
+      if (keepLocal) this._packs.storeLocal(chunk.hash, fresh[i]);
+    });
+    if (flushNow || this._packs.pendingCount >= PACK_FLUSH_ENTRIES) await this._packs.flush();
   }
 
   /** @returns {Map<string, Float32Array>} stored vector for each of the given chunk hashes that has one */
@@ -674,9 +775,21 @@ export class SemanticIndex {
     for (const hash of hashes) {
       if (found.has(hash)) continue;
       const row = select.get(hash);
-      if (row) found.set(hash, new Float32Array(new Uint8Array(row.embedding).buffer));
+      if (row) {
+        found.set(hash, new Float32Array(new Uint8Array(row.embedding).buffer));
+        continue;
+      }
+      const packed = this._packs?.get(hash);
+      if (packed) found.set(hash, packed);
     }
     return found;
+  }
+
+  /** Which of the given chunk hashes already have a vector, without needing the vector itself. */
+  _knownHashes(hashes) {
+    const inChunks = this.db.prepare("SELECT 1 FROM chunks WHERE chunk_hash = ? LIMIT 1");
+    const inPacks = this.db.prepare("SELECT 1 FROM pack_vectors WHERE hash = ?");
+    return new Set(hashes.filter(h => inChunks.get(h) || inPacks.get(h)));
   }
 
   _storeFile(relativePath, mtimeMs, hash, chunks, embeddings) {
@@ -748,6 +861,7 @@ export class SemanticIndex {
 
     txn();
     this._stale.delete(relativePath);
+    this._waits.retain(relativePath, new Set());
   }
 
   // --- Private methods ---
@@ -845,6 +959,8 @@ export class SemanticIndex {
     const summary = { updated: 0, failed: 0, skipped: 0 };
 
     try {
+      // Vectors other machines already paid for come first, so the catch-up finds them.
+      await this._packs.importNew().catch(err => console.error(`Semantic index: pack import failed: ${err.message}`));
       const toReindex = await this._scan();
       if (toReindex.length === 0) {
         console.error("Semantic index: up to date");
@@ -889,6 +1005,7 @@ export class SemanticIndex {
         : `Semantic index: sync complete (${counts})`);
       return summary;
     } finally {
+      await this._packs.flush();
       this._syncState.syncing = false;
       this._writeStats();
       for (const rel of this._pendingEvents) this._schedule(rel);
@@ -913,7 +1030,80 @@ export class SemanticIndex {
     const rel = toVaultRel(String(filename));
     // Dot paths include the index's own DB files under .obsidian/.
     if (!rel || rel.split("/").some(p => p.startsWith("."))) return;
+    if (rel === CACHE_FOLDER || rel.startsWith(CACHE_FOLDER + "/")) {
+      if (this._sharing && rel.endsWith(".pack")) this._packArrived();
+      return;
+    }
     this._enqueue(rel);
+  }
+
+  /** A pack appeared or changed: read it now rather than at the next tick. */
+  _packArrived() {
+    if (!this.db || this._closing || !this.lease.isHolder) return;
+    const work = this._importAndResolve()
+      .catch(err => console.error(`Semantic index: pack import failed: ${err.message}`))
+      .finally(() => this._inflight.delete(work));
+    this._inflight.add(work);
+  }
+
+  async _importAndResolve() {
+    const imported = await this._packs.importNew();
+    if (imported > 0) await this._retryWaiting();
+    return imported;
+  }
+
+  /** Reindex the notes that are waiting for vectors; those whose chunks now resolve are stored. */
+  async _retryWaiting() {
+    const paths = this._waits.paths();
+    for (let i = 0; i < paths.length; i += REINDEX_BATCH_SIZE) {
+      if (this._closing || !this.lease.isHolder) return;
+      const results = await Promise.allSettled(paths.slice(i, i + REINDEX_BATCH_SIZE).map(rel => this._trackedReindex(rel)));
+      for (const r of results) {
+        if (r.status === "rejected" && !this._disabled) console.error(`Semantic index: update failed: ${r.reason?.message}`);
+      }
+    }
+    await this._packs.flush();
+  }
+
+  /** Housekeeping for the holder: import new packs, store or embed waiting notes, share, compact. */
+  _tick() {
+    if (this._tickPromise) return this._tickPromise;
+    const run = this._runTick().finally(() => {
+      this._tickPromise = null;
+      this._inflight.delete(run);
+    });
+    this._tickPromise = run;
+    this._inflight.add(run);
+    return run;
+  }
+
+  async _runTick() {
+    if (!this.db || this._closing || !this.lease.isHolder || !this._sharing) return;
+    const imported = await this._packs.importNew();
+    if (imported > 0 || this._waits.isDue(this._now(), otherMachineWaitMs(this.settings))) {
+      await this._retryWaiting();
+    }
+    await this._packs.flush();
+    await this._maybeCompact();
+    this._writeStats();
+  }
+
+  async _maybeCompact() {
+    // Until the index has caught up with the vault, live vectors would look dead.
+    if (!this._scanned || this._syncState.syncing || this._stale.size > 0) return;
+    const now = this._now();
+    if (now - this._lastCompactCheck < COMPACT_CHECK_MS) return;
+    this._lastCompactCheck = now;
+    const select = this.db.prepare("SELECT 1 FROM chunks WHERE chunk_hash = ? LIMIT 1");
+    const opts = {
+      cacheDirAbs: this.cacheDirAbs, deviceId: this.settings.deviceId,
+      isLive: (hash) => !!select.get(hash), olderThanMs: COMPACT_MIN_AGE_MS, now: this._now,
+    };
+    const { packs, entries, dead } = await inspectOwnPacks(opts);
+    if (dead * 2 > entries || packs > COMPACT_MAX_PACKS) {
+      const { kept, dropped } = await this._compact({ ...opts, merge: true });
+      console.error(`Semantic index: compacted this device's embedding packs (${kept} kept, ${dropped} dropped)`);
+    }
   }
 
   _onWatcherError(err) {
@@ -976,14 +1166,48 @@ export class SemanticIndex {
   }
 
   async _processEvent(rel) {
+    const written = this._written.delete(rel);
     try {
-      if (rel.endsWith(".md")) await this.reindexFile(rel);
+      if (!this.lease.isHolder) {
+        if (written) await this._runExclusive(rel, () => this._embedForPack(rel));
+      } else if (rel.endsWith(".md")) await this.reindexFile(rel, { written });
       else await this._reconcileSubtree(rel);
     } catch (e) {
       if (!this._disabled) console.error(`Semantic index: update failed for ${rel}: ${e.message}`);
     } finally {
       this._writeStats();
     }
+  }
+
+  /**
+   * Not the housekeeper: embed the chunks of a note this process wrote that the index does not hold
+   * and leave them in a pack. The index is only read, to see what is already known.
+   */
+  async _embedForPack(rel) {
+    let content;
+    try {
+      content = await fs.readFile(path.resolve(this.vaultPath, rel), "utf-8");
+    } catch (e) {
+      if (e.code === "ENOENT") return;
+      throw e;
+    }
+    const chunks = chunkNote(content, rel);
+    const known = this._knownHashes(chunks.map(c => c.hash));
+    const missing = [];
+    for (const chunk of chunks) {
+      if (!known.has(chunk.hash) && !missing.some(m => m.hash === chunk.hash)) missing.push(chunk);
+    }
+    if (missing.length === 0 || this._disabled) return;
+    let fresh;
+    try {
+      fresh = await getEmbeddings(missing.map(c => c.text), this.openaiApiKey, this._embeddingOptions());
+    } catch (err) {
+      this._noteFailure(err);
+      throw err;
+    }
+    this._noteSuccess();
+    missing.forEach((chunk, i) => this._packs.add(chunk.hash, fresh[i]));
+    await this._packs.flush();
   }
 
   /**
