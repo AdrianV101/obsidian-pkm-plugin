@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { Buffer } from "node:buffer";
 import { spawn } from "node:child_process";
 import { openLocalIndex, EMBEDDING_MODEL, EMBEDDING_DIMENSIONS, SCHEMA_VERSION } from "../local-index.js";
 import { cacheDir } from "../local-paths.js";
@@ -132,5 +133,36 @@ describe("openLocalIndex", () => {
     const results = await Promise.all(Array.from({ length: 4 }, run));
     assert.deepEqual(results.map(r => r.code), [0, 0, 0, 0], results.map(r => r.err).join("\n"));
     assert.deepEqual(embeddingTables(open({ dbPath }).db), ["chunks", "files", "vec_chunks"]);
+  });
+});
+
+describe("link tables on upgrade", () => {
+  it("adds the link tables to a version 3 index and keeps its vectors and keyword rows", () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "pkm-links-up-"));
+    const vault = path.join(tmp, "vault");
+    fs.mkdirSync(vault);
+    const dbPath = path.join(tmp, "index.db");
+    try {
+      const old = openLocalIndex({ vaultPath: vault, dbPath, schemaVersion: 3 });
+      old.db.exec("DROP TABLE links; DROP TABLE link_files;");
+      old.db.prepare("INSERT INTO files (path, mtime_ms, content_hash, chunk_count, updated_at) VALUES ('a.md', 1, 'h', 1, 'now')").run();
+      old.db.prepare("INSERT INTO chunks (id, file_path, chunk_index, heading, content_preview, chunk_hash) VALUES (1, 'a.md', 0, NULL, 'p', 'ch')").run();
+      old.db.prepare("INSERT INTO vec_chunks (rowid, embedding) VALUES (?, ?)").run(1n, Buffer.from(new Float32Array(old.meta.dims).buffer));
+      old.db.prepare("INSERT INTO keyword_docs (id, path, mtime_ms, size) VALUES (1, 'a.md', 1, 1)").run();
+      old.db.prepare("INSERT INTO keyword_fts (rowid, text) VALUES (1, 'marmot')").run();
+      old.close();
+
+      const next = openLocalIndex({ vaultPath: vault, dbPath });
+      assert.equal(next.db.prepare("SELECT COUNT(*) AS n FROM vec_chunks").get().n, 1);
+      assert.equal(next.db.prepare("SELECT COUNT(*) AS n FROM chunks").get().n, 1);
+      assert.equal(next.db.prepare("SELECT COUNT(*) AS n FROM keyword_docs").get().n, 1);
+      assert.equal(next.db.prepare("SELECT rowid FROM keyword_fts WHERE keyword_fts MATCH 'marmot'").all().length, 1);
+      assert.equal(next.db.prepare("SELECT COUNT(*) AS n FROM links").get().n, 0);
+      assert.equal(next.db.prepare("SELECT COUNT(*) AS n FROM link_files").get().n, 0);
+      assert.equal(next.db.prepare("SELECT value FROM meta WHERE key = 'schemaVersion'").get().value, String(SCHEMA_VERSION));
+      next.close();
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
   });
 });

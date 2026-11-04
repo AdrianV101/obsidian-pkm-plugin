@@ -6,8 +6,8 @@ import { cacheDir } from "./local-paths.js";
 
 export const EMBEDDING_MODEL = "text-embedding-3-small";
 export const EMBEDDING_DIMENSIONS = 1536;
-export const SCHEMA_VERSION = 3;
-// The keyword tables were added in version 3 without touching the embedding tables.
+export const SCHEMA_VERSION = 4;
+// The keyword tables (version 3) and the link tables (version 4) were added without touching the embedding tables.
 const VECTOR_COMPATIBLE_FROM = 2;
 
 /**
@@ -59,7 +59,7 @@ export function openLocalIndex({
       try {
         const stored = readMeta(db);
         return !!stored && stored.schemaVersion === schemaVersion && stored.model === model && stored.dims === dims
-          && db.prepare("SELECT COUNT(*) AS n FROM sqlite_master WHERE name IN ('chunks','files','vec_chunks','pack_vectors','imported_packs','keyword_docs','keyword_fts')").get().n === 7;
+          && db.prepare("SELECT COUNT(*) AS n FROM sqlite_master WHERE name IN ('chunks','files','vec_chunks','pack_vectors','imported_packs','keyword_docs','keyword_fts','links','link_files')").get().n === 9;
       } catch {
         return false; // no meta table yet
       }
@@ -129,6 +129,22 @@ export function openLocalIndex({
 
           CREATE VIRTUAL TABLE IF NOT EXISTS keyword_fts USING fts5(
             text, content='', contentless_delete=1, tokenize='unicode61 remove_diacritics 2'
+          );
+
+          -- Wikilinks as written in each note; targets are resolved when queried.
+          CREATE TABLE IF NOT EXISTS links (
+            id INTEGER PRIMARY KEY,
+            src TEXT NOT NULL,
+            raw TEXT NOT NULL,
+            target TEXT NOT NULL
+          );
+          CREATE INDEX IF NOT EXISTS idx_links_src ON links(src);
+
+          -- The note state the links rows were read at.
+          CREATE TABLE IF NOT EXISTS link_files (
+            src TEXT PRIMARY KEY,
+            mtime_ms REAL NOT NULL,
+            size INTEGER NOT NULL
           );
         `);
       }).immediate();

@@ -67,6 +67,15 @@ export function extractWikilinks(content) {
   return findWikilinks(content).map(l => l.target + l.fragment);
 }
 
+/**
+ * The links `extractWikilinks` yields, each with its note part separate from the #heading / ^block suffix.
+ * @param {string} content
+ * @returns {Array<{ raw: string, target: string }>}
+ */
+export function extractLinkParts(content) {
+  return findWikilinks(content).map(l => ({ raw: l.target + l.fragment, target: l.target }));
+}
+
 /** @typedef {{ status: "resolved", path: string } | { status: "ambiguous", candidates: string[] } | { status: "broken" }} LinkResolution */
 
 /**
@@ -137,19 +146,50 @@ export function collectLinkedPaths(content, resolver) {
 }
 
 /**
- * Find all files that contain wikilinks that may resolve to a given target path
- * (ambiguous links count). Returns paths and their content.
- *
- * @param {string} targetPath - vault-relative path of the target file
- * @param {string} vaultPath - absolute vault root
- * @param {string[]} allFiles - all vault-relative file paths
- * @param {{ resolve(target: string): LinkResolution }} resolver - from createLinkResolver(allFiles)
- * @returns {Promise<Array<{file: string, content: string}>>}
+ * Where graph functions get links from: the links table, or the notes themselves.
+ * `outgoing` lists a note's links in document order, `has` says whether the source knows the note,
+ * and `incomingIndex` maps each note to the notes whose links may resolve to it, in note-list order.
+ * @typedef {Object} LinkSource
+ * @property {(src: string) => Array<{ raw: string, target: string }>} outgoing
+ * @property {(src: string) => boolean} has
+ * @property {(resolver: { resolve(target: string): LinkResolution }) => Map<string, Set<string>>} incomingIndex
  */
-export async function findFilesLinkingTo(targetPath, vaultPath, allFiles, resolver) {
-  const linking = [];
+
+/**
+ * Map each note to the notes linking to it. An ambiguous link counts for every candidate; self-links are skipped.
+ * @param {Iterable<[string, string[]]>} entries - [note, link targets] in note-list order
+ * @param {{ resolve(target: string): LinkResolution }} resolver
+ * @returns {Map<string, Set<string>>} targetPath -> Set<sourcePath>
+ */
+export function buildResolvedIndex(entries, resolver) {
+  const index = new Map();
+  const cache = new Map();
+  for (const [file, targets] of entries) {
+    for (const target of new Set(targets)) {
+      let paths = cache.get(target);
+      if (!paths) {
+        paths = resolutionPaths(resolver.resolve(target));
+        cache.set(target, paths);
+      }
+      for (const targetPath of paths) {
+        if (targetPath === file) continue;
+        if (!index.has(targetPath)) index.set(targetPath, new Set());
+        index.get(targetPath).add(file);
+      }
+    }
+  }
+  return index;
+}
+
+/**
+ * A link source that reads every listed note now. This is the fallback when there is no links table.
+ * @param {string} vaultPath - absolute vault root
+ * @param {string[]} allFiles - vault-relative note paths
+ * @returns {Promise<LinkSource>}
+ */
+export async function readLinkSource(vaultPath, allFiles) {
+  const byFile = new Map();
   for (const file of allFiles) {
-    if (file === targetPath) continue;
     let content;
     try {
       content = await fs.readFile(path.join(vaultPath, file), "utf-8");
@@ -157,11 +197,28 @@ export async function findFilesLinkingTo(targetPath, vaultPath, allFiles, resolv
       if (e.code === "ENOENT") continue; // File deleted between listing and reading
       throw e;
     }
-    if (collectLinkedPaths(content, resolver).has(targetPath)) {
-      linking.push({ file, content });
-    }
+    byFile.set(file, extractLinkParts(content));
   }
-  return linking;
+  return {
+    outgoing: (src) => byFile.get(src) ?? [],
+    has: (src) => byFile.has(src),
+    incomingIndex: (resolver) => buildResolvedIndex(
+      [...byFile].map(([file, parts]) => [file, parts.map(p => p.target)]), resolver),
+  };
+}
+
+/**
+ * Find all files that contain wikilinks that may resolve to a given target path
+ * (ambiguous links count).
+ *
+ * @param {string} targetPath - vault-relative path of the target file
+ * @param {LinkSource} links
+ * @param {{ resolve(target: string): LinkResolution }} resolver - from createLinkResolver(allFiles)
+ * @returns {Promise<Array<{file: string}>>}
+ */
+export async function findFilesLinkingTo(targetPath, links, resolver) {
+  const sources = links.incomingIndex(resolver).get(targetPath);
+  return sources ? [...sources].filter(file => file !== targetPath).map(file => ({ file })) : [];
 }
 
 /**
@@ -194,32 +251,12 @@ export function rewriteWikilinks(content, { resolver, movedFrom, newTarget }) {
  * Build an incoming link index: for each target file, which source files link to it.
  * An ambiguous link counts as incoming for every candidate. Self-links are skipped.
  *
- * @param {string} vaultPath - absolute vault path
- * @param {string[]} allFiles - vault-relative file paths
+ * @param {LinkSource} links
  * @param {{ resolve(target: string): LinkResolution }} resolver - from createLinkResolver(allFiles)
  * @returns {Promise<Map<string, Set<string>>>} targetPath -> Set<sourcePath>
  */
-export async function buildIncomingIndex(vaultPath, allFiles, resolver) {
-  const index = new Map(); // targetPath -> Set<sourcePath>
-
-  for (const file of allFiles) {
-    let content;
-    try {
-      content = await fs.readFile(path.join(vaultPath, file), "utf-8");
-    } catch (e) {
-      if (e.code === "ENOENT") continue; // File deleted between listing and reading
-      throw e;
-    }
-    for (const targetPath of collectLinkedPaths(content, resolver)) {
-      if (targetPath === file) continue; // skip self-links
-      if (!index.has(targetPath)) {
-        index.set(targetPath, new Set());
-      }
-      index.get(targetPath).add(file);
-    }
-  }
-
-  return index;
+export async function buildIncomingIndex(links, resolver) {
+  return links.incomingIndex(resolver);
 }
 
 /**
@@ -242,7 +279,7 @@ function getIncomingLinks(filePath, incomingIndex) {
  * @param {Object} options
  * @param {string} options.startPath - vault-relative path to the starting note
  * @param {string} options.vaultPath - absolute vault root path
- * @param {string[]} options.allFiles - vault-relative note paths (fresh listing)
+ * @param {LinkSource} options.links
  * @param {{ resolve(target: string): LinkResolution }} options.resolver - from createLinkResolver(allFiles)
  * @param {number} [options.depth=2] - maximum traversal depth
  * @param {"both"|"outgoing"|"incoming"} [options.direction="both"] - link direction to follow
@@ -267,7 +304,7 @@ function getIncomingLinks(filePath, incomingIndex) {
 export async function exploreNeighborhood({
   startPath,
   vaultPath,
-  allFiles,
+  links,
   resolver,
   depth: maxDepth = 2,
   direction = "both",
@@ -287,7 +324,7 @@ export async function exploreNeighborhood({
 
   const needIncoming = direction === "both" || direction === "incoming";
   const incomingIndex = needIncoming
-    ? await buildIncomingIndex(vaultPath, allFiles, resolver)
+    ? await buildIncomingIndex(links, resolver)
     : null;
 
   // BFS state
@@ -330,8 +367,9 @@ export async function exploreNeighborhood({
       const needOutgoing = direction === "both" || direction === "outgoing";
 
       if (needOutgoing) {
-        for (const link of extractWikilinks(content)) {
-          const resolution = resolver.resolve(link);
+        const outgoing = links.has(nodePath) ? links.outgoing(nodePath) : extractLinkParts(content);
+        for (const { raw } of outgoing) {
+          const resolution = resolver.resolve(raw);
           for (const targetPath of resolutionPaths(resolution)) {
             if (!visited.has(targetPath)) {
               nextQueue.push({
