@@ -86,5 +86,5 @@ If found:
 
 Confirm setup is complete. Tell the user:
 - "Your Vault PKM plugin is configured. Try asking me to list your vault folders to verify."
-- If VAULT_PKM_OPENAI_KEY was set: "Semantic search will build its index in the background on first use."
+- If VAULT_PKM_OPENAI_KEY was set: "Semantic search will build its index in the background on first use. If you use Obsidian Sync, turn on \"Sync all other types\" on every device so embeddings are shared between machines."
 - **Important**: "Restart your Claude Code session for the MCP server to pick up the new environment variables."
