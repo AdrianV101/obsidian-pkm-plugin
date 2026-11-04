@@ -12,6 +12,7 @@ import { createRequire } from "module";
 import { pathToFileURL } from "url";
 import fs from "fs/promises";
 import { SemanticIndex } from "./embeddings.js";
+import { KeywordIndex } from "./keyword-index.js";
 import { HousekeeperLease } from "./lease.js";
 import { openLocalIndex } from "./local-index.js";
 import { loadMachineSettings } from "./machine-settings.js";
@@ -42,6 +43,11 @@ export async function startServer() {
 
   // Semantic index (populated at startup if VAULT_PKM_OPENAI_KEY is set)
   let semanticIndex = null;
+
+  // Local index, lease and keyword index (opened at startup, with or without a key)
+  let localIndex = null;
+  let lease = null;
+  let keywordIndex = null;
 
   // Activity log (populated at startup)
   let activityLog = null;
@@ -117,13 +123,31 @@ export async function startServer() {
       || process.env.OPENAI_API_KEY;
     const CACHE_DIR = cacheDir(VAULT_PATH);
     const STATE_DIR = stateDir(VAULT_PATH);
-    if (openaiApiKey && !openaiApiKey.startsWith("${")) {
-      let localIndex = null;
-      let lease = null;
+    const hasKey = !!openaiApiKey && !openaiApiKey.startsWith("${");
+    // The local index and the housekeeper lease exist with or without a key: the keyword index lives there.
+    try {
+      await fs.mkdir(STATE_DIR, { recursive: true });
+      lease = new HousekeeperLease({ stateDir: STATE_DIR });
+      localIndex = openLocalIndex({ vaultPath: VAULT_PATH, dbPath: path.join(CACHE_DIR, "index.db") });
+    } catch (err) {
+      console.error(`Local index init failed (non-fatal): ${err.message}`);
+      localIndex?.close();
+      await lease?.release();
+      localIndex = null;
+      lease = null;
+    }
+
+    if (localIndex) {
       try {
-        await fs.mkdir(STATE_DIR, { recursive: true });
-        lease = new HousekeeperLease({ stateDir: STATE_DIR });
-        localIndex = openLocalIndex({ vaultPath: VAULT_PATH, dbPath: path.join(CACHE_DIR, "index.db") });
+        keywordIndex = new KeywordIndex({ localIndex, vaultPath: VAULT_PATH, lease });
+      } catch (err) {
+        console.error(`Keyword index init failed (non-fatal): ${err.message}`);
+        keywordIndex = null;
+      }
+    }
+
+    if (hasKey && localIndex) {
+      try {
         const settings = loadMachineSettings(STATE_DIR);
         // The pack folder is created on the first pack write, not here.
         semanticIndex = new SemanticIndex({
@@ -131,21 +155,20 @@ export async function startServer() {
           settings, cacheDirAbs: path.join(VAULT_PATH, CACHE_FOLDER),
         });
         await semanticIndex.initialize();
-        // Not awaited: a slow state folder must not delay server startup.
-        lease.tryAcquire().catch((e) => console.error(`Housekeeper lease: ${e.message}`));
         console.error("Semantic index initialized");
         if (!process.env.VAULT_PKM_OPENAI_KEY && process.env.OBSIDIAN_PKM_OPENAI_KEY) {
           console.error("Note: OBSIDIAN_PKM_OPENAI_KEY is deprecated — rename to VAULT_PKM_OPENAI_KEY");
         }
       } catch (err) {
         console.error(`Semantic index init failed (non-fatal): ${err.message}`);
-        localIndex?.close();
-        await lease?.release();
         semanticIndex = null;
       }
-    } else {
+    } else if (!hasKey) {
       console.error("VAULT_PKM_OPENAI_KEY not set — semantic search disabled");
     }
+
+    // Not awaited: a slow state folder must not delay server startup.
+    if (lease) lease.tryAcquire().catch((e) => console.error(`Housekeeper lease: ${e.message}`));
 
     try {
       activityLog = new ActivityLog({ vaultPath: VAULT_PATH, sessionId: SESSION_ID, stateDir: STATE_DIR });
@@ -161,6 +184,7 @@ export async function startServer() {
       vaultName: VAULT_NAME,
       templateRegistry,
       semanticIndex,
+      keywordIndex,
       activityLog,
       sessionId: SESSION_ID,
     });
@@ -183,7 +207,17 @@ export async function startServer() {
     }, 5000);
     forceTimer.unref();
     try {
+      await keywordIndex?.shutdown();
+    } catch (e) {
+      console.error(`Keyword index shutdown error: ${e.message}`);
+    }
+    try {
+      // The semantic index closes the local index and releases the lease when it exists.
       if (semanticIndex) await semanticIndex.shutdown();
+      else {
+        localIndex?.close();
+        await lease?.release();
+      }
     } catch (e) {
       console.error(`Semantic index shutdown error: ${e.message}`);
     }

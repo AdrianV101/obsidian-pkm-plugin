@@ -6,7 +6,9 @@ import { cacheDir } from "./local-paths.js";
 
 export const EMBEDDING_MODEL = "text-embedding-3-small";
 export const EMBEDDING_DIMENSIONS = 1536;
-export const SCHEMA_VERSION = 2;
+export const SCHEMA_VERSION = 3;
+// The keyword tables were added in version 3 without touching the embedding tables.
+const VECTOR_COMPATIBLE_FROM = 2;
 
 /**
  * @typedef {Object} LocalIndex
@@ -57,7 +59,7 @@ export function openLocalIndex({
       try {
         const stored = readMeta(db);
         return !!stored && stored.schemaVersion === schemaVersion && stored.model === model && stored.dims === dims
-          && db.prepare("SELECT COUNT(*) AS n FROM sqlite_master WHERE name IN ('chunks','files','vec_chunks','pack_vectors','imported_packs')").get().n === 5;
+          && db.prepare("SELECT COUNT(*) AS n FROM sqlite_master WHERE name IN ('chunks','files','vec_chunks','pack_vectors','imported_packs','keyword_docs','keyword_fts')").get().n === 7;
       } catch {
         return false; // no meta table yet
       }
@@ -70,11 +72,16 @@ export function openLocalIndex({
         if (isCurrent()) return;
         db.exec("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
         const stored = readMeta(db);
-        if (!stored || stored.schemaVersion !== schemaVersion || stored.model !== model || stored.dims !== dims) {
+        const keepsVectors = !!stored && stored.model === model && stored.dims === dims
+          && (stored.schemaVersion === schemaVersion
+            || (schemaVersion === SCHEMA_VERSION && stored.schemaVersion >= VECTOR_COMPATIBLE_FROM && stored.schemaVersion < SCHEMA_VERSION));
+        if (!keepsVectors) {
           db.exec("DROP TABLE IF EXISTS vec_chunks; DROP TABLE IF EXISTS chunks; DROP TABLE IF EXISTS files; "
             + "DROP TABLE IF EXISTS pack_vectors; DROP TABLE IF EXISTS imported_packs;");
           const put = db.prepare("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)");
           for (const [k, v] of Object.entries(wanted)) put.run(k, String(v));
+        } else if (stored.schemaVersion !== schemaVersion) {
+          db.prepare("INSERT OR REPLACE INTO meta (key, value) VALUES ('schemaVersion', ?)").run(String(schemaVersion));
         }
         db.exec(`
           CREATE VIRTUAL TABLE IF NOT EXISTS vec_chunks USING vec0(
@@ -110,6 +117,18 @@ export function openLocalIndex({
 
           CREATE TABLE IF NOT EXISTS imported_packs (
             name TEXT PRIMARY KEY
+          );
+
+          -- Word index over note text. Contentless: the text is not stored, rows are keyed by keyword_docs.id.
+          CREATE TABLE IF NOT EXISTS keyword_docs (
+            id INTEGER PRIMARY KEY,
+            path TEXT NOT NULL UNIQUE,
+            mtime_ms INTEGER NOT NULL,
+            size INTEGER NOT NULL
+          );
+
+          CREATE VIRTUAL TABLE IF NOT EXISTS keyword_fts USING fts5(
+            text, content='', contentless_delete=1, tokenize='unicode61 remove_diacritics 2'
           );
         `);
       }).immediate();

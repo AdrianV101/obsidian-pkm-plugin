@@ -151,12 +151,13 @@ async function isDirectory(absPath) {
  * @param {string} ctx.vaultPath - absolute path to vault root
  * @param {Map} ctx.templateRegistry - loaded templates
  * @param {Object|null} ctx.semanticIndex - SemanticIndex instance (null if no API key)
+ * @param {Object|null} [ctx.keywordIndex] - KeywordIndex instance (null when the local index is unavailable)
  * @param {Object|null} ctx.activityLog - ActivityLog instance
  * @param {string} ctx.sessionId - current session UUID
  * @param {string} [ctx.vaultName] - vault name for obsidian:// links (defaults to basename of vaultPath)
  * @returns {Promise<Map<string, Function>>} tool name to handler function
  */
-export async function createHandlers({ vaultPath: rawVaultPath, templateRegistry, semanticIndex, activityLog, sessionId, vaultName }) {
+export async function createHandlers({ vaultPath: rawVaultPath, templateRegistry, semanticIndex, keywordIndex = null, activityLog, sessionId, vaultName }) {
   const vaultPath = normalizeVaultRoot(rawVaultPath);
   const safe = (relativePath) => resolveSafe(relativePath, vaultPath);
   const writableNote = (relativePath) => assertWritableReal(relativePath, vaultPath, "note");
@@ -1493,5 +1494,5 @@ export async function createHandlers({ vaultPath: rawVaultPath, templateRegistry
       }
     });
   }
-  return handlers;
+  return Object.assign(handlers, { keywordIndex });
 }
