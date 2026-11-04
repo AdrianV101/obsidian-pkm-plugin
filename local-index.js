@@ -46,46 +46,62 @@ export function openLocalIndex({
 
   const db = new Database(file);
   try {
+    // Every session process opens this file and only one writes: wait for a writer instead of failing.
+    db.pragma("busy_timeout = 10000");
     sqliteVec.load(db);
     db.pragma("journal_mode = WAL");
     db.pragma("journal_size_limit = 32000000");
 
-    db.exec("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
     const wanted = { schemaVersion, model, dims };
-    const stored = readMeta(db);
-    if (!stored || stored.schemaVersion !== schemaVersion || stored.model !== model || stored.dims !== dims) {
+    const isCurrent = () => {
+      try {
+        const stored = readMeta(db);
+        return !!stored && stored.schemaVersion === schemaVersion && stored.model === model && stored.dims === dims
+          && db.prepare("SELECT COUNT(*) AS n FROM sqlite_master WHERE name IN ('chunks','files','vec_chunks')").get().n === 3;
+      } catch {
+        return false; // no meta table yet
+      }
+    };
+
+    // A current index is only read. Otherwise one writer migrates inside an immediate transaction
+    // and re-checks there, so a process that lost the race finds the work done.
+    if (!isCurrent()) {
       db.transaction(() => {
-        db.exec("DROP TABLE IF EXISTS vec_chunks; DROP TABLE IF EXISTS chunks; DROP TABLE IF EXISTS files;");
-        const put = db.prepare("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)");
-        for (const [k, v] of Object.entries(wanted)) put.run(k, String(v));
-      })();
+        if (isCurrent()) return;
+        db.exec("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
+        const stored = readMeta(db);
+        if (!stored || stored.schemaVersion !== schemaVersion || stored.model !== model || stored.dims !== dims) {
+          db.exec("DROP TABLE IF EXISTS vec_chunks; DROP TABLE IF EXISTS chunks; DROP TABLE IF EXISTS files;");
+          const put = db.prepare("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)");
+          for (const [k, v] of Object.entries(wanted)) put.run(k, String(v));
+        }
+        db.exec(`
+          CREATE VIRTUAL TABLE IF NOT EXISTS vec_chunks USING vec0(
+            embedding float[${dims}]
+          );
+
+          CREATE TABLE IF NOT EXISTS chunks (
+            id INTEGER PRIMARY KEY,
+            file_path TEXT NOT NULL,
+            chunk_index INTEGER NOT NULL,
+            heading TEXT,
+            content_preview TEXT NOT NULL,
+            chunk_hash TEXT NOT NULL,
+            UNIQUE(file_path, chunk_index)
+          );
+
+          CREATE TABLE IF NOT EXISTS files (
+            path TEXT PRIMARY KEY,
+            mtime_ms INTEGER NOT NULL,
+            content_hash TEXT NOT NULL,
+            chunk_count INTEGER NOT NULL,
+            updated_at TEXT NOT NULL
+          );
+
+          CREATE INDEX IF NOT EXISTS idx_chunks_file ON chunks(file_path);
+        `);
+      }).immediate();
     }
-
-    db.exec(`
-      CREATE VIRTUAL TABLE IF NOT EXISTS vec_chunks USING vec0(
-        embedding float[${dims}]
-      );
-
-      CREATE TABLE IF NOT EXISTS chunks (
-        id INTEGER PRIMARY KEY,
-        file_path TEXT NOT NULL,
-        chunk_index INTEGER NOT NULL,
-        heading TEXT,
-        content_preview TEXT NOT NULL,
-        chunk_hash TEXT NOT NULL,
-        UNIQUE(file_path, chunk_index)
-      );
-
-      CREATE TABLE IF NOT EXISTS files (
-        path TEXT PRIMARY KEY,
-        mtime_ms INTEGER NOT NULL,
-        content_hash TEXT NOT NULL,
-        chunk_count INTEGER NOT NULL,
-        updated_at TEXT NOT NULL
-      );
-
-      CREATE INDEX IF NOT EXISTS idx_chunks_file ON chunks(file_path);
-    `);
 
     return {
       db,
@@ -93,7 +109,9 @@ export function openLocalIndex({
       dbPath: file,
       close() {
         if (!db.open) return;
-        db.pragma("wal_checkpoint(TRUNCATE)");
+        try {
+          db.pragma("wal_checkpoint(TRUNCATE)");
+        } catch { /* another process is still using the file */ }
         db.close();
       },
     };

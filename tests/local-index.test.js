@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { spawn } from "node:child_process";
 import { openLocalIndex, EMBEDDING_MODEL, EMBEDDING_DIMENSIONS, SCHEMA_VERSION } from "../local-index.js";
 import { cacheDir } from "../local-paths.js";
 
@@ -98,5 +99,26 @@ describe("openLocalIndex", () => {
     const after = [old, oldStats].map(p => [fs.readFileSync(p, "utf-8"), fs.statSync(p).mtimeMs]);
     assert.deepEqual(after, before);
     assert.deepEqual(fs.readdirSync(path.join(vault, ".obsidian")).sort(), ["semantic-index.db", "semantic-stats.json"]);
+  });
+  it("opening an index whose schema is current writes nothing", () => {
+    const first = open();
+    const before = first.db.pragma("data_version", { simple: true });
+    open();
+    assert.equal(first.db.pragma("data_version", { simple: true }), before);
+  });
+
+  it("processes opening a missing index at the same moment all succeed", async () => {
+    const moduleUrl = new URL("../local-index.js", import.meta.url).href;
+    const script = `import(${JSON.stringify(moduleUrl)}).then(m => { m.openLocalIndex({ vaultPath: process.argv[1], dbPath: process.argv[2] }).close(); })`;
+    const dbPath = path.join(tmp, "shared", "index.db");
+    const run = () => new Promise((resolve) => {
+      const child = spawn(process.execPath, ["-e", script, vault, dbPath], { stdio: ["ignore", "ignore", "pipe"] });
+      let err = "";
+      child.stderr.on("data", d => { err += d; });
+      child.on("close", code => resolve({ code, err }));
+    });
+    const results = await Promise.all(Array.from({ length: 4 }, run));
+    assert.deepEqual(results.map(r => r.code), [0, 0, 0, 0], results.map(r => r.err).join("\n"));
+    assert.deepEqual(embeddingTables(open({ dbPath }).db), ["chunks", "files", "vec_chunks"]);
   });
 });

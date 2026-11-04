@@ -25,7 +25,9 @@ import {
   quotaResponse,
   makeVault,
   manyNotes,
+  holderLease,
 } from "./fake-openai.js";
+import { HousekeeperLease } from "../lease.js";
 
 const { Response, Headers } = globalThis;
 
@@ -35,10 +37,10 @@ const openedIndexes = [];
 const sidecarDir = (vaultPath) => path.join(LOCAL_ROOT, vaultKey(vaultPath));
 const statsFile = (vaultPath) => path.join(sidecarDir(vaultPath), "semantic-stats.json");
 
-function newIndex({ vaultPath, dbPath, ...rest }) {
+function newIndex({ vaultPath, dbPath, lease = holderLease(), ...rest }) {
   const localIndex = openLocalIndex({ vaultPath, dbPath: dbPath ?? path.join(sidecarDir(vaultPath), "index.db") });
   openedIndexes.push(localIndex);
-  return new SemanticIndex({ vaultPath, localIndex, statsPath: statsFile(vaultPath), ...rest });
+  return new SemanticIndex({ vaultPath, localIndex, lease, statsPath: statsFile(vaultPath), ...rest });
 }
 
 afterEach(() => {
@@ -1751,5 +1753,158 @@ describe("SemanticIndex freshness", () => {
       assert.ok(!previews.some(r => r.content_preview.includes("FIRSTEDIT")));
       assert.ok(idx._stale.has("n.md"));
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Housekeeper roles: only the lease holder watches, syncs and writes
+// ---------------------------------------------------------------------------
+describe("SemanticIndex housekeeper roles", () => {
+  let fake;
+  const opened = [];
+  const vaults = [];
+  const stateDirs = [];
+
+  function fakeWatch() {
+    const watchers = [];
+    const watch = (_dir, _opts, listener) => {
+      const w = new EventEmitter();
+      w.listener = listener;
+      w.closed = false;
+      w.close = () => { w.closed = true; };
+      watchers.push(w);
+      return w;
+    };
+    return { watchers, watch };
+  }
+
+  async function lease() {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "pkm-roles-state-"));
+    stateDirs.push(dir);
+    return dir;
+  }
+
+  const realLease = (stateDir) => new HousekeeperLease({ stateDir, heartbeatMs: 20, staleMs: 10_000 });
+
+  async function open(vaultPath, leaseObj, opts = {}) {
+    const watcher = fakeWatch();
+    const idx = newIndex({
+      vaultPath, lease: leaseObj, openaiApiKey: "test-key", sleep: async () => {},
+      watch: watcher.watch, debounceMs: 0, ...opts,
+    });
+    opened.push(idx);
+    await idx.initialize();
+    await idx.whenIdle();
+    return { idx, watcher };
+  }
+
+  afterEach(async () => {
+    for (const idx of opened.splice(0)) await idx.shutdown();
+    fake?.restore();
+    fake = null;
+    for (const dir of [...vaults.splice(0), ...stateDirs.splice(0)]) await fs.rm(dir, { recursive: true, force: true });
+  });
+
+  async function vaultWith(files) {
+    const dir = await makeVault(files);
+    vaults.push(dir);
+    return dir;
+  }
+
+  it("L5: a reader starts no watcher or catch-up, writes nothing and still answers searches from the holder's writes", async () => {
+    fake = installFakeOpenAI();
+    const vault = await vaultWith({ "a.md": "Alpha note about caching.", "b.md": "Beta note about gardens." });
+    const state = await lease();
+    const holderLease = realLease(state);
+    const readerLease = realLease(state);
+    assert.equal(await holderLease.tryAcquire(), true);
+    assert.equal(await readerLease.tryAcquire(), false);
+
+    const { idx: holder, watcher: holderWatch } = await open(vault, holderLease);
+    assert.equal(holderWatch.watchers.length, 1);
+    const callsAfterHolder = fake.calls.length;
+    assert.ok(callsAfterHolder > 0);
+    const statsBefore = await fs.readFile(statsFile(vault), "utf-8");
+
+    await fs.writeFile(path.join(vault, "c.md"), "Gamma note, unseen by the reader.");
+    const { idx: reader, watcher: readerWatch } = await open(vault, readerLease);
+    assert.equal(readerWatch.watchers.length, 0);
+    assert.equal(reader.watcher, null);
+    assert.equal(reader.db.prepare("SELECT COUNT(*) AS n FROM files").get().n, 2);
+    assert.equal(await reader.whenSynced(), null);
+
+    reader.notifyChanged("c.md");
+    await reader.notifyRemoved("a.md");
+    reader.notifyMoved("b.md", "b2.md");
+    await reader.whenIdle();
+    assert.deepEqual(holder.db.prepare("SELECT path FROM files ORDER BY path").all().map(r => r.path), ["a.md", "b.md"]);
+    assert.equal(fake.calls.length, callsAfterHolder);
+    assert.equal(await fs.readFile(statsFile(vault), "utf-8"), statsBefore);
+
+    const hits = await reader.searchRaw({ query: "caching", limit: 5 });
+    assert.deepEqual(hits.map(h => h.path).sort(), ["a.md", "b.md"]);
+    assert.equal(fake.calls.length, callsAfterHolder + 1);
+  });
+
+  it("a reader's probe checks the API but starts no sync and writes no stats", async () => {
+    fake = installFakeOpenAI();
+    const vault = await vaultWith({ "a.md": "Alpha." });
+    const state = await lease();
+    const first = realLease(state);
+    await first.tryAcquire();
+    const second = realLease(state);
+    await second.tryAcquire();
+    const { idx } = await open(vault, second);
+    assert.equal(await idx.probe(), true);
+    assert.equal(fake.calls.length, 1);
+    assert.deepEqual(fake.calls[0], ["ping"]);
+    assert.equal(idx.health().status, "ok");
+    assert.equal(fsSync.existsSync(statsFile(vault)), false);
+    assert.equal(idx.db.prepare("SELECT COUNT(*) AS n FROM files").get().n, 0);
+  });
+
+  it("starts the watcher and catch-up on acquisition and stops them when the lease is lost", async () => {
+    fake = installFakeOpenAI();
+    const vault = await vaultWith({ "a.md": "Alpha." });
+    const state = await lease();
+    const holderLease = realLease(state);
+    await holderLease.tryAcquire();
+    const mine = realLease(state);
+    await mine.tryAcquire();
+    const { idx, watcher } = await open(vault, mine);
+    assert.equal(watcher.watchers.length, 0);
+
+    await holderLease.release();
+    assert.equal(await mine.tryAcquire(), true);
+    await idx.whenIdle();
+    for (let i = 0; i < 50 && watcher.watchers.length === 0; i++) await new Promise(r => setTimeout(r, 5));
+    assert.equal(watcher.watchers.length, 1);
+    await idx.whenSynced();
+    await idx.whenIdle();
+    assert.equal(idx.db.prepare("SELECT COUNT(*) AS n FROM files").get().n, 1);
+
+    mine._lose();
+    for (let i = 0; i < 50 && !watcher.watchers[0].closed; i++) await new Promise(r => setTimeout(r, 5));
+    assert.equal(watcher.watchers[0].closed, true);
+    assert.equal(idx.watcher, null);
+    const before = fake.calls.length;
+    idx.notifyChanged("a.md");
+    await idx.reindexFile("a.md");
+    assert.equal(fake.calls.length, before);
+  });
+
+  it("shutdown releases the lease so another process can take over", async () => {
+    fake = installFakeOpenAI();
+    const vault = await vaultWith({ "a.md": "Alpha." });
+    const state = await lease();
+    const mine = realLease(state);
+    await mine.tryAcquire();
+    const { idx } = await open(vault, mine);
+    const other = realLease(state);
+    assert.equal(await other.tryAcquire(), false);
+    await idx.shutdown();
+    assert.equal(mine.isHolder, false);
+    assert.equal(await other.tryAcquire(), true);
+    await other.release();
   });
 });

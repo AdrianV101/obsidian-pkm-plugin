@@ -135,6 +135,8 @@ export class SemanticIndex {
    * @param {string} opts.vaultPath - absolute path to vault root
    * @param {string} opts.openaiApiKey - OpenAI API key for embeddings
    * @param {import("./local-index.js").LocalIndex} opts.localIndex - the open per-machine index; shutdown() closes it
+   * @param {import("./lease.js").HousekeeperLease} opts.lease - only the holder watches, syncs and writes the index;
+   *   shutdown() releases it
    * @param {string} [opts.stateDir] - per-machine state folder holding semantic-stats.json
    * @param {string} [opts.statsPath] - override path for semantic-stats.json
    * @param {(ms: number, signal?: AbortSignal) => Promise<void>} [opts.sleep] - delay used between retries
@@ -144,14 +146,18 @@ export class SemanticIndex {
    * @param {number} [opts.maxKnnK] - largest k sent to a sqlite-vec KNN query
    */
   constructor({
-    vaultPath, openaiApiKey, localIndex, stateDir, statsPath, sleep = defaultSleep,
+    vaultPath, openaiApiKey, localIndex, lease, stateDir, statsPath, sleep = defaultSleep,
     watch = fsSync.watch, debounceMs = DEBOUNCE_MS, maxKnnK = MAX_KNN_K,
   }) {
     this.vaultPath = vaultPath;
     this.openaiApiKey = openaiApiKey;
     if (!localIndex) throw new Error("SemanticIndex requires a localIndex");
     if (!statsPath && !stateDir) throw new Error("SemanticIndex requires stateDir or statsPath");
+    if (!lease) throw new Error("SemanticIndex requires a lease");
     this.localIndex = localIndex;
+    this.lease = lease;
+    lease.onAcquired(() => this._onAcquired());
+    lease.onLost(() => this._stopHousekeeping());
     this.statsPath = statsPath || path.join(stateDir, "semantic-stats.json");
     this.db = null;
     this.watcher = null;
@@ -234,10 +240,34 @@ export class SemanticIndex {
     // Start background sync (non-blocking)
     this._abortController = new AbortController();
     this._requestAbort = new AbortController();
-    this._startSync();
+    if (this.lease.isHolder) this._startHousekeeping();
+  }
 
-    // Start file watcher
-    this._startWatcher();
+  /** Watcher, catch-up sync and stats belong to the lease holder; other processes only read. */
+  _startHousekeeping() {
+    this._writeStats();
+    this._startSync();
+    if (!this.watcher) this._startWatcher();
+  }
+
+  async _onAcquired() {
+    await this._initPromise?.catch(() => {});
+    if (!this.db || this._closing || !this.lease.isHolder) return;
+    this._watcherRestarts = 0;
+    this._startHousekeeping();
+  }
+
+  _stopHousekeeping() {
+    if (this.watcher) {
+      this.watcher.close();
+      this.watcher = null;
+    }
+    for (const entry of this._debounced.values()) {
+      clearTimeout(entry.timer);
+      entry.resolve();
+    }
+    this._debounced.clear();
+    this._pendingEvents.clear();
   }
 
   async shutdown() {
@@ -267,6 +297,7 @@ export class SemanticIndex {
       this.localIndex.close();
       this.db = null;
     }
+    await this.lease.release();
   }
 
   /** Resolves with the latest sync's summary ({ updated, failed, skipped }) once it finishes. */
@@ -290,7 +321,7 @@ export class SemanticIndex {
    * @param {string} relativePath - vault-relative path
    */
   notifyChanged(relativePath) {
-    if (!this.db || this._closing) return;
+    if (!this.db || this._closing || !this.lease.isHolder) return;
     this._enqueue(toVaultRel(relativePath));
   }
 
@@ -300,7 +331,7 @@ export class SemanticIndex {
    * @returns {Promise<void>}
    */
   async notifyRemoved(relativePath) {
-    if (!this.db || this._closing) return;
+    if (!this.db || this._closing || !this.lease.isHolder) return;
     const rel = toVaultRel(relativePath);
     await this._runExclusive(rel, async () => this.removeFile(rel));
     this._writeStats();
@@ -313,7 +344,7 @@ export class SemanticIndex {
    * @param {string} newRelativePath
    */
   notifyMoved(oldRelativePath, newRelativePath) {
-    if (!this.db || this._closing) return;
+    if (!this.db || this._closing || !this.lease.isHolder) return;
     const from = toVaultRel(oldRelativePath);
     const to = toVaultRel(newRelativePath);
     const moved = this.db.prepare("SELECT path FROM files WHERE path = ? OR substr(path, 1, ?) = ?")
@@ -365,7 +396,7 @@ export class SemanticIndex {
       this._disabled = null;
       console.error("Semantic index: re-enabled after a successful probe");
       this._writeStats();
-      if (!this._closing) this._startSync();
+      if (!this._closing && this.lease.isHolder) this._startSync();
     }
     return true;
   }
@@ -557,7 +588,7 @@ export class SemanticIndex {
    * @param {string} relativePath - vault-relative file path
    */
   async reindexFile(relativePath) {
-    if (!this.db) return;
+    if (!this.db || !this.lease.isHolder) return;
     return this._runExclusive(relativePath, () => this._reindexNow(relativePath));
   }
 
@@ -649,6 +680,7 @@ export class SemanticIndex {
   }
 
   _storeFile(relativePath, mtimeMs, hash, chunks, embeddings) {
+    if (!this.lease.isHolder) return;
     const absPath = path.resolve(this.vaultPath, relativePath);
     const txn = this.db.transaction(() => {
       // The note may have changed, or been indexed by another server process, while its
@@ -707,7 +739,7 @@ export class SemanticIndex {
    * @param {string} relativePath - vault-relative file path
    */
   removeFile(relativePath) {
-    if (!this.db) return;
+    if (!this.db || !this.lease.isHolder) return;
 
     const txn = this.db.transaction(() => {
       this._deleteChunks(relativePath);
@@ -734,7 +766,7 @@ export class SemanticIndex {
    */
   _writeStats() {
     try {
-      if (!this.db) return;
+      if (!this.db || !this.lease.isHolder) return;
       const { indexed_files } = this.db.prepare("SELECT COUNT(*) as indexed_files FROM files").get();
       const { total_chunks } = this.db.prepare("SELECT COUNT(*) as total_chunks FROM chunks").get();
       const health = this.health();
@@ -759,7 +791,7 @@ export class SemanticIndex {
   }
 
   _startSync() {
-    if (!this.db || this._closing) return Promise.resolve(null);
+    if (!this.db || this._closing || !this.lease.isHolder) return Promise.resolve(null);
     if (!this._syncState.syncing) {
       this._syncPromise = this._startupSync().catch(err => {
         console.error(`Semantic index startup sync error: ${err.message}`);
@@ -830,7 +862,7 @@ export class SemanticIndex {
       console.error(`Semantic index: syncing ${toReindex.length} files...`);
 
       for (let i = 0; i < toReindex.length; i += REINDEX_BATCH_SIZE) {
-        if (this._closing || this._abortController?.signal.aborted) {
+        if (this._closing || !this.lease.isHolder || this._abortController?.signal.aborted) {
           console.error("Semantic index: startup sync aborted");
           break;
         }
@@ -902,7 +934,7 @@ export class SemanticIndex {
     console.error(`File watcher: restarting in ${delay}ms (restart ${this._watcherRestarts}/${MAX_WATCHER_RESTARTS})`);
     const lifecycle = this._lifecycle;
     this._sleep(delay).then(() => {
-      if (this._closing || !this.db || lifecycle !== this._lifecycle) return;
+      if (this._closing || !this.db || lifecycle !== this._lifecycle || !this.lease.isHolder) return;
       const failure = this._startWatcher();
       if (failure) {
         this._onWatcherError(failure);
@@ -990,7 +1022,7 @@ export class SemanticIndex {
       }
     }
     for (let i = 0; i < changed.length; i += REINDEX_BATCH_SIZE) {
-      if (this._closing || this._abortController?.signal.aborted || this._disabled || this._pauseSync) {
+      if (this._closing || !this.lease.isHolder || this._abortController?.signal.aborted || this._disabled || this._pauseSync) {
         for (const rel of changed.slice(i)) this._stale.add(rel);
         break;
       }

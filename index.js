@@ -12,6 +12,7 @@ import { createRequire } from "module";
 import { pathToFileURL } from "url";
 import fs from "fs/promises";
 import { SemanticIndex } from "./embeddings.js";
+import { HousekeeperLease } from "./lease.js";
 import { openLocalIndex } from "./local-index.js";
 import { cacheDir, stateDir } from "./local-paths.js";
 import { describeHealth } from "./semantic-health.js";
@@ -116,10 +117,15 @@ export async function startServer() {
     const STATE_DIR = stateDir(VAULT_PATH);
     if (openaiApiKey && !openaiApiKey.startsWith("${")) {
       let localIndex = null;
+      let lease = null;
       try {
+        await fs.mkdir(STATE_DIR, { recursive: true });
+        lease = new HousekeeperLease({ stateDir: STATE_DIR });
         localIndex = openLocalIndex({ vaultPath: VAULT_PATH, dbPath: path.join(CACHE_DIR, "index.db") });
-        semanticIndex = new SemanticIndex({ vaultPath: VAULT_PATH, openaiApiKey, localIndex, stateDir: STATE_DIR });
+        semanticIndex = new SemanticIndex({ vaultPath: VAULT_PATH, openaiApiKey, localIndex, lease, stateDir: STATE_DIR });
         await semanticIndex.initialize();
+        // Not awaited: a slow state folder must not delay server startup.
+        lease.tryAcquire().catch((e) => console.error(`Housekeeper lease: ${e.message}`));
         console.error("Semantic index initialized");
         if (!process.env.VAULT_PKM_OPENAI_KEY && process.env.OBSIDIAN_PKM_OPENAI_KEY) {
           console.error("Note: OBSIDIAN_PKM_OPENAI_KEY is deprecated — rename to VAULT_PKM_OPENAI_KEY");
@@ -127,6 +133,7 @@ export async function startServer() {
       } catch (err) {
         console.error(`Semantic index init failed (non-fatal): ${err.message}`);
         localIndex?.close();
+        await lease?.release();
         semanticIndex = null;
       }
     } else {

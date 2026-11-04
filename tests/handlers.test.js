@@ -7,7 +7,7 @@ import { createHandlers } from "../handlers.js";
 import { ActivityLog } from "../activity.js";
 import { SemanticIndex } from "../embeddings.js";
 import { openLocalIndex } from "../local-index.js";
-import { embeddingsResponse, errorResponse, quotaResponse, installFakeOpenAI, makeVault } from "./fake-openai.js";
+import { embeddingsResponse, errorResponse, quotaResponse, installFakeOpenAI, makeVault, holderLease } from "./fake-openai.js";
 import { createToolsList } from "../tools.js";
 import { AUTO_REDIRECT_THRESHOLD } from "../helpers.js";
 
@@ -104,7 +104,7 @@ async function buildTemplateRegistry(tmpDir) {
 function newSemanticIndex({ vaultPath, ...rest }) {
   const dir = path.join(vaultPath, ".test-local");
   const localIndex = openLocalIndex({ vaultPath, dbPath: path.join(dir, "index.db") });
-  return new SemanticIndex({ vaultPath, localIndex, statsPath: path.join(dir, "semantic-stats.json"), ...rest });
+  return new SemanticIndex({ vaultPath, localIndex, lease: holderLease(), statsPath: path.join(dir, "semantic-stats.json"), ...rest });
 }
 
 function createMockSemanticIndex(results = []) {

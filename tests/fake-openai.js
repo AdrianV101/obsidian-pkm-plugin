@@ -83,3 +83,14 @@ export function manyNotes(count, folder = "notes") {
   }
   return files;
 }
+
+/** A lease that is always held: the single-process default for tests that exercise the holder's work. */
+export function holderLease() {
+  return {
+    isHolder: true,
+    onAcquired() {},
+    onLost() {},
+    async tryAcquire() { return true; },
+    async release() {},
+  };
+}
