@@ -2,6 +2,7 @@
 
 import { resolveProject, describeVia } from "./resolve-project.js";
 import { loadProjectContext } from "./load-context.js";
+import { stateDir } from "../local-paths.js";
 import { healthFromStats, describeHealth } from "../semantic-health.js";
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -11,7 +12,7 @@ const VAULT_PATH = process.env.VAULT_PATH;
 
 async function getSemanticStats(vaultPath) {
   try {
-    const statsPath = path.join(vaultPath, ".obsidian", "semantic-stats.json");
+    const statsPath = path.join(stateDir(vaultPath), "semantic-stats.json");
     const raw = await fs.readFile(statsPath, "utf-8");
     const stats = JSON.parse(raw);
     if (typeof stats.indexed_files !== "number") return null;

@@ -5,6 +5,7 @@ import { pathToFileURL } from "node:url";
 import fs from "fs/promises";
 import path from "path";
 import { makeVault } from "./fake-openai.js";
+import { stateDir } from "../local-paths.js";
 
 const CLI = path.join(import.meta.dirname, "..", "cli.js");
 const PRELOAD = pathToFileURL(path.join(import.meta.dirname, "fake-fetch-quota.js")).href;
@@ -28,14 +29,23 @@ describe("server started with a persisted disabled semantic index", () => {
 
   before(async () => {
     vault = await makeVault({ "a.md": "Alpha body." });
-    await fs.mkdir(path.join(vault, ".obsidian"), { recursive: true });
-    await fs.writeFile(path.join(vault, ".obsidian", "semantic-stats.json"), JSON.stringify({
+    // Every cache and state root points inside the temp vault: the server never touches the real ones.
+    const home = vault;
+    const roots = {
+      HOME: home, USERPROFILE: home,
+      XDG_CACHE_HOME: path.join(home, "xdg-cache"),
+      XDG_STATE_HOME: path.join(home, "xdg-state"),
+      LOCALAPPDATA: path.join(home, "local-app-data"),
+    };
+    const state = stateDir(vault, { platform: process.platform, homedir: home, XDG_STATE_HOME: roots.XDG_STATE_HOME, LOCALAPPDATA: roots.LOCALAPPDATA });
+    await fs.mkdir(state, { recursive: true });
+    await fs.writeFile(path.join(state, "semantic-stats.json"), JSON.stringify({
       indexed_files: 0, vault_files: 1, status: "disabled",
       reason: "OpenAI quota exhausted. Add credits; it re-enables automatically.",
       since: "2026-07-03T09:12:00.000Z", last_success_at: null, stale_files: 1, updated_at: "2026-07-03T09:12:00.000Z",
     }));
     child = spawn(process.execPath, ["--import", PRELOAD, CLI], {
-      env: { PATH: process.env.PATH, HOME: vault, VAULT_PATH: vault, VAULT_PKM_OPENAI_KEY: "sk-test" },
+      env: { PATH: process.env.PATH, ...roots, VAULT_PATH: vault, VAULT_PKM_OPENAI_KEY: "sk-test" },
       stdio: ["pipe", "pipe", "pipe"],
     });
     child.stderr.on("data", (d) => { stderr += d; });

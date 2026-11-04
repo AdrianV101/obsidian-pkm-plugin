@@ -5,6 +5,7 @@ import fs from "fs/promises";
 import path from "path";
 import os from "os";
 import { makeRepo, makeProject } from "./git-fixture.js";
+import { stateDir } from "../local-paths.js";
 
 const CLI = path.join(import.meta.dirname, "..", "cli.js");
 const KEY_VARS = ["VAULT_PKM_OPENAI_KEY", "OBSIDIAN_PKM_OPENAI_KEY", "OPENAI_API_KEY"];
@@ -13,11 +14,27 @@ const KEY_VARS = ["VAULT_PKM_OPENAI_KEY", "OBSIDIAN_PKM_OPENAI_KEY", "OPENAI_API
 // home: the developer's real settings must never leak into these assertions.
 let fakeHome;
 
+// Pins every OS's home, cache and state roots inside the fake home.
+function homeEnv(home) {
+  return {
+    HOME: home,
+    USERPROFILE: home,
+    XDG_CACHE_HOME: path.join(home, "xdg-cache"),
+    XDG_STATE_HOME: path.join(home, "xdg-state"),
+    LOCALAPPDATA: path.join(home, "local-app-data"),
+  };
+}
+
+function stateDirFor(vaultPath, home) {
+  const e = homeEnv(home);
+  return stateDir(vaultPath, { platform: process.platform, homedir: home, XDG_STATE_HOME: e.XDG_STATE_HOME, LOCALAPPDATA: e.LOCALAPPDATA });
+}
+
 function runDoctor(env, cwd) {
   return new Promise((resolve, reject) => {
     const child = spawn("node", [CLI, "doctor"], {
       cwd,
-      env: { ...(env || process.env), HOME: fakeHome, USERPROFILE: fakeHome },
+      env: { ...(env || process.env), ...homeEnv(fakeHome) },
       stdio: ["pipe", "pipe", "pipe"],
     });
     let stdout = "";
@@ -329,15 +346,19 @@ describe("doctor semantic health", () => {
       name: "no stats file yet",
       key: "sk-test",
       stats: null,
-      line: "⚠ Semantic index has not reported yet (no .obsidian/semantic-stats.json); start the MCP server once",
+      line: "⚠ Semantic index has not reported yet (no semantic-stats.json in the state folder); start the MCP server once",
     },
     { name: "no API key", key: null, stats: { indexed_files: 1, vault_files: 1, status: "ok", stale_files: 0 }, line: null },
   ];
   for (const c of cases) {
     it(`reports semantic health from semantic-stats.json: ${c.name}`, async () => {
       const vaultPath = path.join(tmpDir, "vault");
-      await fs.mkdir(path.join(vaultPath, ".obsidian"), { recursive: true });
-      if (c.stats) await fs.writeFile(path.join(vaultPath, ".obsidian", "semantic-stats.json"), JSON.stringify(c.stats));
+      await fs.mkdir(vaultPath, { recursive: true });
+      if (c.stats) {
+        const dir = stateDirFor(vaultPath, fakeHome);
+        await fs.mkdir(dir, { recursive: true });
+        await fs.writeFile(path.join(dir, "semantic-stats.json"), JSON.stringify(c.stats));
+      }
       const env = { ...process.env, VAULT_PATH: vaultPath, };
       delete env.VAULT_PKM_OPENAI_KEY;
       delete env.OBSIDIAN_PKM_OPENAI_KEY;

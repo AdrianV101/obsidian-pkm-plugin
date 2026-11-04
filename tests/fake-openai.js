@@ -5,7 +5,7 @@ import os from "os";
 
 const { Response } = globalThis;
 
-export const DIMS = 3072;
+export const DIMS = 1536;
 
 // Body OpenAI returned for Adrian's account from 2026-07-03 (HTTP 429).
 export const QUOTA_BODY = JSON.stringify({
@@ -17,7 +17,7 @@ export const QUOTA_BODY = JSON.stringify({
   },
 });
 
-/** Deterministic 3072-dim vector derived from the text. */
+/** Deterministic 1536-dim vector derived from the text. */
 export function fakeEmbedding(text) {
   const vec = new Array(DIMS).fill(0);
   for (let i = 0; i < Math.min(text.length, DIMS); i++) {

@@ -4,6 +4,7 @@ import path from "path";
 import { loadTemplates } from "./helpers.js";
 import { resolveProject, describeVia } from "./hooks/resolve-project.js";
 import { healthFromStats, describeHealth } from "./semantic-health.js";
+import { stateDir } from "./local-paths.js";
 
 const SETTINGS_LABEL = "~/.claude/settings.json";
 // Same precedence as the server's key lookup in index.js.
@@ -177,13 +178,13 @@ export async function runDoctor() {
   if (apiKey) {
     let stats = null;
     try {
-      stats = JSON.parse(await fs.readFile(path.join(vaultPath, ".obsidian", "semantic-stats.json"), "utf-8"));
+      stats = JSON.parse(await fs.readFile(path.join(stateDir(vaultPath), "semantic-stats.json"), "utf-8"));
     } catch {
       // missing or unreadable: reported below
     }
     const health = healthFromStats(stats);
     if (!stats) {
-      warn("Semantic index has not reported yet (no .obsidian/semantic-stats.json); start the MCP server once");
+      warn("Semantic index has not reported yet (no semantic-stats.json in the state folder); start the MCP server once");
       warnings++;
     } else if (!health) {
       ok(`Semantic index: ${stats.indexed_files}/${stats.vault_files} notes indexed (health not reported by this server version)`);

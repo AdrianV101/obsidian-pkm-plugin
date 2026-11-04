@@ -6,6 +6,7 @@ import os from "os";
 import { createHandlers } from "../handlers.js";
 import { ActivityLog } from "../activity.js";
 import { SemanticIndex } from "../embeddings.js";
+import { openLocalIndex } from "../local-index.js";
 import { embeddingsResponse, errorResponse, quotaResponse, installFakeOpenAI, makeVault } from "./fake-openai.js";
 import { createToolsList } from "../tools.js";
 import { AUTO_REDIRECT_THRESHOLD } from "../helpers.js";
@@ -97,6 +98,13 @@ async function buildTemplateRegistry(tmpDir) {
     templateRegistry.set(name, { content, description: name });
   }
   return templateRegistry;
+}
+
+// The index files live in a dot-folder of the temp vault: ignored by the scan, removed with the vault.
+function newSemanticIndex({ vaultPath, ...rest }) {
+  const dir = path.join(vaultPath, ".test-local");
+  const localIndex = openLocalIndex({ vaultPath, dbPath: path.join(dir, "index.db") });
+  return new SemanticIndex({ vaultPath, localIndex, statsPath: path.join(dir, "semantic-stats.json"), ...rest });
 }
 
 function createMockSemanticIndex(results = []) {
@@ -3522,10 +3530,9 @@ describe("semantic tools while the semantic index is disabled", () => {
   beforeEach(async () => {
     vault = await makeVault({ "a.md": "Alpha body. [[b]]", "b.md": "Beta body." });
     fake = installFakeOpenAI(() => quotaResponse());
-    idx = new SemanticIndex({
+    idx = newSemanticIndex({
       vaultPath: vault,
       openaiApiKey: "test-key",
-      dbPath: path.join(vault, ".obsidian", "test-index.db"),
       sleep: async () => {},
     });
     await idx.initialize();
@@ -3588,10 +3595,9 @@ describe("vault_neighborhood when its own semantic search fails", () => {
   it("keeps the graph output and appends the skipped note", async () => {
     const vault = await makeVault({ "a.md": "Alpha body. [[b]]", "b.md": "Beta body." });
     const fake = installFakeOpenAI((inputs) => embeddingsResponse(inputs));
-    const idx = new SemanticIndex({
+    const idx = newSemanticIndex({
       vaultPath: vault,
       openaiApiKey: "test-key",
-      dbPath: path.join(vault, ".obsidian", "test-index.db"),
       sleep: async () => {},
     });
     try {
@@ -3615,10 +3621,9 @@ describe("vault_neighborhood when its own semantic search fails", () => {
   it("keeps the graph output and says why when the semantic search fails for a transient reason", async () => {
     const vault = await makeVault({ "a.md": "Alpha body. [[b]]", "b.md": "Beta body." });
     const fake = installFakeOpenAI((inputs) => embeddingsResponse(inputs));
-    const idx = new SemanticIndex({
+    const idx = newSemanticIndex({
       vaultPath: vault,
       openaiApiKey: "test-key",
-      dbPath: path.join(vault, ".obsidian", "test-index.db"),
       sleep: async () => {},
     });
     try {

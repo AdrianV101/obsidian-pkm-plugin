@@ -5,12 +5,30 @@ import fs from "fs/promises";
 import path from "path";
 import os from "os";
 import { makeRepo, makeProject } from "./git-fixture.js";
+import { stateDir } from "../local-paths.js";
 
 const SCRIPT = path.join(import.meta.dirname, "..", "hooks", "session-start.js");
 // The hook reads ~/.claude/settings.json. A test's fake HOME is passed as USERPROFILE too (Windows
 // takes the home directory from there); without one the hook gets a home that does not exist, so
 // it never reads the real settings.
 const NO_HOME = path.join(os.tmpdir(), `pkm-ss-no-home-${process.pid}`);
+
+// Pins every OS's state root inside `home`, so the hook never reads the real state folder.
+function stateEnv(home) {
+  return {
+    HOME: home,
+    USERPROFILE: home,
+    XDG_STATE_HOME: path.join(home, "xdg-state"),
+    LOCALAPPDATA: path.join(home, "local-app-data"),
+  };
+}
+
+async function writeStatsFile(vaultPath, home, contents) {
+  const e = stateEnv(home);
+  const dir = stateDir(vaultPath, { platform: process.platform, homedir: home, XDG_STATE_HOME: e.XDG_STATE_HOME, LOCALAPPDATA: e.LOCALAPPDATA });
+  await fs.mkdir(dir, { recursive: true });
+  await fs.writeFile(path.join(dir, "semantic-stats.json"), contents);
+}
 
 function runScript(args, env, stdinData) {
   const home = env.HOME && env.HOME !== process.env.HOME ? env.HOME : NO_HOME;
@@ -50,7 +68,7 @@ describe("session-start.js", () => {
   async function runHook(input, env = {}) {
     const { stdout } = await runScript(
       [SCRIPT],
-      { ...process.env, VAULT_PATH: vaultPath, ...env },
+      { ...process.env, VAULT_PATH: vaultPath, ...stateEnv(tmpDir), ...env },
       JSON.stringify(input)
     );
     return JSON.parse(stdout);
@@ -125,11 +143,7 @@ describe("session-start.js", () => {
       path.join(cwdDir, "CLAUDE.md"),
       "# PKM: 01-Projects/MyApp\n"
     );
-    await fs.mkdir(path.join(vaultPath, ".obsidian"), { recursive: true });
-    await fs.writeFile(
-      path.join(vaultPath, ".obsidian", "semantic-stats.json"),
-      JSON.stringify({ indexed_files: 42, total_chunks: 100, vault_files: 50, last_sync: null })
-    );
+    await writeStatsFile(vaultPath, tmpDir, JSON.stringify({ indexed_files: 42, total_chunks: 100, vault_files: 50, last_sync: null }));
 
     const result = await runHook({ cwd: cwdDir });
     assert.ok(result.systemMessage.includes("semantic: 42/50 notes"));
@@ -142,11 +156,7 @@ describe("session-start.js", () => {
       path.join(cwdDir, "CLAUDE.md"),
       "# PKM: 01-Projects/MyApp\n"
     );
-    await fs.mkdir(path.join(vaultPath, ".obsidian"), { recursive: true });
-    await fs.writeFile(
-      path.join(vaultPath, ".obsidian", "semantic-stats.json"),
-      JSON.stringify({ indexed_files: 50, total_chunks: 120, vault_files: 50, last_sync: null })
-    );
+    await writeStatsFile(vaultPath, tmpDir, JSON.stringify({ indexed_files: 50, total_chunks: 120, vault_files: 50, last_sync: null }));
 
     const result = await runHook({ cwd: cwdDir });
     assert.ok(result.systemMessage.includes("semantic: 50 notes"));
@@ -172,11 +182,7 @@ describe("session-start.js", () => {
       path.join(cwdDir, "CLAUDE.md"),
       "# PKM: 01-Projects/MyApp\n"
     );
-    await fs.mkdir(path.join(vaultPath, ".obsidian"), { recursive: true });
-    await fs.writeFile(
-      path.join(vaultPath, ".obsidian", "semantic-stats.json"),
-      "not valid json"
-    );
+    await writeStatsFile(vaultPath, tmpDir, "not valid json");
 
     const result = await runHook({ cwd: cwdDir });
     assert.ok(result.systemMessage);
@@ -294,7 +300,7 @@ describe("session-start.js context budget and semantic health", () => {
   });
 
   async function run(input) {
-    const { stdout } = await runScript([SCRIPT], { ...process.env, VAULT_PATH: vaultPath, HOME: tmpDir }, JSON.stringify(input));
+    const { stdout } = await runScript([SCRIPT], { ...process.env, VAULT_PATH: vaultPath, ...stateEnv(tmpDir) }, JSON.stringify(input));
     return JSON.parse(stdout);
   }
 
@@ -346,8 +352,7 @@ describe("session-start.js context budget and semantic health", () => {
   ];
   for (const c of statsCases) {
     it(`summary line shows semantic health: ${c.name}`, async () => {
-      await fs.mkdir(path.join(vaultPath, ".obsidian"), { recursive: true });
-      await fs.writeFile(path.join(vaultPath, ".obsidian", "semantic-stats.json"), JSON.stringify(c.stats));
+      await writeStatsFile(vaultPath, tmpDir, JSON.stringify(c.stats));
       const result = await run({ cwd: cwdDir });
       assert.ok(result.systemMessage.endsWith(c.summary), result.systemMessage);
     });

@@ -12,6 +12,8 @@ import { createRequire } from "module";
 import { pathToFileURL } from "url";
 import fs from "fs/promises";
 import { SemanticIndex } from "./embeddings.js";
+import { openLocalIndex } from "./local-index.js";
+import { cacheDir, stateDir } from "./local-paths.js";
 import { describeHealth } from "./semantic-health.js";
 import { ActivityLog } from "./activity.js";
 import { loadTemplates } from "./helpers.js";
@@ -110,9 +112,13 @@ export async function startServer() {
     const openaiApiKey = process.env.VAULT_PKM_OPENAI_KEY
       || process.env.OBSIDIAN_PKM_OPENAI_KEY
       || process.env.OPENAI_API_KEY;
+    const CACHE_DIR = cacheDir(VAULT_PATH);
+    const STATE_DIR = stateDir(VAULT_PATH);
     if (openaiApiKey && !openaiApiKey.startsWith("${")) {
+      let localIndex = null;
       try {
-        semanticIndex = new SemanticIndex({ vaultPath: VAULT_PATH, openaiApiKey });
+        localIndex = openLocalIndex({ vaultPath: VAULT_PATH, dbPath: path.join(CACHE_DIR, "index.db") });
+        semanticIndex = new SemanticIndex({ vaultPath: VAULT_PATH, openaiApiKey, localIndex, stateDir: STATE_DIR });
         await semanticIndex.initialize();
         console.error("Semantic index initialized");
         if (!process.env.VAULT_PKM_OPENAI_KEY && process.env.OBSIDIAN_PKM_OPENAI_KEY) {
@@ -120,6 +126,7 @@ export async function startServer() {
         }
       } catch (err) {
         console.error(`Semantic index init failed (non-fatal): ${err.message}`);
+        localIndex?.close();
         semanticIndex = null;
       }
     } else {
@@ -127,7 +134,7 @@ export async function startServer() {
     }
 
     try {
-      activityLog = new ActivityLog({ vaultPath: VAULT_PATH, sessionId: SESSION_ID });
+      activityLog = new ActivityLog({ vaultPath: VAULT_PATH, sessionId: SESSION_ID, stateDir: STATE_DIR });
       await activityLog.initialize();
       console.error(`Activity log initialized (session: ${SESSION_ID.slice(0, 8)})`);
     } catch (err) {

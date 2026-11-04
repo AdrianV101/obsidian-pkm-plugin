@@ -1,5 +1,3 @@
-import Database from "better-sqlite3";
-import * as sqliteVec from "sqlite-vec";
 import fs from "fs/promises";
 import fsSync from "fs";
 import path from "path";
@@ -8,9 +6,8 @@ import { getAllMarkdownFiles } from "./utils.js";
 import { chunkNote } from "./chunker.js";
 import { formatDisabledMessage, formatStaleFooter } from "./semantic-health.js";
 import { toVaultRel } from "./vault-fs.js";
+import { EMBEDDING_MODEL } from "./local-index.js";
 
-const EMBEDDING_MODEL = "text-embedding-3-large";
-const EMBEDDING_DIMENSIONS = 3072;
 // OpenAI embeddings API: max 2048 inputs, max 300k tokens summed, 8192 tokens per input.
 // At CHUNK_MAX_CHARS (~1000 tokens), 128 chunks ≈ 128k tokens — safely under the
 // 300k cap even when every chunk is at the max size. Smaller values waste round-trips. Note: BATCH_SIZE only fires when a single file
@@ -135,7 +132,8 @@ export class SemanticIndex {
    * @param {Object} opts
    * @param {string} opts.vaultPath - absolute path to vault root
    * @param {string} opts.openaiApiKey - OpenAI API key for embeddings
-   * @param {string} [opts.dbPath] - override path for the SQLite database
+   * @param {import("./local-index.js").LocalIndex} opts.localIndex - the open per-machine index; shutdown() closes it
+   * @param {string} [opts.stateDir] - per-machine state folder holding semantic-stats.json
    * @param {string} [opts.statsPath] - override path for semantic-stats.json
    * @param {(ms: number, signal?: AbortSignal) => Promise<void>} [opts.sleep] - delay used between retries
    *   and watcher restarts; it should end early when `signal` (shutdown) aborts
@@ -144,13 +142,15 @@ export class SemanticIndex {
    * @param {number} [opts.maxKnnK] - largest k sent to a sqlite-vec KNN query
    */
   constructor({
-    vaultPath, openaiApiKey, dbPath, statsPath, sleep = defaultSleep,
+    vaultPath, openaiApiKey, localIndex, stateDir, statsPath, sleep = defaultSleep,
     watch = fsSync.watch, debounceMs = DEBOUNCE_MS, maxKnnK = MAX_KNN_K,
   }) {
     this.vaultPath = vaultPath;
     this.openaiApiKey = openaiApiKey;
-    this.dbPath = dbPath || path.join(vaultPath, ".obsidian", "semantic-index.db");
-    this.statsPath = statsPath || path.join(vaultPath, ".obsidian", "semantic-stats.json");
+    if (!localIndex) throw new Error("SemanticIndex requires a localIndex");
+    if (!statsPath && !stateDir) throw new Error("SemanticIndex requires stateDir or statsPath");
+    this.localIndex = localIndex;
+    this.statsPath = statsPath || path.join(stateDir, "semantic-stats.json");
     this.db = null;
     this.watcher = null;
     this._sleep = sleep;
@@ -214,43 +214,7 @@ export class SemanticIndex {
     this._stale = new Set();
     this._watcherRestarts = 0;
 
-    // Ensure .obsidian dir exists
-    const dbDir = path.dirname(this.dbPath);
-    await fs.mkdir(dbDir, { recursive: true });
-    // shutdown() may have run while the directory was being created: open nothing.
-    if (this._closing) return;
-
-    // Open DB and load sqlite-vec
-    this.db = new Database(this.dbPath);
-    sqliteVec.load(this.db);
-    this.db.pragma("journal_mode = WAL");
-    this.db.pragma("journal_size_limit = 32000000");
-
-    // Create schema
-    this.db.exec(`
-      CREATE VIRTUAL TABLE IF NOT EXISTS vec_chunks USING vec0(
-        embedding float[${EMBEDDING_DIMENSIONS}]
-      );
-
-      CREATE TABLE IF NOT EXISTS chunks (
-        id INTEGER PRIMARY KEY,
-        file_path TEXT NOT NULL,
-        chunk_index INTEGER NOT NULL,
-        heading TEXT,
-        content_preview TEXT NOT NULL,
-        UNIQUE(file_path, chunk_index)
-      );
-
-      CREATE TABLE IF NOT EXISTS files (
-        path TEXT PRIMARY KEY,
-        mtime_ms INTEGER NOT NULL,
-        content_hash TEXT NOT NULL,
-        chunk_count INTEGER NOT NULL,
-        updated_at TEXT NOT NULL
-      );
-
-      CREATE INDEX IF NOT EXISTS idx_chunks_file ON chunks(file_path);
-    `);
+    this.db = this.localIndex.db;
 
     // A disabled state outlives restarts so "disabled since" stays truthful.
     const persisted = this._readPersistedStats();
@@ -298,8 +262,7 @@ export class SemanticIndex {
       await Promise.allSettled([...this._inflight]);
     }
     if (this.db) {
-      this.db.pragma("wal_checkpoint(TRUNCATE)");
-      this.db.close();
+      this.localIndex.close();
       this.db = null;
     }
   }
@@ -675,14 +638,14 @@ export class SemanticIndex {
       this._deleteChunks(relativePath);
 
       const insertChunk = this.db.prepare(`
-        INSERT INTO chunks (file_path, chunk_index, heading, content_preview)
-        VALUES (?, ?, ?, ?)
+        INSERT INTO chunks (file_path, chunk_index, heading, content_preview, chunk_hash)
+        VALUES (?, ?, ?, ?, ?)
       `);
       const insertVec = this.db.prepare(`
         INSERT INTO vec_chunks (rowid, embedding) VALUES (?, ?)
       `);
       for (let i = 0; i < chunks.length; i++) {
-        const result = insertChunk.run(relativePath, i, chunks[i].headingPath.at(-1) ?? null, chunks[i].preview);
+        const result = insertChunk.run(relativePath, i, chunks[i].headingPath.at(-1) ?? null, chunks[i].preview, chunks[i].hash);
         insertVec.run(BigInt(result.lastInsertRowid), new Float32Array(embeddings[i]));
       }
 

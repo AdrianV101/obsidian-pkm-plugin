@@ -1,6 +1,7 @@
 import { describe, it, before, after, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import fs from "fs/promises";
+import fsSync from "fs";
 import path from "path";
 import os from "os";
 import { EventEmitter } from "node:events";
@@ -11,6 +12,8 @@ import {
   classifyEmbeddingError,
   EmbeddingError,
 } from "../embeddings.js";
+import { openLocalIndex } from "../local-index.js";
+import { vaultKey } from "../local-paths.js";
 import {
   DIMS,
   QUOTA_BODY,
@@ -24,6 +27,26 @@ import {
 } from "./fake-openai.js";
 
 const { Response, Headers } = globalThis;
+
+// Every index in this file lives under one temp folder, never the real cache or state folders.
+const LOCAL_ROOT = fsSync.mkdtempSync(path.join(os.tmpdir(), "pkm-embeddings-local-"));
+const openedIndexes = [];
+const sidecarDir = (vaultPath) => path.join(LOCAL_ROOT, vaultKey(vaultPath));
+const statsFile = (vaultPath) => path.join(sidecarDir(vaultPath), "semantic-stats.json");
+
+function newIndex({ vaultPath, dbPath, ...rest }) {
+  const localIndex = openLocalIndex({ vaultPath, dbPath: dbPath ?? path.join(sidecarDir(vaultPath), "index.db") });
+  openedIndexes.push(localIndex);
+  return new SemanticIndex({ vaultPath, localIndex, statsPath: statsFile(vaultPath), ...rest });
+}
+
+afterEach(() => {
+  for (const li of openedIndexes.splice(0)) li.close();
+});
+
+after(() => {
+  fsSync.rmSync(LOCAL_ROOT, { recursive: true, force: true });
+});
 
 // ---------------------------------------------------------------------------
 // contentHash(content)
@@ -188,7 +211,6 @@ describe("callEmbeddingAPI", () => {
 // SemanticIndex class (integration tests with real SQLite + mocked fetch)
 // ---------------------------------------------------------------------------
 describe("SemanticIndex class", () => {
-  const DIMS = 3072;
   let tmpDir;
   let originalFetch;
   let fetchCallCount;
@@ -277,7 +299,7 @@ A note about project management and agile methodology.
     globalThis.fetch = mockFetch;
     fetchCallCount = 0;
 
-    const idx = new SemanticIndex({
+    const idx = newIndex({
       vaultPath: tmpDir,
       openaiApiKey: "test-key",
       dbPath: path.join(tmpDir, "test-init.db"),
@@ -303,14 +325,14 @@ A note about project management and agile methodology.
     fetchCallCount = 0;
 
     const dbPath = path.join(tmpDir, "test-stats.db");
-    const idx = new SemanticIndex({
+    const idx = newIndex({
       vaultPath: tmpDir,
       openaiApiKey: "test-key",
       dbPath,
     });
     await idx.initialize();
 
-    const statsPath = path.join(tmpDir, ".obsidian", "semantic-stats.json");
+    const statsPath = statsFile(tmpDir);
     const raw = await fs.readFile(statsPath, "utf-8");
     const stats = JSON.parse(raw);
     assert.equal(typeof stats.indexed_files, "number");
@@ -323,7 +345,7 @@ A note about project management and agile methodology.
   });
 
   it("_writeStats() is a no-op when db is null", () => {
-    const idx = new SemanticIndex({
+    const idx = newIndex({
       vaultPath: tmpDir,
       openaiApiKey: "test-key",
       dbPath: path.join(tmpDir, "test-stats-noop.db"),
@@ -333,7 +355,7 @@ A note about project management and agile methodology.
   });
 
   it("isAvailable is false without API key", async () => {
-    const idx = new SemanticIndex({
+    const idx = newIndex({
       vaultPath: tmpDir,
       openaiApiKey: "",
       dbPath: path.join(tmpDir, "test-nokey.db"),
@@ -347,7 +369,7 @@ A note about project management and agile methodology.
     globalThis.fetch = mockFetch;
     fetchCallCount = 0;
 
-    const idx = new SemanticIndex({
+    const idx = newIndex({
       vaultPath: tmpDir,
       openaiApiKey: "test-key",
       dbPath: path.join(tmpDir, "test-reindex.db"),
@@ -357,7 +379,7 @@ A note about project management and agile methodology.
     await idx.shutdown();
 
     // Re-open with a clean DB to isolate reindexFile behavior
-    const idx2 = new SemanticIndex({
+    const idx2 = newIndex({
       vaultPath: tmpDir,
       openaiApiKey: "test-key",
       dbPath: path.join(tmpDir, "test-reindex2.db"),
@@ -367,7 +389,7 @@ A note about project management and agile methodology.
 
     // Re-open without startup sync side effects
     const dbPath = path.join(tmpDir, "test-reindex-isolated.db");
-    const idx3 = new SemanticIndex({
+    const idx3 = newIndex({
       vaultPath: tmpDir,
       openaiApiKey: "test-key",
       dbPath,
@@ -404,7 +426,7 @@ A note about project management and agile methodology.
     globalThis.fetch = mockFetch;
 
     const dbPath = path.join(tmpDir, "test-idempotent.db");
-    const idx = new SemanticIndex({
+    const idx = newIndex({
       vaultPath: tmpDir,
       openaiApiKey: "test-key",
       dbPath,
@@ -430,7 +452,7 @@ A note about project management and agile methodology.
     globalThis.fetch = mockFetch;
 
     const dbPath = path.join(tmpDir, "test-remove.db");
-    const idx = new SemanticIndex({
+    const idx = newIndex({
       vaultPath: tmpDir,
       openaiApiKey: "test-key",
       dbPath,
@@ -462,7 +484,7 @@ A note about project management and agile methodology.
     globalThis.fetch = mockFetch;
 
     const dbPath = path.join(tmpDir, "test-search.db");
-    const idx = new SemanticIndex({
+    const idx = newIndex({
       vaultPath: tmpDir,
       openaiApiKey: "test-key",
       dbPath,
@@ -488,7 +510,7 @@ A note about project management and agile methodology.
     globalThis.fetch = mockFetch;
 
     const dbPath = path.join(tmpDir, "test-search-limit.db");
-    const idx = new SemanticIndex({
+    const idx = newIndex({
       vaultPath: tmpDir,
       openaiApiKey: "test-key",
       dbPath,
@@ -511,7 +533,7 @@ A note about project management and agile methodology.
     globalThis.fetch = mockFetch;
 
     const dbPath = path.join(tmpDir, "test-search-folder.db");
-    const idx = new SemanticIndex({
+    const idx = newIndex({
       vaultPath: tmpDir,
       openaiApiKey: "test-key",
       dbPath,
@@ -530,7 +552,7 @@ A note about project management and agile methodology.
   });
 
   it("search() throws when not available", async () => {
-    const idx = new SemanticIndex({
+    const idx = newIndex({
       vaultPath: tmpDir,
       openaiApiKey: "",
       dbPath: path.join(tmpDir, "test-unavail.db"),
@@ -544,7 +566,7 @@ A note about project management and agile methodology.
     globalThis.fetch = mockFetch;
 
     const dbPath = path.join(tmpDir, "test-search-consistency.db");
-    const idx = new SemanticIndex({
+    const idx = newIndex({
       vaultPath: tmpDir,
       openaiApiKey: "test-key",
       dbPath,
@@ -572,7 +594,7 @@ A note about project management and agile methodology.
     globalThis.fetch = mockFetch;
 
     const dbPath = path.join(tmpDir, "test-searchraw.db");
-    const idx = new SemanticIndex({
+    const idx = newIndex({
       vaultPath: tmpDir,
       openaiApiKey: "test-key",
       dbPath,
@@ -598,7 +620,7 @@ A note about project management and agile methodology.
     globalThis.fetch = mockFetch;
 
     const dbPath = path.join(tmpDir, "test-searchraw-exclude.db");
-    const idx = new SemanticIndex({
+    const idx = newIndex({
       vaultPath: tmpDir,
       openaiApiKey: "test-key",
       dbPath,
@@ -623,7 +645,7 @@ A note about project management and agile methodology.
   it("shutdown() is safe to call multiple times", async () => {
     globalThis.fetch = mockFetch;
 
-    const idx = new SemanticIndex({
+    const idx = newIndex({
       vaultPath: tmpDir,
       openaiApiKey: "test-key",
       dbPath: path.join(tmpDir, "test-shutdown.db"),
@@ -638,7 +660,7 @@ A note about project management and agile methodology.
   it("reindexFile() is a no-op when db is null", async () => {
     globalThis.fetch = mockFetch;
 
-    const idx = new SemanticIndex({
+    const idx = newIndex({
       vaultPath: tmpDir,
       openaiApiKey: "test-key",
       dbPath: path.join(tmpDir, "test-noop.db"),
@@ -649,7 +671,7 @@ A note about project management and agile methodology.
   });
 
   it("removeFile() is a no-op when db is null", () => {
-    const idx = new SemanticIndex({
+    const idx = newIndex({
       vaultPath: tmpDir,
       openaiApiKey: "test-key",
       dbPath: path.join(tmpDir, "test-remove-noop.db"),
@@ -663,7 +685,7 @@ A note about project management and agile methodology.
     globalThis.fetch = mockFetch;
 
     const dbPath = path.join(tmpDir, "test-enoent.db");
-    const idx = new SemanticIndex({
+    const idx = newIndex({
       vaultPath: tmpDir,
       openaiApiKey: "test-key",
       dbPath,
@@ -702,10 +724,9 @@ describe("SemanticIndex health", () => {
   }
 
   async function openIndex(vaultPath) {
-    const idx = new SemanticIndex({
+    const idx = newIndex({
       vaultPath,
       openaiApiKey: "test-key",
-      dbPath: path.join(vaultPath, ".obsidian", "test-index.db"),
       sleep: async () => {},
     });
     opened.push(idx);
@@ -714,7 +735,7 @@ describe("SemanticIndex health", () => {
   }
 
   async function readStats(vaultPath) {
-    return JSON.parse(await fs.readFile(path.join(vaultPath, ".obsidian", "semantic-stats.json"), "utf-8"));
+    return JSON.parse(await fs.readFile(statsFile(vaultPath), "utf-8"));
   }
 
   afterEach(async () => {
@@ -908,10 +929,9 @@ describe("SemanticIndex health: fix round", () => {
   }
 
   async function openIndex(vaultPath) {
-    const idx = new SemanticIndex({
+    const idx = newIndex({
       vaultPath,
       openaiApiKey: "test-key",
-      dbPath: path.join(vaultPath, ".obsidian", "test-index.db"),
       sleep: async () => {},
     });
     opened.push(idx);
@@ -970,10 +990,9 @@ describe("SemanticIndex health: fix round", () => {
     fake = installFakeOpenAI(() => errorResponse(503, "busy"));
     let waiting;
     const inBackoff = new Promise((r) => { waiting = r; });
-    const idx = new SemanticIndex({
+    const idx = newIndex({
       vaultPath: vault,
       openaiApiKey: "test-key",
-      dbPath: path.join(vault, ".obsidian", "test-index.db"),
       // A backoff that never elapses on its own; only an abort ends it.
       sleep: (_ms, signal) => new Promise((resolve) => {
         waiting();
@@ -989,8 +1008,8 @@ describe("SemanticIndex health: fix round", () => {
 
   it("initialize keeps the persisted stale_files and vault_files until the scan completes", async () => {
     const vault = await vaultWith(manyNotes(3));
-    await fs.mkdir(path.join(vault, ".obsidian"), { recursive: true });
-    const statsPath = path.join(vault, ".obsidian", "semantic-stats.json");
+    await fs.mkdir(path.dirname(statsFile(vault)), { recursive: true });
+    const statsPath = statsFile(vault);
     await fs.writeFile(statsPath, JSON.stringify({
       indexed_files: 0, vault_files: 3, status: "disabled", reason: "OpenAI quota exhausted. Add credits; it re-enables automatically.",
       since: "2026-07-03T09:12:00.000Z", last_success_at: null, stale_files: 3, updated_at: "2026-07-03T09:12:00.000Z",
@@ -1027,7 +1046,7 @@ describe("SemanticIndex health: fix round", () => {
     assert.equal(await idx.probe(), false);
     assert.equal(idx.health().since, since);
     assert.match(idx.health().reason, /^OpenAI rejected the API key \(HTTP 401\)/);
-    const stats = JSON.parse(await fs.readFile(path.join(vault, ".obsidian", "semantic-stats.json"), "utf-8"));
+    const stats = JSON.parse(await fs.readFile(statsFile(vault), "utf-8"));
     assert.match(stats.reason, /^OpenAI rejected the API key/);
   });
 });
@@ -1067,10 +1086,9 @@ describe("SemanticIndex freshness", () => {
   }
 
   async function openIndex(vaultPath, opts = {}) {
-    const idx = new SemanticIndex({
+    const idx = newIndex({
       vaultPath,
       openaiApiKey: "test-key",
-      dbPath: path.join(vaultPath, ".obsidian", "test-index.db"),
       sleep: async () => {},
       watch: fakeWatch().watch,
       debounceMs: 0,
@@ -1100,8 +1118,8 @@ describe("SemanticIndex freshness", () => {
       return embeddingsResponse(inputs);
     });
     const watcher = fakeWatch();
-    const idx = new SemanticIndex({
-      vaultPath: vault, openaiApiKey: "test-key", dbPath: path.join(vault, ".obsidian", "test-index.db"),
+    const idx = newIndex({
+      vaultPath: vault, openaiApiKey: "test-key",
       sleep: async () => {}, watch: watcher.watch, debounceMs: 0,
     });
     opened.push(idx);
@@ -1312,12 +1330,39 @@ describe("SemanticIndex freshness", () => {
     });
   }
 
+  it("sends the small embedding model and stores 1536-dimension vectors with each chunk's hash", async () => {
+    const vault = await vaultWith({ "a.md": "# Title\n\nAlpha body." });
+    const bodies = [];
+    const original = globalThis.fetch;
+    fake = installFakeOpenAI();
+    const wrapped = globalThis.fetch;
+    globalThis.fetch = (url, opts) => { bodies.push(JSON.parse(opts.body)); return wrapped(url, opts); };
+    try {
+      const idx = await openIndex(vault);
+      await idx.whenSynced();
+      await idx.whenIdle();
+
+      assert.ok(bodies.length > 0);
+      for (const b of bodies) assert.equal(b.model, "text-embedding-3-small");
+      const vec = idx.db.prepare("SELECT embedding FROM vec_chunks LIMIT 1").get();
+      assert.equal(vec.embedding.byteLength, 1536 * 4);
+      const rows = idx.db.prepare("SELECT chunk_hash FROM chunks WHERE file_path = 'a.md'").all();
+      assert.ok(rows.length > 0);
+      for (const r of rows) assert.match(r.chunk_hash, /^[0-9a-f]{64}$/);
+    } finally {
+      globalThis.fetch = original;
+    }
+  });
+
   it("an instance initialised again after shutdown syncs and reports the new sync", async () => {
     const vault = await vaultWith({ "a.md": "Alpha body." });
     fake = installFakeOpenAI();
     const idx = await openIndex(vault);
     await idx.shutdown();
 
+    // shutdown() closed the local index it was given; a second life needs a fresh one.
+    idx.localIndex = openLocalIndex({ vaultPath: vault, dbPath: path.join(sidecarDir(vault), "index.db") });
+    openedIndexes.push(idx.localIndex);
     await fs.writeFile(path.join(vault, "b.md"), "Beta body.");
     await idx.initialize();
     const summary = await idx.whenSynced();
@@ -1327,12 +1372,12 @@ describe("SemanticIndex freshness", () => {
     assert.deepEqual(indexedPaths(idx), ["a.md", "b.md"]);
   });
 
-  it("shutdown before initialize finishes leaves neither the database nor a watcher open", async () => {
+  it("shutdown right after initialize leaves neither the database nor a watcher open", async () => {
     const vault = await vaultWith({ "a.md": "Alpha body." });
     fake = installFakeOpenAI();
     const watcher = fakeWatch();
-    const idx = new SemanticIndex({
-      vaultPath: vault, openaiApiKey: "test-key", dbPath: path.join(vault, ".obsidian", "test-index.db"),
+    const idx = newIndex({
+      vaultPath: vault, openaiApiKey: "test-key",
       sleep: async () => {}, watch: watcher.watch, debounceMs: 0,
     });
     opened.push(idx);
@@ -1342,7 +1387,7 @@ describe("SemanticIndex freshness", () => {
     await Promise.all([init, stopped]);
 
     assert.equal(idx.db, null);
-    assert.equal(watcher.watchers.length, 0, "no watcher was started");
+    assert.ok(watcher.watchers.every(w => w.closed), "every watcher was closed");
     assert.equal(fake.calls.length, 0);
   });
 
@@ -1432,7 +1477,7 @@ describe("SemanticIndex freshness", () => {
     fake = installFakeOpenAI();
     const idx = await openIndex(vault);
     await idx.shutdown();
-    const statsPath = path.join(vault, ".obsidian", "semantic-stats.json");
+    const statsPath = statsFile(vault);
     const stats = JSON.parse(await fs.readFile(statsPath, "utf-8"));
     await fs.writeFile(statsPath, JSON.stringify({ ...stats, status: "disabled", reason: "quota", since: "2026-10-01T00:00:00Z" }));
     const touched = new Date("2026-10-02T10:00:00Z");
@@ -1534,7 +1579,7 @@ describe("SemanticIndex freshness", () => {
     fake = installFakeOpenAI();
     const idx = await openIndex(vault);
     await idx.shutdown();
-    const statsPath = path.join(vault, ".obsidian", "semantic-stats.json");
+    const statsPath = statsFile(vault);
     const stats = JSON.parse(await fs.readFile(statsPath, "utf-8"));
     await fs.writeFile(statsPath, JSON.stringify({ ...stats, status: "disabled", reason: "quota", since: "2026-10-01T00:00:00Z" }));
     const watcher = fakeWatch();

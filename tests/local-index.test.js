@@ -1,0 +1,102 @@
+import { describe, it, beforeEach, afterEach } from "node:test";
+import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { openLocalIndex, EMBEDDING_MODEL, EMBEDDING_DIMENSIONS, SCHEMA_VERSION } from "../local-index.js";
+import { cacheDir } from "../local-paths.js";
+
+describe("openLocalIndex", () => {
+  let tmp, vault, env, opened;
+
+  beforeEach(() => {
+    tmp = fs.mkdtempSync(path.join(os.tmpdir(), "pkm-local-index-"));
+    vault = path.join(tmp, "vault");
+    fs.mkdirSync(path.join(vault, ".obsidian"), { recursive: true });
+    env = {
+      platform: process.platform,
+      homedir: path.join(tmp, "home"),
+      XDG_CACHE_HOME: path.join(tmp, "xdg-cache"),
+      LOCALAPPDATA: path.join(tmp, "local-app-data"),
+    };
+    opened = [];
+  });
+
+  afterEach(() => {
+    for (const li of opened) { try { li.close(); } catch { /* already closed */ } }
+    fs.rmSync(tmp, { recursive: true, force: true });
+  });
+
+  function open(extra = {}) {
+    const li = openLocalIndex({ vaultPath: vault, env, ...extra });
+    opened.push(li);
+    return li;
+  }
+
+  const embeddingTables = (db) =>
+    db.prepare("SELECT name FROM sqlite_master WHERE name IN ('chunks','files','vec_chunks') ORDER BY name").all().map(r => r.name);
+
+  it("creates the database in the cache folder, records its meta and writes nothing under .obsidian", () => {
+    const li = open();
+    const expected = path.join(cacheDir(vault, env), "index.db");
+    assert.ok(fs.existsSync(expected), expected);
+    assert.deepEqual(li.meta, { schemaVersion: SCHEMA_VERSION, model: EMBEDDING_MODEL, dims: EMBEDDING_DIMENSIONS });
+    assert.equal(EMBEDDING_MODEL, "text-embedding-3-small");
+    assert.equal(EMBEDDING_DIMENSIONS, 1536);
+    assert.deepEqual(embeddingTables(li.db), ["chunks", "files", "vec_chunks"]);
+    const cols = li.db.prepare("PRAGMA table_info(chunks)").all();
+    const hashCol = cols.find(c => c.name === "chunk_hash");
+    assert.ok(hashCol && hashCol.notnull === 1 && hashCol.type === "TEXT");
+    assert.deepEqual(fs.readdirSync(path.join(vault, ".obsidian")), []);
+  });
+
+  it("honours a dbPath override", () => {
+    const dbPath = path.join(tmp, "elsewhere", "x.db");
+    const li = open({ dbPath });
+    assert.ok(fs.existsSync(dbPath));
+    assert.equal(li.dbPath, dbPath);
+  });
+
+  it("keeps its data when reopened with the same meta", () => {
+    const li = open();
+    li.db.prepare("INSERT INTO files (path, mtime_ms, content_hash, chunk_count, updated_at) VALUES ('a.md', 1, 'h', 0, 'now')").run();
+    li.close();
+    const again = open();
+    assert.equal(again.db.prepare("SELECT COUNT(*) AS n FROM files").get().n, 1);
+  });
+
+  const mismatches = [
+    { name: "model", change: { model: "other-model" } },
+    { name: "dims", change: { dims: 768 } },
+    { name: "schema version", change: { schemaVersion: SCHEMA_VERSION + 1 } },
+  ];
+  for (const m of mismatches) {
+    it(`drops the embedding tables and records the new values when the ${m.name} differs`, () => {
+      const li = open();
+      li.db.exec("CREATE TABLE other_data (k TEXT); INSERT INTO other_data VALUES ('kept')");
+      li.db.prepare("INSERT INTO files (path, mtime_ms, content_hash, chunk_count, updated_at) VALUES ('a.md', 1, 'h', 1, 'now')").run();
+      li.db.prepare("INSERT INTO chunks (id, file_path, chunk_index, heading, content_preview, chunk_hash) VALUES (1, 'a.md', 0, NULL, 'p', 'ch')").run();
+      li.close();
+
+      const next = open(m.change);
+      assert.deepEqual(next.meta, { schemaVersion: SCHEMA_VERSION, model: EMBEDDING_MODEL, dims: EMBEDDING_DIMENSIONS, ...m.change });
+      assert.equal(next.db.prepare("SELECT COUNT(*) AS n FROM files").get().n, 0);
+      assert.equal(next.db.prepare("SELECT COUNT(*) AS n FROM chunks").get().n, 0);
+      assert.equal(next.db.prepare("SELECT k FROM other_data").get().k, "kept");
+      next.close();
+      assert.deepEqual(open(m.change).meta, next.meta);
+    });
+  }
+
+  it("never opens or modifies an old index inside the vault", () => {
+    const old = path.join(vault, ".obsidian", "semantic-index.db");
+    const oldStats = path.join(vault, ".obsidian", "semantic-stats.json");
+    fs.writeFileSync(old, "not a database");
+    fs.writeFileSync(oldStats, "{}");
+    const before = [old, oldStats].map(p => [fs.readFileSync(p, "utf-8"), fs.statSync(p).mtimeMs]);
+    open().close();
+    const after = [old, oldStats].map(p => [fs.readFileSync(p, "utf-8"), fs.statSync(p).mtimeMs]);
+    assert.deepEqual(after, before);
+    assert.deepEqual(fs.readdirSync(path.join(vault, ".obsidian")).sort(), ["semantic-index.db", "semantic-stats.json"]);
+  });
+});
