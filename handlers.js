@@ -35,6 +35,7 @@ import {
   DEFAULT_MAX_NODES,
 } from "./graph.js";
 import { getAllMarkdownFiles, extractFrontmatter } from "./utils.js";
+import { fuseRankings } from "./search-fusion.js";
 import { formatDisabledMessage, formatCoverageLine, formatCoverageFooter } from "./semantic-health.js";
 import { EmbeddingError } from "./embeddings.js";
 
@@ -887,7 +888,111 @@ export async function createHandlers({ vaultPath: rawVaultPath, templateRegistry
     return health ? formatCoverageFooter(health) : "";
   };
 
+  /**
+   * Vector and keyword rankings merged by reciprocal rank fusion. Cosine comes from stored vectors for
+   * every hit that has them. When the query cannot be embedded, only keyword results are returned.
+   */
+  async function handleHybridSearch(args) {
+    const resolvedFolder = args.folder ? toVaultRel(path.relative(vaultPath, await resolveFolder(args.folder))) : undefined;
+
+    let resolvedAnchor = null;
+    let graphWeight = 0.3;
+    if (args.anchor) {
+      // Containment first, so an escaping anchor reports an escape rather than "Anchor note not found" from the catch below.
+      await safe(args.anchor);
+      try {
+        ({ rel: resolvedAnchor } = await resolveNote(args.anchor));
+      } catch (e) {
+        throw new Error(`Anchor note not found: ${args.anchor}. Provide a valid vault-relative path.`, { cause: e });
+      }
+      graphWeight = args.graph_weight ?? 0.3;
+      if (typeof graphWeight !== "number" || Number.isNaN(graphWeight) || graphWeight < 0 || graphWeight > 1) {
+        throw new Error(`graph_weight must be a number between 0 and 1, got: ${args.graph_weight}`);
+      }
+    }
+
+    const limit = args.limit || 5;
+    const candidates = Math.min(Math.max(limit * 3, 20), 50);
+    const excludeFiles = resolvedAnchor ? new Set([resolvedAnchor]) : undefined;
+    const keywordHits = keywordIndex.keywordSearch(args.query, { limit: candidates + (excludeFiles ? 1 : 0), folder: resolvedFolder })
+      .filter(r => !excludeFiles?.has(r.path))
+      .slice(0, candidates);
+
+    let queryVec = null;
+    let fallbackReason = null;
+    const unavailable = await semanticUnavailableReason();
+    if (unavailable) {
+      const health = semanticIndex?.health?.();
+      fallbackReason = health?.status === "disabled" ? health.reason : NO_SEMANTIC_KEY;
+    } else {
+      try {
+        queryVec = await semanticIndex.embedQuery(args.query);
+      } catch (e) {
+        const health = semanticIndex.health?.();
+        if (health?.status === "disabled") fallbackReason = health.reason;
+        else if (e instanceof EmbeddingError) fallbackReason = e.message;
+        else throw e;
+      }
+    }
+
+    if (!queryVec) {
+      const line = `Keyword results only: semantic search is unavailable (${fallbackReason.replace(/\.$/, "")}).`;
+      const shown = keywordHits.slice(0, limit);
+      if (shown.length === 0) {
+        const disabled = semanticIndex?.health?.().status === "disabled";
+        return { content: [{ type: "text", text: disabled ? unavailable : `${line}\n\nNo matching notes.${coverageFooter()}` }] };
+      }
+      return { content: [{ type: "text", text: `${line}\n\n${shown.map(r => `**${linkFor(r.path)}**`).join("\n")}${coverageFooter()}` }] };
+    }
+
+    const vectorHits = semanticIndex.searchByVector(queryVec, { limit: candidates, folder: resolvedFolder, excludeFiles });
+    const scored = new Map(vectorHits.map(r => [r.path, r]));
+    const fused = fuseRankings([vectorHits, keywordHits]);
+    const keywordOnly = fused.map(f => f.path).filter(p => !scored.has(p));
+    for (const [p, r] of semanticIndex.scoreNotes(queryVec, keywordOnly)) scored.set(p, { path: p, ...r });
+
+    let entries = fused.map(f => scored.get(f.path) ?? { path: f.path });
+    if (args.threshold) entries = entries.filter(e => e.score !== undefined && e.score >= args.threshold);
+
+    const describe = (e, { before = [], scoreLabel = "score", after = [] } = {}) => {
+      const heading = e.heading ? ` > ${e.heading}` : "";
+      const parts = [...before];
+      if (e.score !== undefined) parts.push(`${scoreLabel}: ${e.score}`);
+      parts.push(...after);
+      return `**${linkFor(e.path)}**${heading}${parts.length ? ` (${parts.join(", ")})` : ""}${e.preview ? `\n${e.preview}` : ""}`;
+    };
+
+    if (resolvedAnchor) {
+      const { allFiles, resolver } = await freshGraph();
+      const neighborhood = await exploreNeighborhood({
+        startPath: resolvedAnchor, vaultPath, allFiles, resolver, depth: 3, direction: "both",
+      });
+      // A hit without a cosine takes part in the blend on its graph proximity alone.
+      const blended = blendWithGraph(entries.map(e => ({ ...e, hasScore: e.score !== undefined, score: e.score ?? 0 })), neighborhood, graphWeight, limit);
+      if (blended.length === 0) {
+        return { content: [{ type: "text", text: `No semantically related notes found.${coverageFooter()}` }] };
+      }
+      const formatted = blended.map(r => {
+        const graphInfo = r.depth !== null ? `graph: depth ${r.depth}` : "not in graph";
+        const { hasScore, ...e } = r;
+        return describe(hasScore ? e : { ...e, score: undefined }, { before: [`combined: ${r.combined}`], scoreLabel: "semantic", after: [graphInfo] });
+      }).join("\n\n");
+      return {
+        content: [{ type: "text", text: `Found ${blended.length} result${blended.length === 1 ? "" : "s"} (anchored to ${linkFor(args.anchor)}):\n\n${formatted}${coverageFooter()}` }]
+      };
+    }
+
+    const shown = entries.slice(0, limit);
+    if (shown.length === 0) {
+      return { content: [{ type: "text", text: `No semantically related notes found.${coverageFooter()}` }] };
+    }
+    return {
+      content: [{ type: "text", text: `Found ${shown.length} semantically related note${shown.length === 1 ? "" : "s"}:\n\n${shown.map(e => describe(e)).join("\n\n")}${coverageFooter()}` }]
+    };
+  }
+
   async function handleSemanticSearch(args) {
+    if (keywordIndex) return handleHybridSearch(args);
     await requireSemantic("Semantic search");
 
     const resolvedFolder = args.folder ? toVaultRel(path.relative(vaultPath, await resolveFolder(args.folder))) : undefined;

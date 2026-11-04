@@ -140,6 +140,9 @@ function disabledReason(err) {
  * Stores embeddings in SQLite + sqlite-vec for fast KNN lookups.
  * Automatically indexes on startup and watches for file changes.
  */
+/** L2 distance between normalized embeddings (0-2) as a 0-1 similarity. */
+const toSimilarity = (distance) => Math.max(0, Math.min(1, 1 - distance / 2));
+
 const basenameOf = (p) => p.slice(p.lastIndexOf("/") + 1);
 
 export class SemanticIndex {
@@ -596,6 +599,16 @@ export class SemanticIndex {
    * @returns {Promise<Array<{path: string, heading: string|null, score: number, preview: string}>>}
    */
   async searchRaw({ query, limit = 5, folder, threshold, excludeFiles }) {
+    const queryVec = await this.embedQuery(query);
+    return this.searchByVector(queryVec, { limit, folder, threshold, excludeFiles });
+  }
+
+  /**
+   * Embed a search query. A failure that disables the index is reported with the disabled message.
+   * @param {string} query
+   * @returns {Promise<Float32Array>}
+   */
+  async embedQuery(query) {
     if (!this.isAvailable) {
       if (this._disabled) throw new Error(formatDisabledMessage(this.health()));
       throw new Error("Semantic index not available");
@@ -610,8 +623,40 @@ export class SemanticIndex {
       throw err;
     }
     this._noteSuccess();
+    return new Float32Array(queryEmbedding);
+  }
 
-    const queryVec = new Float32Array(queryEmbedding);
+  /**
+   * Cosine similarity between a query vector and each given note's best stored chunk.
+   * Notes with no stored vectors are absent from the result.
+   * @param {Float32Array} queryVec
+   * @param {string[]} paths - vault-relative note paths
+   * @returns {Map<string, { score: number, heading: string|null, preview: string }>}
+   */
+  scoreNotes(queryVec, paths) {
+    const scores = new Map();
+    if (!this.db) return scores;
+    const best = this.db.prepare(`
+      SELECT c.heading AS heading, c.content_preview AS preview, vec_distance_l2(v.embedding, ?) AS distance
+      FROM chunks c JOIN vec_chunks v ON v.rowid = c.id
+      WHERE c.file_path = ?
+      ORDER BY distance LIMIT 1
+    `);
+    for (const p of paths) {
+      const row = best.get(queryVec, p);
+      if (!row) continue;
+      scores.set(p, { score: Math.round(toSimilarity(row.distance) * 1000) / 1000, heading: row.heading, preview: row.preview });
+    }
+    return scores;
+  }
+
+  /**
+   * Nearest notes to a query vector, one result per note.
+   * @param {Float32Array} queryVec
+   * @param {{ limit?: number, folder?: string, threshold?: number, excludeFiles?: Set<string> }} [opts]
+   * @returns {Array<{path: string, heading: string|null, score: number, preview: string}>}
+   */
+  searchByVector(queryVec, { limit = 5, folder, threshold, excludeFiles } = {}) {
     const prefix = folder ? (folder.endsWith("/") ? folder : folder + "/") : null;
     if (!prefix) {
       return this._collectResults(this._knn(queryVec, Math.min(limit * 3, 50)), { limit, threshold, excludeFiles });
@@ -679,7 +724,7 @@ export class SemanticIndex {
       if (prefix && !chunk.file_path.startsWith(prefix)) continue;
 
       // L2 distance for normalized embeddings ranges 0-2; convert to 0-1 similarity
-      const score = Math.max(0, Math.min(1, 1 - distance / 2));
+      const score = toSimilarity(distance);
       if (threshold && score < threshold) continue;
 
       if (excludeFiles?.has(chunk.file_path)) continue;

@@ -7,7 +7,8 @@ import { createHandlers } from "../handlers.js";
 import { ActivityLog } from "../activity.js";
 import { SemanticIndex } from "../embeddings.js";
 import { openLocalIndex } from "../local-index.js";
-import { embeddingsResponse, errorResponse, quotaResponse, installFakeOpenAI, makeVault, holderLease } from "./fake-openai.js";
+import { KeywordIndex } from "../keyword-index.js";
+import { embeddingsResponse, errorResponse, quotaResponse, installFakeOpenAI, makeVault, holderLease, manyNotes, DIMS } from "./fake-openai.js";
 import { createToolsList } from "../tools.js";
 import { AUTO_REDIRECT_THRESHOLD } from "../helpers.js";
 
@@ -3912,5 +3913,178 @@ describe("trash and move notify the index about the path they acted on", () => {
     const result = await h.get("vault_move")({ old_path: nfc, new_path: "moved" });
     assert.ok(!result.isError, result.content?.[0]?.text);
     assert.deepEqual(events.filter(e => e[0] === "moved"), [["moved", nfd, "moved"]]);
+  });
+});
+
+// ─── vault_semantic_search: hybrid ranking and keyword fallback ────────
+
+describe("hybrid semantic search", () => {
+  const FALLBACK = (reason) => `Keyword results only: semantic search is unavailable (${reason}).`;
+
+  // Topic axes: "ocean" and "tide" text sits on axis 0, "forest" on a direction farther from the
+  // query than any filler note, everything else on axis 2.
+  function topicEmbedding(text) {
+    const v = new Array(DIMS).fill(0);
+    if (/forest/i.test(text)) { v[0] = -0.5; v[1] = Math.sqrt(0.75); } else if (/ocean|tide/i.test(text)) v[0] = 1;
+    else v[2] = 1;
+    return v;
+  }
+  const embed = (inputs) => embeddingsResponse(inputs, topicEmbedding);
+
+  let vault, fake, idx, keyword, h, cleanups;
+  beforeEach(() => { cleanups = []; });
+  afterEach(async () => {
+    for (const fn of cleanups.reverse()) await fn();
+    fake?.restore();
+    await keyword?.shutdown();
+    await idx?.shutdown();
+    if (vault) await fs.rm(vault, { recursive: true, force: true });
+    vault = fake = idx = keyword = h = undefined;
+  });
+
+  async function setup({ key = true, handler = embed, files = {} } = {}) {
+    vault = await makeVault({
+      "both.md": "Ocean waves.",
+      "vec-only.md": "Tides and currents.",
+      "kw-only.md": "Forest paths near the ocean.",
+      ...manyNotes(22, "filler"),
+      ...files,
+    });
+    fake = installFakeOpenAI(handler);
+    const dir = path.join(vault, ".test-local");
+    const localIndex = openLocalIndex({ vaultPath: vault, dbPath: path.join(dir, "index.db") });
+    keyword = new KeywordIndex({ localIndex, vaultPath: vault, lease: holderLease(), debounceMs: 0 });
+    await keyword.sync();
+    if (key) {
+      idx = new SemanticIndex({
+        vaultPath: vault, openaiApiKey: "test-key", localIndex, lease: holderLease(),
+        statsPath: path.join(dir, "semantic-stats.json"), sleep: async () => {},
+      });
+      await idx.initialize();
+      await idx.whenSynced();
+    }
+    h = await createHandlers({
+      vaultPath: vault, templateRegistry: new Map(), semanticIndex: idx ?? null, keywordIndex: keyword,
+      activityLog: null, sessionId: "hybrid",
+    });
+    return h.get("vault_semantic_search");
+  }
+  const text = (r) => r.content[0].text;
+  const blockFor = (t, name) => t.split("\n\n").find(b => b.includes(name));
+
+  it("S2: returns notes found by vector only, keyword only and both, each with a stored-vector cosine", async () => {
+    const search = await setup();
+    const t = text(await search({ query: "ocean", limit: 10 }));
+    assert.match(blockFor(t, "both.md"), /\(score: 1\)/);
+    assert.match(blockFor(t, "vec-only.md"), /\(score: 1\)/);
+    assert.match(blockFor(t, "kw-only.md"), /\(score: 0\.1\d+\)/);
+    // The keyword-only note is not among the nearest vectors, so its cosine came from its own stored vector.
+    assert.ok(t.indexOf("both.md") < t.indexOf("kw-only.md"));
+    assert.ok(!t.includes("Keyword results only"));
+  });
+
+  it("S2: a keyword-only hit on a note without vectors shows no score", async () => {
+    const search = await setup();
+    await fs.writeFile(path.join(vault, "unembedded.md"), "Ocean notes written after the index was built.");
+    await keyword.refresh("unembedded.md");
+    const t = text(await search({ query: "ocean", limit: 10 }));
+    const block = blockFor(t, "unembedded.md");
+    assert.ok(block, t);
+    assert.ok(!block.includes("score:"), block);
+  });
+
+  it("S3: threshold filters on the cosine and drops scoreless hits", async () => {
+    const search = await setup();
+    await fs.writeFile(path.join(vault, "unembedded.md"), "Ocean notes written after the index was built.");
+    await keyword.refresh("unembedded.md");
+    const t = text(await search({ query: "ocean", limit: 10, threshold: 0.5 }));
+    assert.ok(t.includes("both.md") && t.includes("vec-only.md"), t);
+    assert.ok(!t.includes("kw-only.md") && !t.includes("unembedded.md"), t);
+  });
+
+  it("limit, folder and the coverage line keep working", async () => {
+    const search = await setup();
+    const limited = text(await search({ query: "ocean", limit: 1 }));
+    assert.match(limited, /^Found 1 /);
+    const scoped = text(await search({ query: "ocean", limit: 10, folder: "filler" }));
+    assert.ok(!scoped.includes("both.md"), scoped);
+  });
+
+  it("anchor blending runs on the fused list using cosine", async () => {
+    const search = await setup({ files: { "anchor.md": "Start [[kw-only]]." } });
+    const t = text(await search({ query: "ocean", limit: 3, anchor: "anchor.md", graph_weight: 0.9 }));
+    assert.match(t, /anchored to/);
+    assert.ok(t.indexOf("kw-only.md") < t.indexOf("vec-only.md"), t);
+    assert.match(blockFor(t, "kw-only.md"), /graph: depth 1/);
+  });
+
+  const fallbackCases = [
+    {
+      name: "no key",
+      setup: () => setup({ key: false }),
+      reason: "VAULT_PKM_OPENAI_KEY not set",
+      noRequests: true,
+    },
+    {
+      name: "disabled index",
+      setup: () => setup({ handler: () => quotaResponse() }),
+      reason: "OpenAI quota exhausted. Add credits; it re-enables automatically",
+    },
+    {
+      name: "offline",
+      setup: async () => {
+        const search = await setup();
+        fake.handler = () => { throw new Error("connect ECONNREFUSED"); };
+        return search;
+      },
+      reason: /^OpenAI API request failed: .*ECONNREFUSED/,
+    },
+  ];
+  for (const c of fallbackCases) {
+    it(`S4: ${c.name} returns keyword results under the fallback line, without scores or an error`, async () => {
+      const search = await c.setup();
+      const before = fake.calls.length;
+      const result = await search({ query: "ocean", limit: 10, threshold: 0.99 });
+      const t = text(result);
+      assert.ok(!result.isError);
+      const firstLine = t.split("\n")[0];
+      if (typeof c.reason === "string") assert.equal(firstLine, FALLBACK(c.reason));
+      else assert.match(firstLine, /^Keyword results only: semantic search is unavailable \(OpenAI API request failed: .*\)\.$/);
+      assert.ok(t.includes("both.md") && t.includes("kw-only.md"), t);
+      assert.ok(!t.includes("score:"), t);
+      if (c.noRequests) assert.equal(fake.calls.length, before);
+    });
+  }
+
+  it("S4: with no keyword matches a disabled index returns the disabled message and the coverage line", async () => {
+    const search = await setup({ handler: () => quotaResponse() });
+    const t = text(await search({ query: "nonexistentterm" }));
+    assert.match(t, /^Semantic search disabled since \d{4}-\d{2}-\d{2}: OpenAI quota exhausted\..*\nSemantic index: 0 of \d+ notes embedded$/);
+  });
+
+  it("is vector-only when there is no keyword index", async () => {
+    await setup();
+    const noKeyword = await createHandlers({
+      vaultPath: vault, templateRegistry: new Map(), semanticIndex: idx, keywordIndex: null, activityLog: null, sessionId: "vector-only",
+    });
+    const t = text(await noKeyword.get("vault_semantic_search")({ query: "ocean", limit: 30 }));
+    assert.ok(t.includes("filler/"), "vector search returns notes that share no keyword");
+  });
+});
+
+describe("semantic tool listing without a key", () => {
+  it("S5: lists vault_semantic_search as keyword-only and hides vault_suggest_links", () => {
+    const names = createToolsList("", [], false).map(t => t.name);
+    assert.ok(names.includes("vault_semantic_search"));
+    assert.ok(!names.includes("vault_suggest_links"));
+    const tool = createToolsList("", [], false).find(t => t.name === "vault_semantic_search");
+    assert.match(tool.description, /keyword-only/i);
+    assert.ok(/^[\x20-\x7e]*$/.test(tool.description));
+  });
+
+  it("S5: with a key both are listed and the description does not call itself keyword-only", () => {
+    const tools = createToolsList("", [], true);
+    assert.ok(tools.some(t => t.name === "vault_suggest_links"));
+    assert.doesNotMatch(tools.find(t => t.name === "vault_semantic_search").description, /keyword-only/i);
   });
 });

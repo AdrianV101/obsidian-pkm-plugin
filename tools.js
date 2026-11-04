@@ -5,11 +5,13 @@
 // into a `path` argument.
 const LINK_FORMAT_NOTE = " Paths in this tool's output are formatted as markdown links `[vault-relative-path.md](obsidian://...)` so users can Cmd/Ctrl-click to open in Obsidian. Preserve the link form when relaying paths to the user; pass only the bracket text (e.g. `01-Projects/Foo/note.md`) to other vault tools' `path` arguments, never the full markdown link.";
 
+const KEYWORD_ONLY_NOTE = "Keyword-only here (no OpenAI key is set): BM25 over note text, with no scores. ";
+
 /**
  * Build the MCP tool definitions list.
  * @param {string} templateDescriptions - formatted template list for vault_write description
  * @param {string[]} templateNames - available template names for vault_write enum
- * @param {boolean} hasSemanticIndex - whether semantic search tools should be included
+ * @param {boolean} hasSemanticIndex - whether an OpenAI key is set: without it vault_semantic_search is keyword-only and vault_suggest_links is left out
  * @returns {Array<Object>} MCP tool definitions
  */
 export function createToolsList(templateDescriptions, templateNames, hasSemanticIndex) {
@@ -400,29 +402,29 @@ Pass custom <%...%> variables via the 'variables' parameter.` + LINK_FORMAT_NOTE
     }
   ];
 
-  if (hasSemanticIndex) {
-    tools.push({
-      name: "vault_semantic_search",
-      description: "Search the vault using semantic similarity. Finds conceptually related notes even when they use different words. Requires VAULT_PKM_OPENAI_KEY. Score scale: embeddings are text-embedding-3-large cosine similarity, which compresses hard. Even a verbatim title or heading of an existing note scores about 0.55-0.65 against that note, and scores above 0.7 are essentially never seen. On-topic notes typically land at 0.45-0.65, and tangential notes sharing surface tokens often score 0.40-0.45, so absolute scores cannot separate relevant from tangential: read the top hits and judge." + LINK_FORMAT_NOTE,
-      inputSchema: {
-        type: "object",
-        properties: {
-          query: { type: "string", description: "Natural language search query (e.g., 'managing information overload')" },
-          limit: { type: "number", description: "Max results to return (default: 5)", default: 5 },
-          folder: { type: "string", description: "Optional: limit search to this folder (e.g., '01-Projects')" },
-          threshold: { type: "number", description: "Minimum similarity score 0-1 (default: no threshold)" },
-          anchor: {
-            type: "string",
-            description: "Vault-relative path of a note to bias results toward (graph-distance weighting). Results closer to the anchor in the wikilink graph rank higher."
-          },
-          graph_weight: {
-            type: "number",
-            description: "Weight of graph proximity vs semantic similarity (0-1, default: 0.3). Higher values bias more toward graph neighbors."
-          }
+  tools.push({
+    name: "vault_semantic_search",
+    description: (hasSemanticIndex ? "" : KEYWORD_ONLY_NOTE) + "Search the vault using semantic similarity. Finds conceptually related notes even when they use different words. Without VAULT_PKM_OPENAI_KEY, or while OpenAI is unavailable, it returns keyword results only, with a line saying so. Score scale: embeddings are text-embedding-3-large cosine similarity, which compresses hard. Even a verbatim title or heading of an existing note scores about 0.55-0.65 against that note, and scores above 0.7 are essentially never seen. On-topic notes typically land at 0.45-0.65, and tangential notes sharing surface tokens often score 0.40-0.45, so absolute scores cannot separate relevant from tangential: read the top hits and judge." + LINK_FORMAT_NOTE,
+    inputSchema: {
+      type: "object",
+      properties: {
+        query: { type: "string", description: "Natural language search query (e.g., 'managing information overload')" },
+        limit: { type: "number", description: "Max results to return (default: 5)", default: 5 },
+        folder: { type: "string", description: "Optional: limit search to this folder (e.g., '01-Projects')" },
+        threshold: { type: "number", description: "Minimum similarity score 0-1 (default: no threshold)" },
+        anchor: {
+          type: "string",
+          description: "Vault-relative path of a note to bias results toward (graph-distance weighting). Results closer to the anchor in the wikilink graph rank higher."
         },
-        required: ["query"]
-      }
-    });
+        graph_weight: {
+          type: "number",
+          description: "Weight of graph proximity vs semantic similarity (0-1, default: 0.3). Higher values bias more toward graph neighbors."
+        }
+      },
+      required: ["query"]
+    }
+  });
+  if (hasSemanticIndex) {
     tools.push({
       name: "vault_suggest_links",
       description: "Suggest relevant notes to link to based on content similarity. Accepts text content or a file path, finds semantically related notes, and excludes notes already linked via [[wikilinks]]. One of 'content' or 'path' is required." + LINK_FORMAT_NOTE,
