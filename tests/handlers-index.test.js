@@ -4,6 +4,7 @@ import fs from "fs/promises";
 import path from "path";
 import os from "os";
 import { createHandlers } from "../handlers.js";
+import { openLocalIndex } from "../local-index.js";
 
 const NOTE_TEMPLATE = `---
 type: note
@@ -178,6 +179,117 @@ describe("the file index follows the vault after createHandlers", () => {
       await assert.rejects(() => v.handlers.get("vault_read")({ path: "target" }), /File not found/);
     } finally {
       await v.cleanup();
+    }
+  });
+});
+
+describe("graph tools read the links table", () => {
+  const FIXTURE = {
+    "hub.md": "---\ntype: note\ncreated: 2026-01-01\ntags: [t]\n---\n[[a]] [[dup]] [[ghost]] [[hub]] [[c#h|x]]\n",
+    "a.md": "[[hub]] [[x/dup]] [[a]] and a table cell [[hub\\|Hub]]\n",
+    "c.md": "```\n[[a]]\n```\n[[Z/Deep Note]]\n",
+    "x/dup.md": "[[a]]\n",
+    "y/dup.md": "[[hub]]\n",
+    "Z/Deep Note.md": "[[c]] [[notes/lone]]\n",
+    "notes/lone.md": "---\ntype: note\ncreated: 2026-02-02\ntags: [t]\n---\nx\n",
+    "orphan.md": "---\ntype: note\ncreated: 2026-03-03\ntags: [t]\n---\nx\n",
+  };
+  const TOOLS = [
+    ["vault_links", { path: "hub" }],
+    ["vault_links", { path: "a", direction: "incoming" }],
+    ["vault_links", { path: "c", direction: "outgoing" }],
+    ["vault_neighborhood", { path: "hub", depth: 3 }],
+    ["vault_neighborhood", { path: "a", direction: "incoming", depth: 2 }],
+    ["vault_link_health", {}],
+    ["vault_link_health", { folder: "x" }],
+  ];
+
+  async function withVault(fn, { holder = true, useIndex = true } = {}) {
+    const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "links-handlers-"));
+    const root = path.join(tmp, "vault");
+    for (const [rel, text] of Object.entries(FIXTURE)) {
+      await fs.mkdir(path.dirname(path.join(root, rel)), { recursive: true });
+      await fs.writeFile(path.join(root, rel), text);
+    }
+    const localIndex = useIndex ? openLocalIndex({ vaultPath: root, dbPath: path.join(tmp, "index.db") }) : null;
+    try {
+      const handlers = await createHandlers({
+        vaultPath: root,
+        templateRegistry: new Map(),
+        semanticIndex: null,
+        localIndex,
+        lease: { isHolder: holder },
+        activityLog: null,
+        sessionId: "links-test",
+      });
+      return await fn({ root, handlers, localIndex });
+    } finally {
+      localIndex?.close();
+      await fs.rm(tmp, { recursive: true, force: true });
+    }
+  }
+
+  const run = async (handlers, calls) => {
+    const out = [];
+    for (const [name, args] of calls) out.push((await handlers.get(name)(args)).content[0].text);
+    return out;
+  };
+
+  it("answers every graph tool exactly as reading the notes does, as holder and as reader", async () => {
+    const expected = await withVault(({ handlers }) => run(handlers, TOOLS), { useIndex: false });
+    assert.deepEqual(await withVault(({ handlers }) => run(handlers, TOOLS), { holder: true }), expected);
+    assert.deepEqual(await withVault(({ handlers }) => run(handlers, TOOLS), { holder: false }), expected);
+  });
+
+  it("vault_move and vault_trash report and rewrite exactly as reading the notes does", async () => {
+    const actions = async ({ root, handlers }) => {
+      const moved = await run(handlers, [["vault_move", { old_path: "x/dup.md", new_path: "moved/renamed-dup.md" }]]);
+      const trashed = await run(handlers, [["vault_trash", { path: "hub.md" }]]);
+      const after = {};
+      for (const rel of ["a.md", "y/dup.md", "c.md", "moved/renamed-dup.md"]) after[rel] = await fs.readFile(path.join(root, rel), "utf-8");
+      return { moved, trashed, after };
+    };
+    const expected = await withVault(actions, { useIndex: false });
+    assert.match(expected.trashed[0], /link/i);
+    assert.deepEqual(await withVault(actions, { holder: true }), expected);
+    assert.deepEqual(await withVault(actions, { holder: false }), expected);
+  });
+
+  it("a note edited straight on disk is seen by the next call, and the reader leaves the table alone", async () => {
+    await withVault(async ({ root, handlers, localIndex }) => {
+      await handlers.get("vault_links")({ path: "orphan" });
+      const p = path.join(root, "orphan.md");
+      await fs.writeFile(p, "[[c]] now links out\n");
+      await fs.utimes(p, 2200000000, 2200000000);
+      const text = (await handlers.get("vault_links")({ path: "orphan" })).content[0].text;
+      assert.match(text, /\[\[c\]\]/);
+      assert.match((await handlers.get("vault_links")({ path: "c", direction: "incoming" })).content[0].text, /orphan\.md/);
+      assert.equal(localIndex.db.prepare("SELECT COUNT(*) AS n FROM links WHERE src = 'orphan.md'").get().n, 0);
+    }, { holder: false });
+  });
+
+  it("the holder keeps the table current across calls", async () => {
+    await withVault(async ({ root, handlers, localIndex }) => {
+      await handlers.get("vault_links")({ path: "orphan" });
+      const p = path.join(root, "orphan.md");
+      await fs.writeFile(p, "[[c]] now links out\n");
+      await fs.utimes(p, 2200000000, 2200000000);
+      await handlers.get("vault_links")({ path: "orphan" });
+      assert.deepEqual(localIndex.db.prepare("SELECT raw FROM links WHERE src = 'orphan.md'").all(), [{ raw: "c" }]);
+    });
+  });
+
+  it("falls back to reading the notes when the table cannot be used", async () => {
+    const expected = await withVault(({ handlers }) => run(handlers, TOOLS), { useIndex: false });
+    const quiet = console.error;
+    console.error = () => {};
+    try {
+      assert.deepEqual(await withVault(async ({ handlers, localIndex }) => {
+        localIndex.db.close();
+        return run(handlers, TOOLS);
+      }), expected);
+    } finally {
+      console.error = quiet;
     }
   });
 });

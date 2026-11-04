@@ -185,6 +185,8 @@ export async function startServer() {
       templateRegistry,
       semanticIndex,
       keywordIndex,
+      localIndex,
+      lease,
       activityLog,
       sessionId: SESSION_ID,
     });

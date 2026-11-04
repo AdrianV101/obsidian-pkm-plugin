@@ -29,6 +29,7 @@ import {
   rewriteWikilinks,
   extractWikilinks,
   buildIncomingIndex,
+  readLinkSource,
   createLinkResolver,
   collectLinkedPaths,
   resolutionPaths,
@@ -37,6 +38,7 @@ import {
 import { getAllMarkdownFiles, extractFrontmatter } from "./utils.js";
 import { formatDisabledMessage, formatCoverageLine, formatCoverageFooter } from "./semantic-health.js";
 import { EmbeddingError } from "./embeddings.js";
+import { createLinksIndex } from "./links-index.js";
 
 import { mutateFile, writeNew, withNoteLock, normalizeVaultRoot, resolveSafe, resolveLexical, hasDotSegment, assertWritableReal, FileIndex, toVaultRel } from "./vault-fs.js";
 import { findSection, matchHeadings, parseHeadings, splitFrontmatter } from "./markdown.js";
@@ -152,12 +154,14 @@ async function isDirectory(absPath) {
  * @param {Map} ctx.templateRegistry - loaded templates
  * @param {Object|null} ctx.semanticIndex - SemanticIndex instance (null if no API key)
  * @param {Object|null} [ctx.keywordIndex] - KeywordIndex instance (null when the local index is unavailable)
+ * @param {Object|null} [ctx.localIndex] - local index holding the links table (null: graph tools read the notes)
+ * @param {{ isHolder: boolean }|null} [ctx.lease] - housekeeper lease; only its holder writes the links table
  * @param {Object|null} ctx.activityLog - ActivityLog instance
  * @param {string} ctx.sessionId - current session UUID
  * @param {string} [ctx.vaultName] - vault name for obsidian:// links (defaults to basename of vaultPath)
  * @returns {Promise<Map<string, Function>>} tool name to handler function
  */
-export async function createHandlers({ vaultPath: rawVaultPath, templateRegistry, semanticIndex, keywordIndex = null, activityLog, sessionId, vaultName }) {
+export async function createHandlers({ vaultPath: rawVaultPath, templateRegistry, semanticIndex, keywordIndex = null, localIndex = null, lease = null, activityLog, sessionId, vaultName }) {
   const vaultPath = normalizeVaultRoot(rawVaultPath);
   const safe = (relativePath) => resolveSafe(relativePath, vaultPath);
   const writableNote = (relativePath) => assertWritableReal(relativePath, vaultPath, "note");
@@ -248,10 +252,36 @@ export async function createHandlers({ vaultPath: rawVaultPath, templateRegistry
     if (reason) throw new Error(reason);
   }
 
-  /** Fresh note listing plus the link resolver built from it (graph tools never use the startup snapshot). */
-  async function freshGraph() {
+  let linksIndex = null;
+  if (localIndex) {
+    try {
+      linksIndex = createLinksIndex(localIndex, { vaultPath, fileIndex, isHolder: () => !!lease?.isHolder });
+    } catch (e) {
+      console.error(`Links table unavailable (graph tools read the notes instead): ${e.message}`);
+    }
+  }
+
+  /**
+   * Fresh note listing, the link resolver built from it and the notes' links (graph tools never use the
+   * startup snapshot). Pass `withLinks: false` when only the listing and resolver are needed.
+   * Links come from the table; without one, or if it cannot be read, from the notes themselves.
+   */
+  async function freshGraph({ withLinks = true } = {}) {
+    if (withLinks && linksIndex) {
+      try {
+        await linksIndex.refresh();
+        const allFiles = fileIndex.list();
+        return { allFiles, resolver: createLinkResolver(allFiles), links: linksIndex };
+      } catch (e) {
+        console.error(`Links table could not be read (reading the notes instead): ${e.message}`);
+      }
+    }
     const allFiles = await fileIndex.listFresh();
-    return { allFiles, resolver: createLinkResolver(allFiles) };
+    return {
+      allFiles,
+      resolver: createLinkResolver(allFiles),
+      links: withLinks ? await readLinkSource(vaultPath, allFiles) : null,
+    };
   }
 
   // ── File I/O ────────────────────────────────────────────────────────
@@ -606,14 +636,16 @@ export async function createHandlers({ vaultPath: rawVaultPath, templateRegistry
     }
 
     const result = { outgoing: [], incoming: [] };
+    const { resolver, links } = await freshGraph();
 
     if (args.direction !== "incoming") {
-      result.outgoing = extractWikilinks(content);
+      result.outgoing = links.has(resolvedVaultRelative)
+        ? links.outgoing(resolvedVaultRelative).map(l => l.raw)
+        : extractWikilinks(content);
     }
 
     if (args.direction !== "outgoing") {
-      const { allFiles, resolver } = await freshGraph();
-      const linkingFiles = await findFilesLinkingTo(resolvedVaultRelative, vaultPath, allFiles, resolver);
+      const linkingFiles = await findFilesLinkingTo(resolvedVaultRelative, links, resolver);
       result.incoming = linkingFiles.map(({ file }) => file);
     }
 
@@ -634,11 +666,11 @@ export async function createHandlers({ vaultPath: rawVaultPath, templateRegistry
     const direction = args.direction || "both";
     const maxNodes = positiveInt(args.max_nodes, DEFAULT_MAX_NODES);
 
-    const { allFiles, resolver } = await freshGraph();
+    const { resolver, links } = await freshGraph();
     const result = await exploreNeighborhood({
       startPath: resolvedPath,
       vaultPath,
-      allFiles,
+      links,
       resolver,
       depth,
       direction,
@@ -911,11 +943,11 @@ export async function createHandlers({ vaultPath: rawVaultPath, templateRegistry
         excludeFiles: new Set([resolvedAnchor])
       });
 
-      const { allFiles, resolver } = await freshGraph();
+      const { resolver, links } = await freshGraph();
       const neighborhood = await exploreNeighborhood({
         startPath: resolvedAnchor,
         vaultPath,
-        allFiles,
+        links,
         resolver,
         depth: 3,
         direction: "both",
@@ -970,7 +1002,7 @@ export async function createHandlers({ vaultPath: rawVaultPath, templateRegistry
     const body = splitFrontmatter(inputText).body.trim();
     if (!body) throw new Error("No content to analyze");
 
-    const { allFiles, resolver } = await freshGraph();
+    const { resolver, links } = await freshGraph({ withLinks: !!args.graph_context });
     const linkedPaths = collectLinkedPaths(inputText, resolver);
 
     const excludeFiles = new Set();
@@ -1001,7 +1033,7 @@ export async function createHandlers({ vaultPath: rawVaultPath, templateRegistry
       const neighborhood = await exploreNeighborhood({
         startPath: source.rel,
         vaultPath,
-        allFiles,
+        links,
         resolver,
         depth: 2,
         direction: "both",
@@ -1057,8 +1089,8 @@ export async function createHandlers({ vaultPath: rawVaultPath, templateRegistry
     await writableNote(resolvedRelative);
 
     // Find incoming links for warning output
-    const { allFiles, resolver } = await freshGraph();
-    const linkingFiles = await findFilesLinkingTo(resolvedRelative, vaultPath, allFiles, resolver);
+    const { resolver, links } = await freshGraph();
+    const linkingFiles = await findFilesLinkingTo(resolvedRelative, links, resolver);
 
     // Determine trash destination: .trash/<original-relative-path>
     let trashRelative = path.posix.join(".trash", toVaultRel(resolvedRelative));
@@ -1133,9 +1165,9 @@ export async function createHandlers({ vaultPath: rawVaultPath, templateRegistry
     // Links are judged against the vault as it was before the move
     const isNote = !sourceStat.isDirectory();
     const updateLinks = args.update_links !== false && isNote;
-    const { allFiles: filesBefore, resolver } = await freshGraph();
+    const { allFiles: filesBefore, resolver, links } = await freshGraph({ withLinks: updateLinks });
     const linkingFiles = updateLinks
-      ? await findFilesLinkingTo(oldRelative, vaultPath, filesBefore, resolver)
+      ? await findFilesLinkingTo(oldRelative, links, resolver)
       : [];
 
     // New link text: bare basename when it will resolve uniquely to the moved note, else the full path
@@ -1248,7 +1280,7 @@ export async function createHandlers({ vaultPath: rawVaultPath, templateRegistry
     // Exact path only — destructive operation
     const absPath = await safe(filePath);
     await writableNote(filePath);
-    const { allFiles, resolver } = await freshGraph();
+    const { allFiles, resolver } = await freshGraph({ withLinks: false });
     const noteSet = new Set(allFiles);
     // A target is a vault path. Like a link, it matches regardless of case and Unicode form,
     // and the note is then named by its on-disk spelling.
@@ -1342,7 +1374,7 @@ export async function createHandlers({ vaultPath: rawVaultPath, templateRegistry
 
   async function handleLinkHealth(args) {
     const { checks = ["orphans", "broken", "weak", "ambiguous"], limit = 20 } = args;
-    const { allFiles: allFilesList, resolver } = await freshGraph();
+    const { allFiles: allFilesList, resolver, links } = await freshGraph();
 
     // Scope to folder if specified
     let scopedFiles;
@@ -1357,29 +1389,31 @@ export async function createHandlers({ vaultPath: rawVaultPath, templateRegistry
     const sections = [];
     const totalScanned = scopedFiles.length;
 
-    // Pre-compute: outgoing links per file (single pass)
+    // Pre-compute: outgoing links per note, from the links source
     const fileData = new Map();
     for (const file of scopedFiles) {
-      let content;
+      if (!links.has(file)) continue; // gone since the listing
+      const resolved = links.outgoing(file).map(({ raw }) => {
+        const resolution = resolver.resolve(raw);
+        return { raw, paths: resolutionPaths(resolution), ambiguous: resolution.status === "ambiguous" };
+      });
+      fileData.set(file, { resolved });
+    }
+
+    // Frontmatter is only needed for the notes the orphan list shows.
+    const frontmatterOf = async (file) => {
       try {
-        content = await fs.readFile(path.join(vaultPath, file), "utf-8");
+        return { fm: extractFrontmatter(await fs.readFile(path.join(vaultPath, file), "utf-8")) };
       } catch (e) {
-        if (e.code === "ENOENT") continue;
+        if (e.code === "ENOENT") return null;
         throw e;
       }
-      const outgoing = extractWikilinks(content);
-      const resolved = outgoing.map(link => {
-        const resolution = resolver.resolve(link);
-        return { raw: link, paths: resolutionPaths(resolution), ambiguous: resolution.status === "ambiguous" };
-      });
-      const fm = extractFrontmatter(content);
-      fileData.set(file, { resolved, frontmatter: fm });
-    }
+    };
 
     // Build incoming index once — O(M) instead of per-file findFilesLinkingTo O(N*M)
     const needsIncoming = checks.includes("orphans") || checks.includes("weak");
     const incomingIndex = needsIncoming
-      ? await buildIncomingIndex(vaultPath, allFilesList, resolver)
+      ? await buildIncomingIndex(links, resolver)
       : null;
 
     if (checks.includes("orphans")) {
@@ -1390,7 +1424,9 @@ export async function createHandlers({ vaultPath: rawVaultPath, templateRegistry
         const hasOutgoing = data.resolved.some(r => r.paths.length > 0);
         const incomingCount = incomingIndex.get(file)?.size || 0;
         if (!hasOutgoing && incomingCount === 0) {
-          const fm = data.frontmatter;
+          const read = await frontmatterOf(file);
+          if (!read) continue; // deleted since the scan
+          const fm = read.fm;
           orphans.push(`- ${linkFor(file)} (type: ${fm?.type || "unknown"}, created: ${fm?.created || "unknown"})`);
         }
         if (orphans.length >= limit) break;
