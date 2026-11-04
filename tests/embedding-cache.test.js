@@ -11,6 +11,7 @@ import {
   listPacks,
   readPack,
   compactOwnPacks,
+  inspectOwnPacks,
 } from "../embedding-cache.js";
 
 let dir;
@@ -204,5 +205,43 @@ describe("embedding packs", () => {
       await compactOwnPacks({ cacheDirAbs: path.join(dir, "nope"), deviceId: "me", isLive: () => true }),
       { kept: 0, dropped: 0 },
     );
+  });
+
+  it("compaction leaves packs younger than olderThanMs alone", async () => {
+    const v = unitVector(8);
+    const young = await writePack("me", [[hashOf("a"), v], [hashOf("b"), v]]);
+    const old = await writePack("me", [[hashOf("c"), v], [hashOf("d"), v]]);
+    const hourAgo = new Date(Date.now() - 2 * 3600_000);
+    await fs.utimes(path.join(dir, old), hourAgo, hourAgo);
+    const res = await compactOwnPacks({
+      cacheDirAbs: dir, deviceId: "me", isLive: () => false, olderThanMs: 3600_000,
+    });
+    assert.deepEqual(res, { kept: 0, dropped: 2 });
+    const names = (await listPacks(dir)).map((p) => p.name);
+    assert.ok(names.includes(young));
+    assert.ok(!names.includes(old));
+  });
+
+  it("merge rewrites many small packs into one even when nothing is dead", async () => {
+    const v = unitVector(8);
+    for (const k of ["a", "b", "c"]) await writePack("me", [[hashOf(k), v]]);
+    const theirs = await writePack("other", [[hashOf("z"), v]]);
+    const res = await compactOwnPacks({ cacheDirAbs: dir, deviceId: "me", isLive: () => true, merge: true });
+    assert.deepEqual(res, { kept: 3, dropped: 0 });
+    const own = (await listPacks(dir)).filter((p) => p.deviceId === "me");
+    assert.equal(own.length, 1);
+    assert.equal((await readPack(path.join(dir, own[0].name))).entries.length, 3);
+    assert.ok((await listPacks(dir)).some((p) => p.name === theirs));
+  });
+
+  it("inspectOwnPacks counts own packs, entries and dead entries without writing", async () => {
+    const v = unitVector(8);
+    await writePack("me", [[hashOf("a"), v], [hashOf("b"), v]]);
+    await writePack("me", [[hashOf("c"), v]]);
+    await writePack("other", [[hashOf("z"), v]]);
+    const before = await fs.readdir(dir);
+    const res = await inspectOwnPacks({ cacheDirAbs: dir, deviceId: "me", isLive: (h) => h === hashOf("a") });
+    assert.deepEqual(res, { packs: 2, entries: 3, dead: 2 });
+    assert.deepEqual(await fs.readdir(dir), before);
   });
 });

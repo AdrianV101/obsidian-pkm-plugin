@@ -203,13 +203,52 @@ export async function readPack(absPath) {
   return decodePack(buf);
 }
 
+async function ownPacks({ cacheDirAbs, deviceId, olderThanMs, now }) {
+  const own = (await listPacks(cacheDirAbs)).filter((p) => p.deviceId === deviceId);
+  if (!olderThanMs) return own;
+  const out = [];
+  for (const p of own) {
+    try {
+      const { mtimeMs } = await fs.stat(path.join(cacheDirAbs, p.name));
+      // A younger pack may hold entries another local process wrote that the index has not stored yet.
+      if (now() - mtimeMs >= olderThanMs) out.push(p);
+    } catch (err) {
+      if (err.code !== "ENOENT") throw err;
+    }
+  }
+  return out;
+}
+
+/**
+ * Counts this device's packs, entries and dead entries (entries `isLive` rejects), changing nothing.
+ * Only packs at least `olderThanMs` old are read; `packs` counts every own pack.
+ * @param {{ cacheDirAbs: string, deviceId: string, isLive: (hash: string) => boolean, olderThanMs?: number, now?: () => number }} opts
+ */
+export async function inspectOwnPacks({ cacheDirAbs, deviceId, isLive, olderThanMs = 0, now = Date.now }) {
+  const all = (await listPacks(cacheDirAbs)).filter((p) => p.deviceId === deviceId);
+  let entries = 0;
+  let dead = 0;
+  for (const { name } of await ownPacks({ cacheDirAbs, deviceId, olderThanMs, now })) {
+    const pack = await readPack(path.join(cacheDirAbs, name));
+    if (!pack) continue;
+    for (const e of pack.entries) {
+      entries++;
+      if (!isLive(e.hash)) dead++;
+    }
+  }
+  return { packs: all.length, entries, dead };
+}
+
 /**
  * Rewrites this device's live entries into new packs, then deletes the old
  * packs. A crash between the two steps duplicates entries but loses none.
- * @param {{ cacheDirAbs: string, deviceId: string, isLive: (hash: string) => boolean }} opts
+ * Packs younger than `olderThanMs` are left alone. `merge` rewrites several packs into fewer even
+ * when nothing is dead.
+ * @param {{ cacheDirAbs: string, deviceId: string, isLive: (hash: string) => boolean,
+ *   olderThanMs?: number, now?: () => number, merge?: boolean }} opts
  */
-export async function compactOwnPacks({ cacheDirAbs, deviceId, isLive }) {
-  const own = (await listPacks(cacheDirAbs)).filter((p) => p.deviceId === deviceId);
+export async function compactOwnPacks({ cacheDirAbs, deviceId, isLive, olderThanMs = 0, now = Date.now, merge = false }) {
+  const own = await ownPacks({ cacheDirAbs, deviceId, olderThanMs, now });
   const readable = [];
   let dropped = 0;
   const live = new Map();
@@ -229,7 +268,7 @@ export async function compactOwnPacks({ cacheDirAbs, deviceId, isLive }) {
   }
   let kept = 0;
   for (const g of live.values()) kept += g.entries.size;
-  if (dropped === 0) return { kept, dropped };
+  if (dropped === 0 && !(merge && readable.length > 1)) return { kept, dropped };
   for (const g of live.values()) {
     const writer = new PackWriter({ cacheDirAbs, deviceId, model: g.model, dims: g.dims });
     for (const [hash, vector] of g.entries) writer.add(hash, vector);

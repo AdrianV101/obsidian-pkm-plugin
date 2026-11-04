@@ -51,6 +51,18 @@ describe("openLocalIndex", () => {
     assert.deepEqual(fs.readdirSync(path.join(vault, ".obsidian")), []);
   });
 
+  it("holds pack vectors and the imported pack names, and indexes chunk hashes", () => {
+    const li = open();
+    const tables = li.db.prepare("SELECT name FROM sqlite_master WHERE name IN ('pack_vectors','imported_packs') ORDER BY name").all().map(r => r.name);
+    assert.deepEqual(tables, ["imported_packs", "pack_vectors"]);
+    const idx = li.db.prepare("PRAGMA index_list(chunks)").all().map(r => r.name);
+    assert.ok(idx.includes("idx_chunks_hash"), idx.join());
+    li.db.prepare("INSERT INTO pack_vectors (hash, vector) VALUES ('h', x'00')").run();
+    li.close();
+    const next = open({ schemaVersion: SCHEMA_VERSION + 1 });
+    assert.equal(next.db.prepare("SELECT COUNT(*) AS n FROM pack_vectors").get().n, 0);
+  });
+
   it("honours a dbPath override", () => {
     const dbPath = path.join(tmp, "elsewhere", "x.db");
     const li = open({ dbPath });

@@ -6,7 +6,7 @@ import { cacheDir } from "./local-paths.js";
 
 export const EMBEDDING_MODEL = "text-embedding-3-small";
 export const EMBEDDING_DIMENSIONS = 1536;
-export const SCHEMA_VERSION = 1;
+export const SCHEMA_VERSION = 2;
 
 /**
  * @typedef {Object} LocalIndex
@@ -57,7 +57,7 @@ export function openLocalIndex({
       try {
         const stored = readMeta(db);
         return !!stored && stored.schemaVersion === schemaVersion && stored.model === model && stored.dims === dims
-          && db.prepare("SELECT COUNT(*) AS n FROM sqlite_master WHERE name IN ('chunks','files','vec_chunks')").get().n === 3;
+          && db.prepare("SELECT COUNT(*) AS n FROM sqlite_master WHERE name IN ('chunks','files','vec_chunks','pack_vectors','imported_packs')").get().n === 5;
       } catch {
         return false; // no meta table yet
       }
@@ -71,7 +71,8 @@ export function openLocalIndex({
         db.exec("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
         const stored = readMeta(db);
         if (!stored || stored.schemaVersion !== schemaVersion || stored.model !== model || stored.dims !== dims) {
-          db.exec("DROP TABLE IF EXISTS vec_chunks; DROP TABLE IF EXISTS chunks; DROP TABLE IF EXISTS files;");
+          db.exec("DROP TABLE IF EXISTS vec_chunks; DROP TABLE IF EXISTS chunks; DROP TABLE IF EXISTS files; "
+            + "DROP TABLE IF EXISTS pack_vectors; DROP TABLE IF EXISTS imported_packs;");
           const put = db.prepare("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)");
           for (const [k, v] of Object.entries(wanted)) put.run(k, String(v));
         }
@@ -99,6 +100,17 @@ export function openLocalIndex({
           );
 
           CREATE INDEX IF NOT EXISTS idx_chunks_file ON chunks(file_path);
+          CREATE INDEX IF NOT EXISTS idx_chunks_hash ON chunks(chunk_hash);
+
+          -- Vectors read from shared packs, keyed by chunk hash, until a note stores them as chunks.
+          CREATE TABLE IF NOT EXISTS pack_vectors (
+            hash TEXT PRIMARY KEY,
+            vector BLOB NOT NULL
+          );
+
+          CREATE TABLE IF NOT EXISTS imported_packs (
+            name TEXT PRIMARY KEY
+          );
         `);
       }).immediate();
     }
