@@ -225,9 +225,26 @@ Use `VAULT_PKM_OPENAI_KEY` (preferred) to avoid conflicts with project-level Ope
 
 **Optional: `VAULT_PKM_ACTIVITY_RETENTION_DAYS`** — how many days `vault_activity` keeps entries (default `90`; `0` keeps everything). Older entries are deleted when the server starts.
 
-This enables `vault_semantic_search` and `vault_suggest_links`. Uses `text-embedding-3-large` with a SQLite + sqlite-vec index stored at `.obsidian/semantic-index.db`. The index rebuilds automatically — delete the DB file to force a full re-embed.
+This enables `vault_semantic_search` and `vault_suggest_links`. Notes are embedded with OpenAI's `text-embedding-3-small` (1536 dimensions, about $0.02 per million tokens, so a first pass over a vault of around 2,500 notes costs roughly $0.20). Long notes are split into chunks of about 1,000 tokens, and only chunks whose text changed are embedded again. The index is a SQLite + sqlite-vec file in a per-machine cache folder, rebuilt automatically; delete it to force a rebuild.
 
-If OpenAI rejects the key or the account runs out of credits, the index switches to a **disabled** state instead of silently going stale. Semantic tools then answer `Semantic search disabled since <date>: <reason>`, each call retries the API once, and the index re-enables and catches up by itself as soon as a request succeeds. The session-start summary line, `npx obsidian-pkm doctor` and the server's startup log show the status, the reason and how many notes are stale. When notes have changed since they were last indexed, semantic search results end with a footer saying so.
+**Where the files live.** The index and the state files stay outside the vault, in a folder named after a short hash of the vault's real path:
+
+| OS | Index (cache) | State (activity log, device id, lock, health file) |
+|----|---------------|-----------------------------------------------------|
+| macOS | `~/Library/Caches/vault-pkm/<vault-hash>/` | `~/Library/Application Support/vault-pkm/<vault-hash>/` |
+| Linux | `$XDG_CACHE_HOME/vault-pkm/<vault-hash>/` (default `~/.cache`) | `$XDG_STATE_HOME/vault-pkm/<vault-hash>/` (default `~/.local/state`) |
+| Windows | `%LOCALAPPDATA%\vault-pkm\Cache\<vault-hash>\` | `%LOCALAPPDATA%\vault-pkm\<vault-hash>\` |
+
+**Shared embeddings across machines.** Each piece of text is paid for once. When a machine embeds chunks, it also writes the vectors to a small pack file in `06-System/vault-pkm/embeddings/` inside the vault (packs are under 4 MB each, so they fit Obsidian Sync's file limit, and the folder is not dot-prefixed so Sync does not skip it). Your other machines load those packs instead of calling OpenAI. Packs hold vectors keyed by a hash of the chunk text, not the text itself; the vectors are derived from your note content, so treat the folder like the rest of the vault. A machine only ever writes and compacts its own packs, so two machines never write the same file.
+
+- **Obsidian Sync users:** turn on **Sync all other types** (Settings, Sync) on every device, or the pack files will not reach your other machines. This is a per-device setting that `npx obsidian-pkm doctor` cannot see, so it prints a reminder.
+- **Who embeds what.** On each machine exactly one server process is the *housekeeper* (chosen by a lock in the state folder; another process takes over if it exits or goes stale). It runs the file watcher, startup catch-up and pack loading and is the only process that writes the index. When a session writes a note through a write tool, that session embeds the new chunks at once and writes them to its own pack. A change this process did not write (a hand edit in Obsidian, a file arriving through sync) first waits for another machine's pack to deliver the vectors: 30 minutes by default, or 5 minutes on a machine marked as the backstop. If no other machine has packs in the folder, the wait is 60 seconds (only another session on the same machine could have written it). After the wait the housekeeper embeds the chunk itself.
+- **`VAULT_PKM_BACKSTOP=1`** marks a machine that is usually on, as the one that embeds other machines' changes after 5 minutes instead of 30. Set it in the `env` block of `~/.claude/settings.json` on that machine only.
+- **`VAULT_PKM_SHARED_CACHE=off`** turns the shared cache off on one machine: it neither reads nor writes packs and embeds changes without waiting. `doctor` and the session-start health line say so.
+
+Upgrading from an earlier version re-embeds the vault once, because the model changed. The old `.obsidian/semantic-index.db` (and `.obsidian/semantic-stats.json`) are no longer used and can be deleted; `doctor` reports them.
+
+If OpenAI rejects the key or the account runs out of credits, the index switches to a **disabled** state instead of silently going stale. Semantic tools then answer `Semantic search disabled since <date>: <reason>`, each call retries the API once, and the index re-enables and catches up by itself as soon as a request succeeds. The session-start summary line, `npx obsidian-pkm doctor` and the server's startup log show the status, the reason and how many notes are stale. When coverage is incomplete, semantic search results end with `Semantic index: <embedded> of <total> notes embedded` (plus `; <n> chunks waiting`).
 
 <details>
 <summary><strong>Vault Structure</strong></summary>
@@ -303,6 +320,13 @@ File layout:
 ├── frontmatter.js    # YAML frontmatter parse/render/byte-preserving update (yaml package)
 ├── graph.js          # Wikilink resolution and BFS graph traversal
 ├── embeddings.js     # Semantic index (OpenAI embeddings, SQLite + sqlite-vec)
+├── chunker.js        # Splits notes into embeddable chunks with per-chunk hashes
+├── local-paths.js    # Per-machine cache and state folders
+├── machine-settings.js # Device id, VAULT_PKM_BACKSTOP and VAULT_PKM_SHARED_CACHE
+├── local-index.js    # The local SQLite index (vectors, files)
+├── embedding-cache.js # Pack files in the vault: write, read, compact
+├── embedding-sharing.js # Loads packs into the index; waits for other machines' vectors
+├── lease.js          # One housekeeper per machine
 ├── semantic-health.js # Dependency-free semantic index health formatting (server, hooks, doctor)
 ├── activity.js       # Activity log (session tracking, SQLite)
 ├── utils.js          # Shared utilities (file listing; re-exports frontmatter parsing)
@@ -338,7 +362,7 @@ File layout:
 
 **Knowledge creation** is template-based. `vault_write` loads templates from `05-Templates/`, substitutes Templater-compatible variables (`<% tp.date.now("YYYY-MM-DD") %>`, `<% tp.file.title %>`), and validates required frontmatter fields (`type`, `created`, `tags`). This ensures every note in your vault has consistent metadata — making it queryable, sortable, and discoverable from day one. Task notes enforce enum validation on `status` and `priority`; other types accept `project`, `deciders`, `due`, and `source`.
 
-**Knowledge discovery** works at two levels. Keyword search (`vault_search`) finds exact terms. Semantic search embeds notes using OpenAI and finds conceptually related content — so "managing overwhelm" surfaces notes about "cognitive load" even if those exact words never appear together. The semantic index watches for file changes in real time. It lives in `.obsidian/` but stays on each machine (Obsidian Sync does not carry it), so each machine builds its own index on first start.
+**Knowledge discovery** works at two levels. Keyword search (`vault_search`) finds exact terms. Semantic search embeds notes using OpenAI and finds conceptually related content — so "managing overwhelm" surfaces notes about "cognitive load" even if those exact words never appear together. The semantic index watches for file changes in real time. It lives in a per-machine cache folder outside the vault; the vectors each machine computes are shared through pack files in `06-System/vault-pkm/embeddings/`, so other machines load them instead of paying for them again.
 
 **Knowledge connections** are maintained through Obsidian's `[[wikilink]]` graph. `vault_neighborhood` traverses links via BFS to discover related notes by proximity, while `vault_suggest_links` recommends connections you haven't made yet. `vault_move` rewrites wikilinks across the vault when you reorganize, and `vault_trash` warns about links that would break.
 
@@ -378,13 +402,13 @@ Your `VAULT_PATH` is wrong or missing. The server validates this at startup and 
 Run `npx obsidian-pkm init` to install templates, or copy the `templates/` files from this repo into your vault's `05-Templates/` directory. The server loads templates from there at startup.
 
 **Semantic search not appearing in tool list**
-Set `VAULT_PKM_OPENAI_KEY` in `~/.claude/settings.json`. See [Enable Semantic Search](#5-enable-semantic-search-optional). Without a key, `vault_semantic_search` and `vault_suggest_links` are hidden entirely. With a key they stay listed even while the index is disabled (for example after a quota error), so a call can re-check the API.
+Set `VAULT_PKM_OPENAI_KEY` in `~/.claude/settings.json`. See [Enable Semantic Search](#5-enable-semantic-search-optional). Without a key, `vault_semantic_search` and `vault_suggest_links` are not listed. With a key they stay listed even while the index is disabled (for example after a quota error), so a call can re-check the API.
 
 **Server not showing up in Claude Code after install**
 Run `claude mcp list` to check. If `vault-pkm` is missing, reinstall the plugin: `claude plugin install vault-pkm@claude-community`. Then run `/vault-pkm:setup` to configure it.
 
 **Semantic index not updating after file changes**
-Notes written through the vault tools are reindexed right away. Other changes are picked up by a file watcher (`fs.watch({ recursive: true })`, Node.js >= 20), which restarts itself up to five times after an error, and every server start catches up on anything missed. Run `npx obsidian-pkm doctor` to see the index status and how many notes are stale.
+Notes written through the vault tools are reindexed right away. Other changes are picked up by the housekeeper's file watcher, but may wait for another machine's vectors first (see Shared embeddings above); the watcher (`fs.watch({ recursive: true })`, Node.js >= 20), which restarts itself up to five times after an error, and every server start catches up on anything missed. Run `npx obsidian-pkm doctor` to see the index status and how many notes are stale.
 
 **Semantic search says "disabled since …"**
 OpenAI rejected the key (HTTP 401/403) or the account has no credits left (HTTP 429 `insufficient_quota`). Fix the key or add credits. The next semantic tool call retries once; when it succeeds the index re-enables and catches up on its own.

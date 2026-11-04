@@ -266,3 +266,51 @@ describe("project linking", () => {
     }
   });
 });
+
+describe("embedding engine docs", () => {
+  const read = (rel) => fs.readFile(fileURLToPath(new URL(`../${rel}`, import.meta.url)), "utf-8");
+
+  it("README documents the cache folder, the Sync setting, both environment variables and the local folders", async () => {
+    const readme = await read("README.md");
+    for (const needle of [
+      "06-System/vault-pkm/embeddings",
+      "Sync all other types",
+      "VAULT_PKM_BACKSTOP",
+      "VAULT_PKM_SHARED_CACHE",
+      "~/Library/Caches/vault-pkm",
+      "~/Library/Application Support/vault-pkm",
+      "XDG_CACHE_HOME",
+      "XDG_STATE_HOME",
+      "%LOCALAPPDATA%",
+      "text-embedding-3-small",
+    ]) {
+      assert.ok(readme.includes(needle), `README.md must mention ${needle}`);
+    }
+    assert.doesNotMatch(readme, /hidden entirely/);
+    assert.doesNotMatch(readme, /text-embedding-3-large/);
+  });
+
+  it("CLAUDE.md no longer names the old index location", async () => {
+    const claude = await read("CLAUDE.md");
+    assert.doesNotMatch(claude, /Index stored at `\$VAULT_PATH\/\.obsidian\/semantic-index\.db`/);
+    assert.doesNotMatch(claude, /text-embedding-3-large/);
+    assert.match(claude, /text-embedding-3-small/);
+    assert.doesNotMatch(claude, /\$VAULT_PATH\/\.obsidian\/activity-log\.db/);
+  });
+
+  it("PRIVACY.md names the current model and says packs hold vectors derived from note content", async () => {
+    const privacy = await read("PRIVACY.md");
+    assert.doesNotMatch(privacy, /text-embedding-3-large/);
+    assert.match(privacy, /06-System\/vault-pkm\/embeddings/);
+    assert.match(privacy, /vectors, not note text/);
+  });
+
+  it("the changelog's unreleased section tells users to restart sessions and that the old index can be deleted", async () => {
+    const changelog = await read("CHANGELOG.md");
+    const start = changelog.indexOf("## [Unreleased]");
+    const next = changelog.indexOf("\n## [", start + 1);
+    const unreleased = changelog.slice(start, next === -1 ? undefined : next);
+    assert.match(unreleased, /sessions must be restarted after upgrading/);
+    assert.match(unreleased, /\.obsidian\/semantic-index\.db[^\n]*can be deleted/);
+  });
+});

@@ -45,7 +45,7 @@ npm run typecheck
 
 The project consists of three parts:
 
-**MCP Server**: A Node.js ES module server implementing the Model Context Protocol. The main entry point is `index.js` (server setup and request routing); tool definitions live in `tools.js` and handlers in `handlers.js`. `instructions.js` builds the server instructions (the vault rules every session receives, and the note routing table that `skills/pkm-write/SKILL.md` must match; `tests/instructions.test.js` keeps them equal), passed to the SDK in `index.js`. Shared modules: `vault-fs.js` (path containment, write-target rules, the live `FileIndex`, and `mutateFile`/`writeNew`, the only way notes are modified or created), `markdown.js` (dependency-free frontmatter splitting, heading parsing and section lookup; the hooks import it, so it must stay free of package imports), `frontmatter.js` (all YAML work, using `yaml`), `semantic-health.js` (dependency-free health formatting shared by the server, the hooks and doctor) and `helpers.js` (filtering, templates, peek). It provides 20 tools for vault interaction:
+**MCP Server**: A Node.js ES module server implementing the Model Context Protocol. The main entry point is `index.js` (server setup and request routing); tool definitions live in `tools.js` and handlers in `handlers.js`. `instructions.js` builds the server instructions (the vault rules every session receives, and the note routing table that `skills/pkm-write/SKILL.md` must match; `tests/instructions.test.js` keeps them equal), passed to the SDK in `index.js`. Shared modules: `vault-fs.js` (path containment, write-target rules, the live `FileIndex`, and `mutateFile`/`writeNew`, the only way notes are modified or created), `markdown.js` (dependency-free frontmatter splitting, heading parsing and section lookup; the hooks import it, so it must stay free of package imports), `frontmatter.js` (all YAML work, using `yaml`), `semantic-health.js` (dependency-free health formatting shared by the server, the hooks and doctor), `chunker.js` (dependency-free note chunking with per-chunk hashes), `local-paths.js` (per-machine cache and state folders) and `machine-settings.js` (device id, backstop and shared-cache settings; both dependency-free), `local-index.js` (the local SQLite index), `embedding-cache.js` (pack files in the vault), `embedding-sharing.js` (pack import and the wait for other machines' vectors) and `lease.js` (the one-housekeeper-per-machine lock) and `helpers.js` (filtering, templates, peek). It provides 20 tools for vault interaction:
 - `vault_read` - Read note contents (supports pagination: `heading`, `tail`, `tail_sections` [with optional `section_level` param, default: 2], `chunk`, `lines`; auto-redirects to peek data for files >80k chars; `force` bypasses redirect; `heading` matches `## Foo` (level + text) or `Foo` (text at any level) and errors on duplicates; every mode's output is capped at 80k chars (400k with `force`) with a `[truncated: …; continue with lines: {start: N}]` marker)
 - `vault_peek` - Inspect file metadata/structure without reading full content (size, frontmatter, indented heading tree, preview)
 - `vault_write` - Create new notes from templates (enforces frontmatter; settable fields: `session`, `status`, `priority`, `project`, `deciders`, `due`, `source`; `variables` param for custom `<%...%>` substitution in template body)
@@ -83,12 +83,16 @@ Explores the graph neighborhood around a note by traversing wikilinks using BFS.
 Finds conceptually related notes even when they use different terminology. For example, searching "managing overwhelm" finds notes about "cognitive load" or "information overload".
 
 - Requires `VAULT_PKM_OPENAI_KEY` or `OPENAI_API_KEY` env var — tool is hidden from tool list when not set
-- Uses OpenAI `text-embedding-3-large` (3072 dimensions)
-- Index stored at `$VAULT_PATH/.obsidian/semantic-index.db` (SQLite + sqlite-vec)
+- Uses OpenAI `text-embedding-3-small` (1536 dimensions)
+- Index stored in the per-machine cache folder (`index.db`, SQLite + sqlite-vec; `local-index.js`): macOS `~/Library/Caches/vault-pkm/<vault-hash>/`, Linux `$XDG_CACHE_HOME` (default `~/.cache`)`/vault-pkm/<vault-hash>/`, Windows `%LOCALAPPDATA%\vault-pkm\Cache\<vault-hash>\`. The old `.obsidian/semantic-index.db` is unused (doctor reports it; safe to delete)
+- One housekeeper per machine (`lease.js`: lockfile with heartbeat in the state folder) runs the watcher, startup catch-up and pack loading, and is the only process that writes the index; other servers take over when it exits or goes stale
+- Shared cache: vectors are written as float16 to write-once pack files (under 4,000,000 bytes, named for the writing device) in `06-System/vault-pkm/embeddings/` (`embedding-cache.js`) and loaded by other machines (`embedding-sharing.js`). Each machine compacts only its own packs. `VAULT_PKM_SHARED_CACHE=off` turns it off per machine
+- A change this process did not write waits for other machines' packs before being embedded: 5 minutes with `VAULT_PKM_BACKSTOP=1`, otherwise 30; 60 seconds when no other machine has packs; no wait with the shared cache off. Tool writes embed immediately in the writing process
 - Write tools notify the index directly (`notifyChanged`/`notifyRemoved`/`notifyMoved`); a background `fs.watch` (restarted with backoff after errors) catches other changes; startup sync catches changes made while the server was stopped
-- API errors are classified (`EmbeddingError.kind`): auth and quota failures put the index into a disabled state persisted in `.obsidian/semantic-stats.json` (`status`, `reason`, `since`, `last_success_at`, `stale_files`); semantic tool calls probe once and the index re-enables on success; rate limits and transient errors are retried up to 3 times
+- API errors are classified (`EmbeddingError.kind`): auth and quota failures put the index into a disabled state persisted in `semantic-stats.json` in the state folder (`status`, `reason`, `since`, `last_success_at`, `stale_files`); semantic tool calls probe once and the index re-enables on success; rate limits and transient errors are retried up to 3 times
 - Reindexes of one note are serialized, and the content hash is re-checked inside the store transaction
-- Chunking: whole-note for short notes, heading-based (`##`) splits for notes > ~2000 tokens
+- Chunking (`chunker.js`): about 1,000 tokens (4,000 characters); a short body is one chunk, a longer one splits at `##` headings (not inside code fences), oversize sections pack whole paragraphs and the last piece reaches back to top up. Each chunk's text starts with the note title and heading path, and each chunk has its own sha256 hash, so an edit re-embeds only the chunks whose text changed
+- Health: `health()` reports `notesTotal`, `notesEmbedded`, `chunksWaiting`; search results, `doctor` and session start show `Semantic index: <embedded> of <total> notes embedded` (plus `; <n> chunks waiting`) when incomplete or disabled
 - Params: `query` (required), `limit`, `folder`, `threshold` (0-1 similarity score), `anchor` (optional path for graph-distance weighting), `graph_weight` (0-1, default: 0.3)
 
 ```javascript
@@ -96,7 +100,7 @@ Finds conceptually related notes even when they use different terminology. For e
 vault_semantic_search({ query: "cache eviction strategies", anchor: "research/caching.md", graph_weight: 0.3 })
 ```
 
-The semantic index is a regenerable cache — deleting `semantic-index.db` triggers a full re-embed on next startup. The DB lives in `.obsidian/` but is local to each machine: Obsidian Sync does not carry it, so every machine builds its own index.
+The local index is a regenerable cache — deleting it rebuilds from the vault and the shared packs on next startup, without paying again for vectors that are in the packs. Obsidian Sync needs "Sync all other types" on every device for packs to travel.
 
 ### vault_write (Template-Based Note Creation)
 
@@ -127,7 +131,7 @@ vault_write({
 
 Logs all MCP tool calls with timestamps and session IDs. Enables cross-session memory — Claude can recall what was read, written, or searched in previous sessions.
 
-- Storage: SQLite DB at `$VAULT_PATH/.obsidian/activity-log.db` (separate from semantic index)
+- Storage: SQLite DB `activity-log.db` in the per-machine state folder (macOS `~/Library/Application Support/vault-pkm/<vault-hash>/`, Linux `$XDG_STATE_HOME` or `~/.local/state`, Windows `%LOCALAPPDATA%\vault-pkm\<vault-hash>\`), separate from the semantic index. On first start an existing `.obsidian/activity-log.db` is copied there; the original is left in place
 - Session ID: generated via `crypto.randomUUID()` at MCP server startup (each conversation gets its own)
 - Logs every tool call except `vault_activity` itself
 - Supports filtering by tool name, session ID, date range, and path (exact note, or folder prefix; the filter matches the stored argument, so it needs the full vault-relative path, is case-sensitive, and a short name or partial folder matches nothing)
