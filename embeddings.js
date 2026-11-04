@@ -5,17 +5,15 @@ import fsSync from "fs";
 import path from "path";
 import crypto from "crypto";
 import { getAllMarkdownFiles } from "./utils.js";
-import { splitFrontmatter } from "./markdown.js";
+import { chunkNote } from "./chunker.js";
 import { formatDisabledMessage, formatStaleFooter } from "./semantic-health.js";
 import { toVaultRel } from "./vault-fs.js";
 
 const EMBEDDING_MODEL = "text-embedding-3-large";
 const EMBEDDING_DIMENSIONS = 3072;
-const MAX_CHARS_PER_CHUNK = 8000; // ~2000 tokens
 // OpenAI embeddings API: max 2048 inputs, max 300k tokens summed, 8192 tokens per input.
-// At MAX_CHARS_PER_CHUNK=8000 (~2000 tokens), 128 chunks ≈ 256k tokens — safely under the
-// 300k cap even when every chunk is at the max size. 256 would exceed the cap on full-size
-// chunks; smaller values waste round-trips. Note: BATCH_SIZE only fires when a single file
+// At CHUNK_MAX_CHARS (~1000 tokens), 128 chunks ≈ 128k tokens — safely under the
+// 300k cap even when every chunk is at the max size. Smaller values waste round-trips. Note: BATCH_SIZE only fires when a single file
 // produces >this many chunks, which is rare with the current per-file embedding flow.
 const BATCH_SIZE = 128;
 const REINDEX_BATCH_SIZE = 10; // files per batch during startup sync
@@ -684,7 +682,7 @@ export class SemanticIndex {
         INSERT INTO vec_chunks (rowid, embedding) VALUES (?, ?)
       `);
       for (let i = 0; i < chunks.length; i++) {
-        const result = insertChunk.run(relativePath, i, chunks[i].heading || null, chunks[i].preview);
+        const result = insertChunk.run(relativePath, i, chunks[i].headingPath.at(-1) ?? null, chunks[i].preview);
         insertVec.run(BigInt(result.lastInsertRowid), new Float32Array(embeddings[i]));
       }
 
@@ -1020,116 +1018,6 @@ export class SemanticIndex {
 
 // --- Module-level helpers ---
 
-function chunkNote(content, filePath) {
-  const body = splitFrontmatter(content).body.trim();
-
-  if (!body) return [];
-
-  // Derive title from file path
-  const title = path.basename(filePath, ".md");
-
-  // Short note: single chunk
-  if (body.length <= MAX_CHARS_PER_CHUNK) {
-    return [{
-      text: `# ${title}\n\n${body}`,
-      heading: null,
-      preview: getPreview(body)
-    }];
-  }
-
-  // Long note: split at ## headings
-  const sections = splitByHeadings(body);
-  const chunks = [];
-
-  for (const section of sections) {
-    const sectionText = section.text.trim();
-    if (!sectionText) continue;
-
-    if (sectionText.length <= MAX_CHARS_PER_CHUNK) {
-      chunks.push({
-        text: `# ${title}\n\n${sectionText}`,
-        heading: section.heading,
-        preview: getPreview(sectionText)
-      });
-    } else {
-      // Further split at paragraph breaks
-      const paragraphChunks = splitByParagraphs(sectionText, MAX_CHARS_PER_CHUNK);
-      for (let i = 0; i < paragraphChunks.length; i++) {
-        chunks.push({
-          text: `# ${title}\n\n${paragraphChunks[i]}`,
-          heading: section.heading ? `${section.heading} (${i + 1})` : null,
-          preview: getPreview(paragraphChunks[i])
-        });
-      }
-    }
-  }
-
-  return chunks;
-}
-
-function splitByHeadings(body) {
-  const lines = body.split("\n");
-  const sections = [];
-  let currentHeading = null;
-  let currentLines = [];
-
-  for (const line of lines) {
-    if (line.startsWith("## ")) {
-      if (currentLines.length > 0) {
-        sections.push({ heading: currentHeading, text: currentLines.join("\n") });
-      }
-      currentHeading = line.replace(/^##\s+/, "");
-      currentLines = [line];
-    } else {
-      currentLines.push(line);
-    }
-  }
-
-  if (currentLines.length > 0) {
-    sections.push({ heading: currentHeading, text: currentLines.join("\n") });
-  }
-
-  return sections;
-}
-
-function splitByParagraphs(text, maxChars) {
-  const paragraphs = text.split(/\n\n+/);
-  const chunks = [];
-  let current = "";
-
-  for (const para of paragraphs) {
-    // If a single paragraph exceeds maxChars, hard-split it
-    if (para.length > maxChars) {
-      if (current.length > 0) {
-        chunks.push(current);
-        current = "";
-      }
-      for (let i = 0; i < para.length; i += maxChars) {
-        chunks.push(para.slice(i, i + maxChars));
-      }
-      continue;
-    }
-
-    if (current && (current.length + para.length + 2) > maxChars) {
-      chunks.push(current);
-      current = para;
-    } else {
-      current = current ? current + "\n\n" + para : para;
-    }
-  }
-
-  if (current) chunks.push(current);
-  return chunks;
-}
-
-function getPreview(text) {
-  // Strip markdown heading markers for preview
-  const cleaned = text.replace(/^#+\s+/gm, "").trim();
-  const words = cleaned.split(/\s+/);
-  const preview = words.slice(0, 100).join(" ");
-  return preview.length < cleaned.length ? preview + "..." : preview;
-}
-
 async function getEmbeddings(texts, apiKey, opts = {}) {
   const allEmbeddings = [];
 
@@ -1241,5 +1129,5 @@ function contentHash(text) {
   return crypto.createHash("sha256").update(text).digest("hex");
 }
 
-export { chunkNote, splitByHeadings, splitByParagraphs, getPreview, contentHash, callEmbeddingAPI };
+export { contentHash, callEmbeddingAPI };
 
