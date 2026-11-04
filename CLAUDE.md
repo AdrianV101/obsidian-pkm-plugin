@@ -45,7 +45,7 @@ npm run typecheck
 
 The project consists of three parts:
 
-**MCP Server**: A Node.js ES module server implementing the Model Context Protocol. The main entry point is `index.js` (server setup and request routing); tool definitions live in `tools.js` and handlers in `handlers.js`. `instructions.js` builds the server instructions (the vault rules every session receives, and the note routing table that `skills/pkm-write/SKILL.md` must match; `tests/instructions.test.js` keeps them equal), passed to the SDK in `index.js`. Shared modules: `vault-fs.js` (path containment, write-target rules, the live `FileIndex`, and `mutateFile`/`writeNew`, the only way notes are modified or created), `markdown.js` (dependency-free frontmatter splitting, heading parsing and section lookup; the hooks import it, so it must stay free of package imports), `frontmatter.js` (all YAML work, using `yaml`), `semantic-health.js` (dependency-free health formatting shared by the server, the hooks and doctor), `chunker.js` (dependency-free note chunking with per-chunk hashes), `local-paths.js` (per-machine cache and state folders) and `machine-settings.js` (device id, backstop and shared-cache settings; both dependency-free), `local-index.js` (the local SQLite index), `embedding-cache.js` (pack files in the vault), `embedding-sharing.js` (pack import and the wait for other machines' vectors) and `lease.js` (the one-housekeeper-per-machine lock) and `helpers.js` (filtering, templates, peek). It provides 20 tools for vault interaction:
+**MCP Server**: A Node.js ES module server implementing the Model Context Protocol. The main entry point is `index.js` (server setup and request routing); tool definitions live in `tools.js` and handlers in `handlers.js`. `instructions.js` builds the server instructions (the vault rules every session receives, and the note routing table that `skills/pkm-write/SKILL.md` must match; `tests/instructions.test.js` keeps them equal), passed to the SDK in `index.js`. Shared modules: `vault-fs.js` (path containment, write-target rules, the live `FileIndex`, and `mutateFile`/`writeNew`, the only way notes are modified or created), `markdown.js` (dependency-free frontmatter splitting, heading parsing and section lookup; the hooks import it, so it must stay free of package imports), `frontmatter.js` (all YAML work, using `yaml`), `semantic-health.js` (dependency-free health formatting shared by the server, the hooks and doctor), `chunker.js` (dependency-free note chunking with per-chunk hashes), `local-paths.js` (per-machine cache and state folders) and `machine-settings.js` (device id, backstop and shared-cache settings; both dependency-free), `local-index.js` (the local SQLite index), `embedding-cache.js` (pack files in the vault), `embedding-sharing.js` (pack import and the wait for other machines' vectors) and `lease.js` (the one-housekeeper-per-machine lock) and `keyword-index.js` (the FTS5 word index behind keyword search), `search-fusion.js` (reciprocal rank fusion of the vector and keyword rankings), `links-index.js` (the stored wikilink table the graph tools read) and `helpers.js` (filtering, templates, peek). It provides 20 tools for vault interaction:
 - `vault_read` - Read note contents (supports pagination: `heading`, `tail`, `tail_sections` [with optional `section_level` param, default: 2], `chunk`, `lines`; auto-redirects to peek data for files >80k chars; `force` bypasses redirect; `heading` matches `## Foo` (level + text) or `Foo` (text at any level) and errors on duplicates; every mode's output is capped at 80k chars (400k with `force`) with a `[truncated: …; continue with lines: {start: N}]` marker)
 - `vault_peek` - Inspect file metadata/structure without reading full content (size, frontmatter, indented heading tree, preview)
 - `vault_write` - Create new notes from templates (enforces frontmatter; settable fields: `session`, `status`, `priority`, `project`, `deciders`, `due`, `source`; `variables` param for custom `<%...%>` substitution in template body)
@@ -53,7 +53,7 @@ The project consists of three parts:
 - `vault_edit` - Surgical string replacement (exact match, single occurrence)
 - `vault_update_frontmatter` - Update YAML frontmatter fields atomically (set, create, remove fields)
 - `vault_search` - Full-text search across markdown files
-- `vault_semantic_search` - Semantic similarity search using OpenAI embeddings (requires `VAULT_PKM_OPENAI_KEY` or `OPENAI_API_KEY`)
+- `vault_semantic_search` - Hybrid search: semantic similarity from OpenAI embeddings fused with a BM25 keyword ranking; keyword-only without `VAULT_PKM_OPENAI_KEY` or `OPENAI_API_KEY`, or while OpenAI is unavailable
 - `vault_suggest_links` - Suggest relevant notes to link based on content similarity; `graph_context: true` for graph-semantic blending (requires `VAULT_PKM_OPENAI_KEY` or `OPENAI_API_KEY`)
 - `vault_list` / `vault_recent` - Directory listing and recent files
 - `vault_links` - Wikilink analysis (`[[...]]` syntax)
@@ -74,15 +74,18 @@ Explores the graph neighborhood around a note by traversing wikilinks using BFS.
 
 - Resolves wikilink targets to actual file paths (handles `[[note]]`, `[[folder/note]]`, `[[note|alias]]`, `[[note#heading]]`)
 - Detects ambiguous links (multiple files with same basename) and annotates them
-- Per-call indexes: basename resolution map + incoming link index (no persistent state)
+- Reads wikilinks from the stored links table in the local index (`links-index.js`), checked against each note's mtime and size on every call; the basename resolution map and incoming index are built per call from it. Without a local index it reads the notes
 - Params: `path` (required), `depth` (default: 2), `direction` (`"both"` | `"outgoing"` | `"incoming"`), `include_semantic` (boolean, appends unlinked semantic results), `semantic_limit` (default: 5), `max_nodes` (default: 50; extra nodes reported as "+N not shown")
 - Implementation: `graph.js` module (link resolution, BFS traversal, formatting)
 
 ### vault_semantic_search (Semantic Similarity Search)
 
-Finds conceptually related notes even when they use different terminology. For example, searching "managing overwhelm" finds notes about "cognitive load" or "information overload".
+Hybrid search. It merges a vector ranking with a BM25 keyword ranking by reciprocal rank fusion (`search-fusion.js`), so it finds conceptually related notes even when they use different terminology and also exact terms. For example, searching "managing overwhelm" finds notes about "cognitive load" or "information overload".
 
-- Requires `VAULT_PKM_OPENAI_KEY` or `OPENAI_API_KEY` env var — tool is hidden from tool list when not set
+- Listed whether or not an OpenAI key is set. Without `VAULT_PKM_OPENAI_KEY` or `OPENAI_API_KEY` its description says it is keyword-only and it returns keyword results; `vault_suggest_links` stays vector-only and is hidden without a key
+- When OpenAI is unavailable (no key, quota, offline, disabled index) it returns keyword results headed `Keyword results only: semantic search is unavailable (<reason>).` instead of an error
+- Each hit shows its cosine from stored vectors (a keyword-only hit on a note with no vectors shows none); `threshold` filters on the cosine
+- Keyword index: an FTS5 table in the local index (`keyword-index.js`), kept in step with the vault by the housekeeper (startup scan plus watcher) and searchable from every session, key or not
 - Uses OpenAI `text-embedding-3-small` (1536 dimensions)
 - Index stored in the per-machine cache folder (`index.db`, SQLite + sqlite-vec; `local-index.js`): macOS `~/Library/Caches/vault-pkm/<vault-hash>/`, Linux `$XDG_CACHE_HOME` (default `~/.cache`)`/vault-pkm/<vault-hash>/`, Windows `%LOCALAPPDATA%\vault-pkm\Cache\<vault-hash>\`. The old `.obsidian/semantic-index.db` is unused (doctor reports it; safe to delete)
 - One housekeeper per machine (`lease.js`: lockfile with heartbeat in the state folder) runs the watcher, startup catch-up and pack loading, and is the only process that writes the index; other servers take over when it exits or goes stale
@@ -222,7 +225,7 @@ Audit link quality across the vault or a specific folder. Returns categorized re
 vault_link_health({ folder: "01-Projects/MyApp", checks: ["orphans", "broken"] })
 ```
 
-Implementation: `handleLinkHealth` in `handlers.js`, uses `buildIncomingIndex` from `graph.js` for O(M) performance.
+Implementation: `handleLinkHealth` in `handlers.js`, reads links from the stored links table (`links-index.js`) and uses `buildIncomingIndex` from `graph.js` for O(M) performance.
 
 ### vault_query (Enhanced Filtering and Sorting)
 
@@ -301,7 +304,7 @@ Then run `/vault-pkm:setup` in Claude Code to configure vault path, API keys, an
 
 For vault scaffolding (templates, PARA folders): `npx obsidian-pkm init`
 
-`VAULT_PKM_OPENAI_KEY` (or `OPENAI_API_KEY`) is optional — without it, all tools except `vault_semantic_search` and `vault_suggest_links` work normally. The plugin-scoped name avoids conflicts with project-level OpenAI keys. `OBSIDIAN_PKM_OPENAI_KEY` is still read as a deprecated fallback for users who configured it before the rename.
+`VAULT_PKM_OPENAI_KEY` (or `OPENAI_API_KEY`) is optional — without it, all tools work normally except that `vault_semantic_search` returns keyword results only and `vault_suggest_links` is hidden. The plugin-scoped name avoids conflicts with project-level OpenAI keys. `OBSIDIAN_PKM_OPENAI_KEY` is still read as a deprecated fallback for users who configured it before the rename.
 
 ## Vault Structure Convention
 

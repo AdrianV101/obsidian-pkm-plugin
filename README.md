@@ -26,7 +26,7 @@ Claude Code has built-in memory, but it's flat text files scoped to individual p
 
 - **Structured session memory** — Every tool call is logged with timestamps and session IDs, so Claude can recall exactly what was read, written, and searched in previous conversations — not just what was saved to a text file.
 - **Structured knowledge creation** — ADRs, research notes, per-session devlog notes, and tasks are created from enforced templates with validated frontmatter — not freeform text dumps. Your vault stays consistent and queryable.
-- **Semantic discovery** — "Find my notes about caching strategies" works even if you never used the word "caching." Conceptual search surfaces relevant knowledge that keyword search misses.
+- **Semantic discovery** — "Find my notes about caching strategies" works even if you never used the word "caching." Conceptual search surfaces relevant knowledge that keyword search misses, and the keyword half keeps exact terms findable.
 - **Graph-aware connections** — Claude explores your knowledge graph by following wikilinks, discovering related notes by proximity rather than just content. Link suggestions help weave new notes into your existing web of knowledge.
 - **Knowledge capture** — Decisions, tasks, and research findings are captured by specialized agents in the background without interrupting your coding flow.
 
@@ -65,7 +65,7 @@ Without this, knowledge stays fragmented across per-project memory files and cha
 | Tool | Description |
 |------|-------------|
 | `vault_search` | Full-text keyword search across markdown files |
-| `vault_semantic_search` | Conceptual similarity search via OpenAI embeddings — finds related notes even with different wording |
+| `vault_semantic_search` | Hybrid search: OpenAI embedding similarity fused with BM25 keyword ranking, so it finds related notes even with different wording and exact terms alike. Keyword-only without an OpenAI key or while OpenAI is unavailable |
 | `vault_query` | Query by YAML frontmatter (type, status, tags, dates, custom fields) with sorting |
 | `vault_tags` | Discover all tags with per-note counts; folder scoping, glob filters, inline tag parsing |
 | `vault_suggest_links` | Suggest relevant notes to link based on content similarity |
@@ -225,7 +225,7 @@ Use `VAULT_PKM_OPENAI_KEY` (preferred) to avoid conflicts with project-level Ope
 
 **Optional: `VAULT_PKM_ACTIVITY_RETENTION_DAYS`** — how many days `vault_activity` keeps entries (default `90`; `0` keeps everything). Older entries are deleted when the server starts.
 
-This enables `vault_semantic_search` and `vault_suggest_links`. Notes are embedded with OpenAI's `text-embedding-3-small` (1536 dimensions, about $0.02 per million tokens, so a first pass over a vault of around 2,500 notes costs roughly $0.20). Long notes are split into chunks of about 1,000 tokens, and only chunks whose text changed are embedded again. The index is a SQLite + sqlite-vec file in a per-machine cache folder, rebuilt automatically; delete it to force a rebuild.
+This enables the vector half of `vault_semantic_search` and `vault_suggest_links`. Notes are embedded with OpenAI's `text-embedding-3-small` (1536 dimensions, about $0.02 per million tokens, so a first pass over a vault of around 2,500 notes costs roughly $0.20). Long notes are split into chunks of about 1,000 tokens, and only chunks whose text changed are embedded again. The index is a SQLite + sqlite-vec file in a per-machine cache folder, rebuilt automatically; delete it to force a rebuild.
 
 **Where the files live.** The index and the state files stay outside the vault, in a folder named after a short hash of the vault's real path:
 
@@ -244,7 +244,7 @@ This enables `vault_semantic_search` and `vault_suggest_links`. Notes are embedd
 
 Upgrading from an earlier version re-embeds the vault once, because the model changed. The old `.obsidian/semantic-index.db` (and `.obsidian/semantic-stats.json`) are no longer used and can be deleted; `doctor` reports them.
 
-If OpenAI rejects the key or the account runs out of credits, the index switches to a **disabled** state instead of silently going stale. Semantic tools then answer `Semantic search disabled since <date>: <reason>`, each call retries the API once, and the index re-enables and catches up by itself as soon as a request succeeds. The session-start summary line, `npx obsidian-pkm doctor` and the server's startup log show the status, the reason and how many notes are stale. When coverage is incomplete, semantic search results end with `Semantic index: <embedded> of <total> notes embedded` (plus `; <n> chunks waiting`).
+If OpenAI rejects the key or the account runs out of credits, the index switches to a **disabled** state instead of silently going stale. `vault_semantic_search` then returns keyword results headed `Keyword results only: semantic search is unavailable (<reason>).` (or `Semantic search disabled since <date>: <reason>` when nothing matches) and `vault_suggest_links` answers with the disabled message; each call retries the API once, and the index re-enables and catches up by itself as soon as a request succeeds. The session-start summary line, `npx obsidian-pkm doctor` and the server's startup log show the status, the reason and how many notes are stale. When coverage is incomplete, semantic search results end with `Semantic index: <embedded> of <total> notes embedded` (plus `; <n> chunks waiting`).
 
 <details>
 <summary><strong>Vault Structure</strong></summary>
@@ -319,6 +319,9 @@ File layout:
 ├── markdown.js       # Dependency-free markdown parsing (frontmatter split, headings, code masking), shared with hooks
 ├── frontmatter.js    # YAML frontmatter parse/render/byte-preserving update (yaml package)
 ├── graph.js          # Wikilink resolution and BFS graph traversal
+├── links-index.js    # Stored wikilink table in the local index, refreshed by mtime and size
+├── keyword-index.js  # FTS5 word index for keyword search
+├── search-fusion.js  # Reciprocal rank fusion of vector and keyword rankings
 ├── embeddings.js     # Semantic index (OpenAI embeddings, SQLite + sqlite-vec)
 ├── chunker.js        # Splits notes into embeddable chunks with per-chunk hashes
 ├── local-paths.js    # Per-machine cache and state folders
@@ -362,7 +365,7 @@ File layout:
 
 **Knowledge creation** is template-based. `vault_write` loads templates from `05-Templates/`, substitutes Templater-compatible variables (`<% tp.date.now("YYYY-MM-DD") %>`, `<% tp.file.title %>`), and validates required frontmatter fields (`type`, `created`, `tags`). This ensures every note in your vault has consistent metadata — making it queryable, sortable, and discoverable from day one. Task notes enforce enum validation on `status` and `priority`; other types accept `project`, `deciders`, `due`, and `source`.
 
-**Knowledge discovery** works at two levels. Keyword search (`vault_search`) finds exact terms. Semantic search embeds notes using OpenAI and finds conceptually related content — so "managing overwhelm" surfaces notes about "cognitive load" even if those exact words never appear together. The semantic index watches for file changes in real time. It lives in a per-machine cache folder outside the vault; the vectors each machine computes are shared through pack files in `06-System/vault-pkm/embeddings/`, so other machines load them instead of paying for them again.
+**Knowledge discovery** works at two levels. Keyword search (`vault_search`) finds exact terms. Semantic search embeds notes using OpenAI, merges that ranking with a BM25 keyword ranking, falls back to keyword results alone when OpenAI is unavailable, and finds conceptually related content — so "managing overwhelm" surfaces notes about "cognitive load" even if those exact words never appear together. The semantic index watches for file changes in real time. It lives in a per-machine cache folder outside the vault; the vectors each machine computes are shared through pack files in `06-System/vault-pkm/embeddings/`, so other machines load them instead of paying for them again.
 
 **Knowledge connections** are maintained through Obsidian's `[[wikilink]]` graph. `vault_neighborhood` traverses links via BFS to discover related notes by proximity, while `vault_suggest_links` recommends connections you haven't made yet. `vault_move` rewrites wikilinks across the vault when you reorganize, and `vault_trash` warns about links that would break.
 
@@ -401,8 +404,8 @@ Your `VAULT_PATH` is wrong or missing. The server validates this at startup and 
 **`vault_write` says "no templates available"**
 Run `npx obsidian-pkm init` to install templates, or copy the `templates/` files from this repo into your vault's `05-Templates/` directory. The server loads templates from there at startup.
 
-**Semantic search not appearing in tool list**
-Set `VAULT_PKM_OPENAI_KEY` in `~/.claude/settings.json`. See [Enable Semantic Search](#5-enable-semantic-search-optional). Without a key, `vault_semantic_search` and `vault_suggest_links` are not listed. With a key they stay listed even while the index is disabled (for example after a quota error), so a call can re-check the API.
+**`vault_suggest_links` not appearing, or semantic search is keyword-only**
+Set `VAULT_PKM_OPENAI_KEY` in `~/.claude/settings.json`. See [Enable Semantic Search](#5-enable-semantic-search-optional). Without a key, `vault_semantic_search` is still listed but keyword-only, and `vault_suggest_links` is not listed. With a key they stay listed even while the index is disabled (for example after a quota error), so a call can re-check the API.
 
 **Server not showing up in Claude Code after install**
 Run `claude mcp list` to check. If `vault-pkm` is missing, reinstall the plugin: `claude plugin install vault-pkm@claude-community`. Then run `/vault-pkm:setup` to configure it.
@@ -411,7 +414,7 @@ Run `claude mcp list` to check. If `vault-pkm` is missing, reinstall the plugin:
 Notes written through the vault tools are reindexed right away. Other changes are picked up by the housekeeper's file watcher, but may wait for another machine's vectors first (see Shared embeddings above); the watcher (`fs.watch({ recursive: true })`, Node.js >= 20), which restarts itself up to five times after an error, and every server start catches up on anything missed. Run `npx obsidian-pkm doctor` to see the index status and how many notes are stale.
 
 **Semantic search says "disabled since …"**
-OpenAI rejected the key (HTTP 401/403) or the account has no credits left (HTTP 429 `insufficient_quota`). Fix the key or add credits. The next semantic tool call retries once; when it succeeds the index re-enables and catches up on its own.
+OpenAI rejected the key (HTTP 401/403) or the account has no credits left (HTTP 429 `insufficient_quota`); `vault_semantic_search` keeps answering with keyword results meanwhile. Fix the key or add credits. The next semantic tool call retries once; when it succeeds the index re-enables and catches up on its own.
 
 **Hidden `.lock` / `.tmp` files next to notes, or sync conflicts on them**
 Every note write briefly creates hidden files beside the note: a lock (`.<hash>.lock`, plus `.<hash>.takeover.lock` while a stale lock is being taken over) and a staging file (`.<hash>.<pid>.<rand>.tmp`). They are removed within moments, but a sync or version-control tool that does not skip dotfiles can pick them up. Ignore the patterns `.*.lock` and `.*.tmp` there (for example `(?d).*.lock` and `(?d).*.tmp` in Syncthing's `.stignore`, or `.*.lock` and `.*.tmp` in the `.gitignore` used by obsidian-git). A crashed write can leave one behind; it is safe to delete, and the plugin treats a lock older than 10 seconds as stale.

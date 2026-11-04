@@ -287,6 +287,7 @@ describe("embedding engine docs", () => {
       assert.ok(readme.includes(needle), `README.md must mention ${needle}`);
     }
     assert.doesNotMatch(readme, /hidden entirely/);
+    assert.doesNotMatch(readme, /`vault_semantic_search` and `vault_suggest_links` are not listed/);
     assert.doesNotMatch(readme, /text-embedding-3-large/);
   });
 
@@ -295,6 +296,11 @@ describe("embedding engine docs", () => {
     assert.doesNotMatch(claude, /Index stored at `\$VAULT_PATH\/\.obsidian\/semantic-index\.db`/);
     assert.doesNotMatch(claude, /text-embedding-3-large/);
     assert.match(claude, /text-embedding-3-small/);
+    assert.doesNotMatch(claude, /tool is hidden from tool list when not set/);
+    assert.doesNotMatch(claude, /no persistent state/);
+    for (const mod of ["keyword-index.js", "search-fusion.js", "links-index.js"]) {
+      assert.ok(claude.includes(mod), `CLAUDE.md must mention ${mod}`);
+    }
     assert.doesNotMatch(claude, /\$VAULT_PATH\/\.obsidian\/activity-log\.db/);
   });
 
