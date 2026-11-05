@@ -72,14 +72,20 @@ describe("routing table", () => {
 describe("semantic score scale", () => {
   it("is stated in the vault_semantic_search description and repeated in no skill", async () => {
     const tool = createToolsList("", [], true).find((t) => t.name === "vault_semantic_search");
-    assert.match(tool.description, /text-embedding-3-large/);
-    assert.match(tool.description, /0\.55/);
-    assert.match(tool.description, /0\.7/);
+    assert.match(tool.description, /text-embedding-3-small/);
+    assert.doesNotMatch(tool.description, /text-embedding-3-large/);
+    assert.match(tool.description, /0\.5 or above/);
     assert.ok(/^[\x20-\x7e]*$/.test(tool.description), "description must be ASCII");
 
     for (const skill of await fs.readdir(path.join(ROOT, "skills"))) {
       const text = await fs.readFile(path.join(ROOT, "skills", skill, "SKILL.md"), "utf8");
       assert.ok(!/text-embedding-3-large|compresses hard/.test(text), `${skill} repeats the score scale`);
+    }
+
+    for (const skill of ["add-task", "pkm-session-end", "pkm-write"]) {
+      const text = await fs.readFile(path.join(ROOT, "skills", skill, "SKILL.md"), "utf8");
+      assert.match(text, /0\.5/, `${skill} states the 0.5 threshold`);
+      assert.doesNotMatch(text, /0\.[0-46-9]\d* (?:or above|hit)|(?:>|>=|\u2265) ?0\.[0-46-9]/, `${skill} states another threshold`);
     }
   });
 });

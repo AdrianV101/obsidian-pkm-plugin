@@ -404,7 +404,7 @@ Pass custom <%...%> variables via the 'variables' parameter.` + LINK_FORMAT_NOTE
 
   tools.push({
     name: "vault_semantic_search",
-    description: (hasSemanticIndex ? "" : KEYWORD_ONLY_NOTE) + "Search the vault using semantic similarity. Finds conceptually related notes even when they use different words. Without VAULT_PKM_OPENAI_KEY, or while OpenAI is unavailable, it returns keyword results only, with a line saying so. Score scale: embeddings are text-embedding-3-large cosine similarity, which compresses hard. Even a verbatim title or heading of an existing note scores about 0.55-0.65 against that note, and scores above 0.7 are essentially never seen. On-topic notes typically land at 0.45-0.65, and tangential notes sharing surface tokens often score 0.40-0.45, so absolute scores cannot separate relevant from tangential: read the top hits and judge." + LINK_FORMAT_NOTE,
+    description: (hasSemanticIndex ? "" : KEYWORD_ONLY_NOTE) + "Search the vault using semantic similarity. Finds conceptually related notes even when they use different words. Without VAULT_PKM_OPENAI_KEY, or while OpenAI is unavailable, it returns keyword results only, with a line saying so. Score scale: embeddings are text-embedding-3-small cosine similarity, which compresses. A note's own title usually scores about 0.50-0.70 against that note, notes on the same topic usually 0.48-0.61, and distinct notes in the same area often 0.46-0.56, so scores overlap and absolute scores cannot separate relevant from tangential: read the top hits and judge. A hit scoring 0.5 or above is worth reading as a possible duplicate." + LINK_FORMAT_NOTE,
     inputSchema: {
       type: "object",
       properties: {
