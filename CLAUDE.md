@@ -86,7 +86,7 @@ Finds conceptually related notes even when they use different terminology. For e
 - Uses OpenAI `text-embedding-3-large` (3072 dimensions)
 - Index stored at `$VAULT_PATH/.obsidian/semantic-index.db` (SQLite + sqlite-vec)
 - Write tools notify the index directly (`notifyChanged`/`notifyRemoved`/`notifyMoved`); a background `fs.watch` (restarted with backoff after errors) catches other changes; startup sync catches changes made while the server was stopped
-- API errors are classified (`EmbeddingError.kind`): auth and quota failures put the index into a disabled state persisted in `.obsidian/semantic-stats.json` (`status`, `reason`, `since`, `last_success_at`, `stale_files`); semantic tool calls probe once and the index re-enables on success; rate limits and transient errors are retried up to 3 times
+- API errors are classified (`EmbeddingError.kind`): auth and quota failures put the index into a disabled state persisted in `.obsidian/semantic-stats.json` (`status`, `reason`, `since`, `last_success_at`, `stale_files`); startup and each semantic tool call probe once, and the index re-enables on success; rate limits and transient errors are retried up to 3 times
 - Reindexes of one note are serialized, and the content hash is re-checked inside the store transaction
 - Chunking: whole-note for short notes, heading-based (`##`) splits for notes > ~2000 tokens
 - Params: `query` (required), `limit`, `folder`, `threshold` (0-1 similarity score), `anchor` (optional path for graph-distance weighting), `graph_weight` (0-1, default: 0.3)
