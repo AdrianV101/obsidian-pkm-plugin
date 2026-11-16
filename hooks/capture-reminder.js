@@ -1,17 +1,22 @@
 #!/usr/bin/env node
 
 // PostToolUse(Bash) hook: after a successful `gh pr create`, ask Claude to
-// dispatch pkm-capture. The hooks.json `if` filter is best-effort (Claude Code
-// runs the hook anyway when it cannot parse the command), so this script makes
-// the authoritative decision. It runs from the plugin cache without
-// node_modules, so it may only import node: builtins.
+// dispatch pkm-capture, on opus for a large PR and sonnet otherwise. The
+// hooks.json `if` filter is best-effort (Claude Code runs the hook anyway when
+// it cannot parse the command), so this script makes the authoritative
+// decision. It runs from the plugin cache without node_modules, so it may only
+// import node: builtins.
 
+import { execFile } from "node:child_process";
 import { realpathSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const PR_URL_RE = /https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/\d+/;
 const ASSIGNMENT_RE = /^[A-Za-z_][A-Za-z0-9_]*=/;
+const LARGE_PR_LINES = 1000;
+// Leaves room inside the 10 s hooks.json timeout, so a hung gh still gets a reminder out.
+const GH_TIMEOUT_MS = 5000;
 
 /**
  * Split a shell command into simple commands on `&&`, `||`, `;`, `|` and
@@ -160,11 +165,41 @@ export function extractPrUrl(toolResponse) {
 }
 
 /**
- * Hook output for a PostToolUse event, or null when no reminder is due.
- * @param {unknown} hookInput - parsed hook stdin
- * @returns {{ hookSpecificOutput: { hookEventName: "PostToolUse", additionalContext: string } } | null}
+ * Lines added and removed by the pull request, from `gh pr view`; null when gh
+ * is missing, fails, times out or prints anything but integer counts.
+ * @param {string} prUrl
+ * @returns {Promise<{ additions: number, deletions: number } | null>}
  */
-export function buildReminder(hookInput) {
+export function readPrSize(prUrl) {
+  return new Promise((resolve) => {
+    execFile("gh", ["pr", "view", prUrl, "--json", "additions,deletions"], { timeout: GH_TIMEOUT_MS }, (err, stdout) => {
+      if (err) return resolve(null);
+      try {
+        const { additions, deletions } = JSON.parse(stdout);
+        resolve(Number.isInteger(additions) && Number.isInteger(deletions) ? { additions, deletions } : null);
+      } catch {
+        resolve(null);
+      }
+    });
+  });
+}
+
+/**
+ * The pkm-capture model for a PR of this size; an unknown size gets sonnet.
+ * @param {{ additions: number, deletions: number } | null} size
+ * @returns {"opus" | "sonnet"}
+ */
+export function captureModel(size) {
+  return size && size.additions + size.deletions > LARGE_PR_LINES ? "opus" : "sonnet";
+}
+
+/**
+ * Hook output for a PostToolUse event, or null when no reminder is due. The PR
+ * size is looked up only once a reminder is due.
+ * @param {unknown} hookInput - parsed hook stdin
+ * @returns {Promise<{ hookSpecificOutput: { hookEventName: "PostToolUse", additionalContext: string } } | null>}
+ */
+export async function buildReminder(hookInput) {
   if (!hookInput || typeof hookInput !== "object") return null;
   const input = /** @type {Record<string, any>} */ (hookInput);
   if (input.tool_name !== "Bash") return null;
@@ -173,12 +208,13 @@ export function buildReminder(hookInput) {
   if (!isPrCreateCommand(input.tool_input?.command)) return null;
   const prUrl = extractPrUrl(input.tool_response);
   if (!prUrl) return null;
+  const model = captureModel(await readPrSize(prUrl));
 
   return {
     hookSpecificOutput: {
       hookEventName: "PostToolUse",
       additionalContext:
-        `A pull request was just created (${prUrl}). Dispatch the pkm-capture agent in the background now and include the PR URL in its prompt.`,
+        `A pull request was just created (${prUrl}). Dispatch the pkm-capture agent in the background now with model "${model}", and include the PR URL in its prompt.`,
     },
   };
 }
@@ -192,7 +228,7 @@ async function main() {
   } catch {
     return;
   }
-  const output = buildReminder(input);
+  const output = await buildReminder(input);
   if (output) process.stdout.write(JSON.stringify(output) + "\n");
 }
 
