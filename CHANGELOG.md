@@ -6,8 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [4.0.0] - 2026-11-16
+
 ### Added
-- **Per-session devlog notes.** Each session writes to its own note, `YYYY-MM-DD HHmm <Title>.md`, in `<project>/development/devlog/`; every capture adds one section to it. `devlog.md` becomes a hub: an embedded Obsidian Bases table of that folder, newest first. The capture hook's context has a new `Devlog:` line naming the note to add to or create, and `vault_write` accepts `frontmatter.session`. The capture creates session notes from the `devlog-session` template that the server bundles, and the plugin starts the server with `npx obsidian-pkm@^3`, so per-session capture works with the next npm release of the server, or sooner with a `devlog-session` template in `05-Templates/`.
+- **Per-session devlog notes.** Each session writes to its own note, `YYYY-MM-DD HHmm <Title>.md`, in `<project>/development/devlog/`; every capture adds one section to it. `devlog.md` becomes a hub: an embedded Obsidian Bases table of that folder, newest first. The capture hook's context has a new `Devlog:` line naming the note to add to or create, and `vault_write` accepts `frontmatter.session`. The capture creates session notes from the `devlog-session` template that the server bundles; a `devlog-session` template in `05-Templates/` takes precedence.
 - **`obsidian-pkm migrate-devlog <project> [--apply]` and `/vault-pkm:migrate-devlog`.** Split a single-file `devlog.md` into one note per day (`YYYY-MM-DD <Project> devlog.md`), move the original to `.trash/`, and turn `devlog.md` into the hub; text that is not an entry is kept under `## Kept from the old devlog`. It previews by default, restores the starting state if a step fails, and exits 0 (done, preview or nothing to do), 1 (blocker or failure) or 2 (usage error). Upgrade the plugin on every device that uses the vault before migrating.
 - **Session start tells Claude which upgrade steps are left.** Three things a 3.x setup leaves behind are checked when a session starts or is cleared:
   - an old `05-Templates/devlog.md`;
@@ -29,6 +31,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **`obsidian-pkm doctor` shows the project** the current folder resolves to and how it was found, or a warning with the reason when it is not linked.
 
 ### Changed
+- **The plugin starts the server with `npx -y obsidian-pkm@^4`** (it was `^3`), so the plugin and the 4.x server it relies on update together.
 - **`obsidian-pkm doctor` lists each upgrade step** as done, left or dismissed on this device, with the command that finishes it. Its warning about an old devlog template moved into that list.
 - **Session start loads the index, up to 10 open tasks and the 10 newest devlog items** (session notes, migrated day notes, or the entries of an unmigrated `devlog.md`) within 9,500 characters. Open tasks are the `active` and `pending` notes in `<project>/tasks/`, one line each with file name, status, priority and due date (they used to carry two lines of description), ordered active first, then by priority and earliest due date; a `+N more` line names the `vault_query` that lists the rest. The status line reports `<N> devlog items` and `<N> open tasks`.
 - **Capture writes one section per capture into the session's own devlog note** instead of appending to `devlog.md`; the `devlog` template is now the hub. When upgrading: a vault set up with `init` before this keeps its old `05-Templates/devlog.md`, which wins over the bundled hub template, so a missing `devlog.md` would be created without its table. Delete that file (the bundled hub template then applies) or replace it with the package's `templates/devlog.md`; `obsidian-pkm doctor` warns while the old one is there.
@@ -587,7 +590,12 @@ Existing users installed from the personal marketplace:
 - Atomic file creation in `vault_write` (`wx` flag) prevents race conditions
 - Error messages sanitized to prevent leaking absolute vault paths
 
-[Unreleased]: https://github.com/AdrianV101/obsidian-pkm-plugin/compare/v3.7.0...HEAD
+[Unreleased]: https://github.com/AdrianV101/obsidian-pkm-plugin/compare/v4.0.0...HEAD
+[4.0.0]: https://github.com/AdrianV101/obsidian-pkm-plugin/compare/v3.10.1...v4.0.0
+[3.10.1]: https://github.com/AdrianV101/obsidian-pkm-plugin/compare/v3.10.0...v3.10.1
+[3.10.0]: https://github.com/AdrianV101/obsidian-pkm-plugin/compare/v3.9.0...v3.10.0
+[3.9.0]: https://github.com/AdrianV101/obsidian-pkm-plugin/compare/v3.8.0...v3.9.0
+[3.8.0]: https://github.com/AdrianV101/obsidian-pkm-plugin/compare/v3.7.0...v3.8.0
 [3.7.0]: https://github.com/AdrianV101/obsidian-pkm-plugin/compare/v3.5.1...v3.7.0
 [3.5.1]: https://github.com/AdrianV101/obsidian-pkm-plugin/compare/v3.5.0...v3.5.1
 [3.5.0]: https://github.com/AdrianV101/obsidian-pkm-plugin/compare/v3.4.0...v3.5.0
