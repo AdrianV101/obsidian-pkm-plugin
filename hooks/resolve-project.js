@@ -291,6 +291,22 @@ export async function resolveProject(cwd, vaultPath, { git = "git", timeoutMs = 
 }
 
 /**
+ * Folders whose CLAUDE files apply to cwd, nearest first: the list the annotation lookup reads.
+ *
+ * @param {string} cwd
+ * @param {{ git?: string, timeoutMs?: number, home?: string }} [options]
+ * @returns {Promise<{ dirs: string[], repoRoot: string|null }>} repoRoot: the main checkout's root; null outside git
+ */
+export async function claudeFileDirs(cwd, { git = "git", timeoutMs = GIT_TIMEOUT_MS, home = os.homedir() } = {}) {
+  const [facts, start, homeDir] = await Promise.all([
+    gitFacts(cwd, git, timeoutMs),
+    canonical(cwd),
+    home ? canonical(home) : null,
+  ]);
+  return { dirs: annotationDirs(start, facts, homeDir), repoRoot: facts ? facts.mainRoot : null };
+}
+
+/**
  * How a resolution was found, for user-facing summaries; "" when unresolved.
  *
  * @param {ProjectResolution} resolution

@@ -5,6 +5,9 @@ import fs from "fs/promises";
 import path from "path";
 import os from "os";
 import { makeRepo, makeProject } from "./git-fixture.js";
+import { addDismissal, dismissalFile } from "../upgrade-dismissals.js";
+import { readPackageSpec, cliCommand } from "../upgrade-checks.js";
+import { CONTEXT_BUDGET } from "../hooks/load-context.js";
 
 const SCRIPT = path.join(import.meta.dirname, "..", "hooks", "session-start.js");
 // The hook reads ~/.claude/settings.json. A test's fake HOME is passed as USERPROFILE too (Windows
@@ -474,5 +477,138 @@ describe("session-start.js project resolution output", () => {
       const { stdout, stderr } = await run({ cwd });
       assert.ok(!/s3cr3t|deploy:/.test(stdout + stderr), `${cwd}: ${stdout}${stderr}`);
     }
+  });
+});
+
+describe("session-start.js upgrade steps", () => {
+  const HEADING = "### vault-pkm: upgrade steps left";
+  const OLD_TEMPLATE = "---\ntype: devlog\n---\n# Development Log\n\n## Sessions\n";
+  const OLD_DEVLOG = "---\ntype: devlog\n---\n# Development Log\n\n### 2026-10-27 09:14 First\n- a\n";
+  let tmpDir, vaultPath, cwdDir;
+
+  beforeEach(async () => {
+    tmpDir = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "pkm-ss-upgrade-")));
+    vaultPath = path.join(tmpDir, "vault");
+    await makeProject(vaultPath, "MyApp");
+    await fs.mkdir(path.join(vaultPath, "05-Templates"), { recursive: true });
+    await fs.writeFile(path.join(vaultPath, "05-Templates", "devlog.md"), OLD_TEMPLATE);
+    cwdDir = path.join(tmpDir, "work");
+    await fs.mkdir(cwdDir);
+    await fs.writeFile(path.join(cwdDir, "CLAUDE.md"), "# PKM: 01-Projects/MyApp\n");
+  });
+
+  afterEach(async () => {
+    await fs.rm(tmpDir, { recursive: true, force: true });
+  });
+
+  async function run(input, script = SCRIPT) {
+    const result = await runScript([script], { ...process.env, VAULT_PATH: vaultPath, HOME: tmpDir }, JSON.stringify(input));
+    return { ...result, json: result.stdout ? JSON.parse(result.stdout) : null };
+  }
+
+  // The block states the command prefix once and writes each command as `obsidian-pkm <args>`.
+  const TEMPLATE_DISMISS = "`obsidian-pkm upgrade dismiss devlog-template`";
+  const prefixOf = async () => cliCommand({ vaultPath, packageSpec: await readPackageSpec() });
+
+  it("appends the block only when a project resolved and the session starts or is cleared", async () => {
+    for (const source of ["startup", "clear", undefined]) {
+      const { json, code } = await run(source === undefined ? { cwd: cwdDir } : { cwd: cwdDir, source });
+      assert.equal(code, 0);
+      const [context, block] = json.hookSpecificOutput.additionalContext.split(`\n\n${HEADING}`);
+      assert.ok(context.startsWith("## PKM Project Context: 01-Projects/MyApp"), String(source));
+      assert.ok(block !== undefined && block.includes(TEMPLATE_DISMISS), String(source));
+      assert.ok(block.includes(`\`${await prefixOf()} <args>\``), block);
+      assert.doesNotMatch(json.systemMessage, /upgrade|devlog-template|devlog-migration|claude-md-section/i);
+    }
+    for (const source of ["compact", "resume"]) {
+      const { json } = await run({ cwd: cwdDir, source });
+      assert.ok(!json.hookSpecificOutput.additionalContext.includes(HEADING), source);
+    }
+
+    const unlinked = await makeRepo(path.join(tmpDir, "unlinked"));
+    const { stdout } = await run({ cwd: unlinked, source: "startup" });
+    assert.deepEqual(JSON.parse(stdout), {
+      systemMessage: "vault-pkm: this repo isn't linked to a vault project. Run /vault-pkm:init-project to link it.",
+    });
+  });
+
+  it("leaves out steps dismissed on this device, and the block once every step is", async () => {
+    await fs.mkdir(path.join(vaultPath, "01-Projects", "MyApp", "development"), { recursive: true });
+    await fs.writeFile(path.join(vaultPath, "01-Projects", "MyApp", "development", "devlog.md"), OLD_DEVLOG);
+    await addDismissal({ step: "devlog-template", vault: vaultPath, target: null }, { home: tmpDir });
+    const partly = (await run({ cwd: cwdDir, source: "startup" })).json.hookSpecificOutput.additionalContext;
+    assert.ok(partly.includes(HEADING));
+    assert.ok(partly.includes("upgrade dismiss devlog-migration"));
+    assert.ok(!partly.includes(TEMPLATE_DISMISS));
+
+    await addDismissal({ step: "devlog-migration", vault: vaultPath, target: "01-Projects/MyApp" }, { home: tmpDir });
+    const context = (await run({ cwd: cwdDir, source: "startup" })).json.hookSpecificOutput.additionalContext;
+    assert.ok(context.startsWith("## PKM Project Context: 01-Projects/MyApp"));
+    assert.ok(!context.includes(HEADING));
+  });
+
+  it("still loads the project context when a check, the dismissal file or plugin.json fails", async () => {
+    await fs.mkdir(path.dirname(dismissalFile(tmpDir)), { recursive: true });
+    await fs.writeFile(dismissalFile(tmpDir), "not json");
+    const corrupt = await run({ cwd: cwdDir, source: "startup" });
+    assert.equal(corrupt.code, 0);
+    assert.ok(corrupt.json.hookSpecificOutput.additionalContext.includes(TEMPLATE_DISMISS));
+    assert.match(corrupt.stderr, /upgrade-dismissals\.json/);
+    await fs.rm(dismissalFile(tmpDir));
+
+    await fs.mkdir(path.join(vaultPath, "01-Projects", "MyApp", "development", "devlog.md"), { recursive: true });
+    const failing = await run({ cwd: cwdDir, source: "startup" });
+    assert.equal(failing.code, 0);
+    const context = failing.json.hookSpecificOutput.additionalContext;
+    assert.ok(context.startsWith("## PKM Project Context: 01-Projects/MyApp"));
+    assert.ok(context.includes(TEMPLATE_DISMISS));
+    assert.ok(!context.includes("upgrade dismiss devlog-migration"));
+    assert.match(failing.stderr, /devlog-migration: /);
+
+    const root = path.join(tmpDir, "plugin root");
+    const repo = path.join(import.meta.dirname, "..");
+    await fs.mkdir(root);
+    await fs.cp(path.join(repo, "hooks"), path.join(root, "hooks"), { recursive: true });
+    for (const name of await fs.readdir(repo)) {
+      if (name.endsWith(".js") || name === "package.json") await fs.copyFile(path.join(repo, name), path.join(root, name));
+    }
+    const noManifest = await run({ cwd: cwdDir, source: "startup" }, path.join(root, "hooks", "session-start.js"));
+    assert.equal(noManifest.code, 0, noManifest.stderr);
+    assert.ok(noManifest.json.hookSpecificOutput.additionalContext.startsWith("## PKM Project Context: 01-Projects/MyApp"));
+    assert.ok(!noManifest.json.hookSpecificOutput.additionalContext.includes(HEADING));
+    assert.match(noManifest.stderr, /plugin\.json/);
+  });
+
+  it("keeps the whole context within Claude Code's 10,000 characters with a full devlog and a full block", async () => {
+    vaultPath = path.join(tmpDir, "v".repeat(120 - tmpDir.length - 1));
+    await fs.rename(path.join(tmpDir, "vault"), vaultPath);
+    const devlogDir = path.join(vaultPath, "01-Projects", "MyApp", "development", "devlog");
+    await fs.mkdir(devlogDir, { recursive: true });
+    for (let i = 0; i < 10; i++) {
+      const day = `2026-10-${String(10 + i).padStart(2, "0")}`;
+      await fs.writeFile(
+        path.join(devlogDir, `${day} 0900 Work${i}.md`),
+        `## ${day} 09:00 Work\n\n### Summary\n${"Long summary text. ".repeat(110)}\n\n### Next steps\nMore.\n`,
+      );
+    }
+    await fs.writeFile(path.join(vaultPath, "01-Projects", "MyApp", "development", "devlog.md"), OLD_DEVLOG);
+    for (const name of ["Alpha", "Beta", "Gamma"]) {
+      await fs.mkdir(path.join(vaultPath, "01-Projects", name, "development"), { recursive: true });
+      await fs.writeFile(path.join(vaultPath, "01-Projects", name, "development", "devlog.md"), OLD_DEVLOG);
+    }
+    await fs.writeFile(path.join(cwdDir, "CLAUDE.md"), "# PKM: 01-Projects/MyApp\n\n## PKM Integration\n\n- old\n");
+
+    const { json } = await run({ cwd: cwdDir, source: "startup" });
+    const all = json.hookSpecificOutput.additionalContext;
+    const at = all.indexOf(`\n\n${HEADING}`);
+    assert.ok(at > 0, "no block");
+    const block = all.slice(at + 2);
+    assert.ok(all.length <= 10000, `${all.length} chars`);
+    assert.ok(block.length <= 1200, `block ${block.length} chars`);
+    assert.ok(at <= CONTEXT_BUDGET - block.length - 2, `context ${at} chars, block ${block.length}`);
+    assert.ok(at > CONTEXT_BUDGET - 1200 - 2 - 500, "the devlog should fill most of the budget");
+    // Long vault paths (iCloud vaults run past 70 characters) must not push a required step out.
+    assert.ok(block.includes("upgrade dismiss devlog-template"), block);
+    assert.ok(block.includes("upgrade dismiss devlog-migration 01-Projects/MyApp"), block);
   });
 });

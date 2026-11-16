@@ -5,6 +5,7 @@ import fs from "fs/promises";
 import path from "path";
 import os from "os";
 import { makeRepo, makeProject } from "./git-fixture.js";
+import { addDismissal, dismissalFile } from "../upgrade-dismissals.js";
 
 const CLI = path.join(import.meta.dirname, "..", "cli.js");
 const KEY_VARS = ["VAULT_PKM_OPENAI_KEY", "OBSIDIAN_PKM_OPENAI_KEY", "OPENAI_API_KEY"];
@@ -214,33 +215,6 @@ describe("doctor command", () => {
     assert.ok(!/\d+ templates? in 05-Templates/.test(stdout));
   });
 
-  it("warns about a vault devlog template without the hub's base block, and only then", async () => {
-    // The devlog template `init` installed before devlog.md became a hub.
-    const OLD_TEMPLATE = "---\ntype: devlog\nproject: \ncreated: <% tp.date.now(\"YYYY-MM-DD\") %>\ntags:\n  - devlog\n---\n\n" +
-      "# Development Log\n\nThis log tracks development progress, decisions made, and lessons learned.\n\n## Sessions\n";
-    const hub = await fs.readFile(path.join(import.meta.dirname, "..", "templates", "devlog.md"), "utf-8");
-    const WARNING =
-      "⚠ 05-Templates/devlog.md is an old devlog template without the hub's ```base table; " +
-      "delete it to use the bundled hub template, or replace it with the package's templates/devlog.md";
-    const cases = [
-      { name: "old single-file template", devlog: OLD_TEMPLATE, warns: true },
-      { name: "hub template", devlog: hub, warns: false },
-      { name: "hub template with CRLF", devlog: hub.replace(/\r?\n/g, "\r\n"), warns: false },
-      { name: "no devlog template", devlog: null, warns: false },
-    ];
-    for (const c of cases) {
-      const vaultPath = path.join(tmpDir, c.name.replace(/\W+/g, "-"));
-      const templatesDir = path.join(vaultPath, "05-Templates");
-      await fs.mkdir(templatesDir, { recursive: true });
-      await fs.writeFile(path.join(templatesDir, "note.md"), "---\ntype: note\ncreated: <% tp.date.now(\"YYYY-MM-DD\") %>\ntags: []\n---\n");
-      if (c.devlog !== null) await fs.writeFile(path.join(templatesDir, "devlog.md"), c.devlog);
-
-      const { stdout } = await runDoctor({ ...process.env, VAULT_PATH: vaultPath });
-      const lines = stdout.split(/\r?\n/).filter((l) => l.includes("05-Templates/devlog.md"));
-      assert.deepEqual(lines.map((l) => l.trim()), c.warns ? [WARNING] : [], `${c.name}\n${stdout}`);
-    }
-  });
-
   it("warns when VAULT_PKM_OPENAI_KEY is not set", async () => {
     const vaultPath = path.join(tmpDir, "vault");
     await fs.mkdir(vaultPath, { recursive: true });
@@ -407,5 +381,125 @@ describe("doctor project line", () => {
     const { stdout } = await runDoctor({ ...process.env, VAULT_PATH: path.join(tmpDir, "nonexistent") }, dir);
     assert.ok(stdout.includes("Vault directory does not exist"), stdout);
     assert.ok(!stdout.includes("Project for"), stdout);
+  });
+});
+
+describe("doctor upgrade section", () => {
+  const OLD_TEMPLATE = "---\ntype: devlog\n---\n\n# Development Log\n\nThis log tracks development progress, decisions made, and lessons learned.\n\n## Sessions\n";
+  const OLD_DEVLOG = "---\ntype: devlog\n---\n# Development Log\n\n### 2026-10-27 09:14 First\n- a\n";
+  const SECTION = "# MyApp\n\n## PKM Integration\n\n- Vault project: 01-Projects/MyApp\n";
+  let tmpDir, vaultPath, repo, hub;
+
+  beforeEach(async () => {
+    tmpDir = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "pkm-doctor-upgrade-")));
+    fakeHome = path.join(tmpDir, "home");
+    await fs.mkdir(fakeHome);
+    vaultPath = path.join(tmpDir, "vault");
+    await makeProject(vaultPath, "MyApp");
+    await fs.mkdir(path.join(vaultPath, "01-Projects", "MyApp", "development"), { recursive: true });
+    await fs.mkdir(path.join(vaultPath, "05-Templates"), { recursive: true });
+    repo = await makeRepo(path.join(tmpDir, "MyApp"));
+    hub = await fs.readFile(path.join(import.meta.dirname, "..", "templates", "devlog.md"), "utf-8");
+  });
+
+  afterEach(async () => {
+    await fs.rm(tmpDir, { recursive: true, force: true });
+  });
+
+  const write = (rel, content) => fs.writeFile(path.join(vaultPath, ...rel.split("/")), content);
+  const upgradeLines = (stdout) => stdout.split(/\r?\n/).map((l) => l.trim()).filter((l) => /^. Upgrade: /.test(l));
+  const warningCount = (stdout) => Number(/(\d+) warnings?/.exec(stdout)?.[1] ?? 0);
+  const run = (cwd = repo) => runDoctor({ ...process.env, VAULT_PATH: vaultPath }, cwd);
+
+  async function leaveAllSteps() {
+    await write("05-Templates/devlog.md", OLD_TEMPLATE);
+    await write("01-Projects/MyApp/development/devlog.md", OLD_DEVLOG);
+    await fs.writeFile(path.join(repo, "CLAUDE.md"), SECTION);
+  }
+
+  it("gives each step one line: left as a warning with its fix, dismissed and done as passed", async () => {
+    await leaveAllSteps();
+    const left = await run();
+    const leftLines = upgradeLines(left.stdout);
+    assert.equal(leftLines.length, 3, left.stdout);
+    assert.match(leftLines[0], /^⚠ Upgrade: devlog-template left\. 05-Templates\/devlog\.md /);
+    assert.ok(leftLines[1].startsWith("⚠ Upgrade: devlog-migration left for 01-Projects/MyApp. "), leftLines[1]);
+    assert.ok(leftLines[1].includes("migrate-devlog 01-Projects/MyApp"), leftLines[1]);
+    assert.ok(leftLines[2].startsWith(`⚠ Upgrade: claude-md-section left for ${repo}. `), leftLines[2]);
+
+    await addDismissal({ step: "devlog-template", vault: vaultPath, target: null }, { home: fakeHome });
+    await addDismissal({ step: "devlog-migration", vault: vaultPath, target: "01-Projects/MyApp" }, { home: fakeHome });
+    await addDismissal({ step: "claude-md-section", vault: vaultPath, target: repo }, { home: fakeHome });
+    assert.deepEqual(upgradeLines((await run()).stdout), [
+      "✓ Upgrade: devlog-template dismissed on this device (undo: obsidian-pkm upgrade reset)",
+      "✓ Upgrade: devlog-migration dismissed on this device for 01-Projects/MyApp (undo: obsidian-pkm upgrade reset)",
+      `✓ Upgrade: claude-md-section dismissed on this device for ${repo} (undo: obsidian-pkm upgrade reset)`,
+    ]);
+
+    await fs.rm(dismissalFile(fakeHome));
+    await write("05-Templates/devlog.md", hub);
+    await write("01-Projects/MyApp/development/devlog.md", hub);
+    await fs.writeFile(path.join(repo, "CLAUDE.md"), "# MyApp\n");
+    const done = await run();
+    assert.deepEqual(upgradeLines(done.stdout), [
+      "✓ Upgrade: devlog-template done",
+      "✓ Upgrade: devlog-migration done",
+      "✓ Upgrade: claude-md-section done",
+    ]);
+    assert.equal(warningCount(left.stdout) - warningCount(done.stdout), 3, `${left.stdout}\n${done.stdout}`);
+  });
+
+  it("names the other projects whose devlog was never migrated in one warning", async () => {
+    for (const name of ["Alpha", "Beta"]) {
+      await fs.mkdir(path.join(vaultPath, "01-Projects", name, "development"), { recursive: true });
+      await write(`01-Projects/${name}/development/devlog.md`, OLD_DEVLOG);
+    }
+    const others = upgradeLines((await run()).stdout).filter((l) => l.includes("other project"));
+    assert.equal(others.length, 1);
+    assert.ok(others[0].startsWith("⚠ Upgrade: devlog-migration left in 2 other projects: 01-Projects/Alpha, 01-Projects/Beta. "), others[0]);
+    assert.ok(others[0].includes("migrate-devlog <project path>"), others[0]);
+  });
+
+  it("reports an old devlog template once, in the upgrade section only", async () => {
+    const rows = [
+      [OLD_TEMPLATE, true],
+      [hub, false],
+      [hub.replace(/\r?\n/g, "\r\n"), false],
+      [null, false],
+    ];
+    for (const [content, warns] of rows) {
+      await fs.rm(path.join(vaultPath, "05-Templates", "devlog.md"), { force: true });
+      if (content !== null) await write("05-Templates/devlog.md", content);
+      const { stdout } = await run();
+      const mentions = stdout.split(/\r?\n/).map((l) => l.trim()).filter((l) => l.includes("05-Templates/devlog.md"));
+      assert.equal(mentions.length, warns ? 1 : 0, stdout);
+      if (warns) assert.ok(mentions[0].startsWith("⚠ Upgrade: devlog-template left. "), mentions[0]);
+    }
+  });
+
+  it("skips the project step outside a project, and the whole section without a vault", async () => {
+    const plain = path.join(tmpDir, "plain");
+    await fs.mkdir(plain);
+    const outside = upgradeLines((await run(plain)).stdout);
+    assert.deepEqual(outside.map((l) => l.split(" ")[2]), ["devlog-template", "claude-md-section"], outside.join("\n"));
+
+    const missing = await runDoctor({ ...process.env, VAULT_PATH: path.join(tmpDir, "nonexistent") }, repo);
+    assert.deepEqual(upgradeLines(missing.stdout), []);
+  });
+
+  it("warns about an unreadable dismissal file and a failing check, and still finishes", async () => {
+    await leaveAllSteps();
+    await fs.mkdir(path.dirname(dismissalFile(fakeHome)), { recursive: true });
+    await fs.writeFile(dismissalFile(fakeHome), "not json");
+    await fs.rm(path.join(vaultPath, "01-Projects", "MyApp", "development", "devlog.md"));
+    await fs.mkdir(path.join(vaultPath, "01-Projects", "MyApp", "development", "devlog.md"));
+
+    const { stdout, code } = await run();
+    const lines = upgradeLines(stdout);
+    assert.ok(lines.includes(`⚠ Upgrade: could not read ${dismissalFile(fakeHome)}: not valid JSON; no step counts as dismissed`), lines.join("\n"));
+    assert.ok(lines.some((l) => l.startsWith("⚠ Upgrade: check failed: devlog-migration: ")), lines.join("\n"));
+    assert.ok(lines.some((l) => l.startsWith("⚠ Upgrade: devlog-template left. ")), lines.join("\n"));
+    assert.match(stdout, /\d+ passed/);
+    assert.equal(code, 0, stdout);
   });
 });

@@ -7,6 +7,7 @@ import { spawnSync } from "node:child_process";
 import { createToolsList } from "../tools.js";
 import { createHandlers } from "../handlers.js";
 import { extractFrontmatter } from "../utils.js";
+import { readPackageSpec } from "../upgrade-checks.js";
 
 const ROOT = path.join(import.meta.dirname, "..");
 
@@ -106,6 +107,13 @@ describe("plugin manifest contracts", () => {
     const pkg = await readJson("package.json");
     const plugin = await readJson(".claude-plugin/plugin.json");
     assert.equal(plugin.version, pkg.version);
+  });
+
+  it("the upgrade prompt reads the server's npm spec from plugin.json", async () => {
+    const plugin = await readJson(".claude-plugin/plugin.json");
+    const spec = plugin.mcpServers["vault-pkm"].args.find((arg) => /^obsidian-pkm(@\S+)?$/.test(arg));
+    assert.ok(spec, "plugin.json starts no obsidian-pkm server");
+    assert.equal(await readPackageSpec(), spec);
   });
 
   it("every ${CLAUDE_PLUGIN_ROOT} path in plugin.json and hooks/hooks.json exists", async () => {
@@ -235,9 +243,10 @@ describe("plugin manifest contracts", () => {
         await fs.mkdir(pluginRoot);
         await fs.mkdir(vault);
         await fs.cp(path.join(ROOT, "hooks"), path.join(pluginRoot, "hooks"), { recursive: true });
-        // Dependency-free modules the hooks import from the plugin root.
-        for (const file of ["markdown.js", "semantic-health.js", "devlog.js"]) {
-          await fs.copyFile(path.join(ROOT, file), path.join(pluginRoot, file));
+        // Dependency-free modules the hook imports from the plugin root.
+        const { files } = await importClosure([path.join(ROOT, "hooks", "session-start.js")]);
+        for (const rel of files.map((f) => path.relative(ROOT, f)).filter((rel) => !rel.startsWith(`hooks${path.sep}`))) {
+          await fs.copyFile(path.join(ROOT, rel), path.join(pluginRoot, rel));
         }
 
         const hooks = await readJson("hooks/hooks.json");

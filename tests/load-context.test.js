@@ -427,3 +427,25 @@ describe("loadProjectContext budgets", () => {
     });
   }
 });
+
+describe("loadProjectContext budget option", () => {
+  it("keeps the context within the budget it is given, CONTEXT_BUDGET by default; compact ignores it", async () => {
+    await write("_index.md", "---\ntype: project\n---\n\n# Big\n\n## Overview\nA test project.\n");
+    for (let i = 0; i < 10; i++) {
+      const key = `2026-10-${String(10 + i).padStart(2, "0")} 09:00`;
+      await writeSession(key, `Work${i}`, [{ key, summary: filler(`S${i}`, 1500) }]);
+    }
+
+    const counts = {};
+    for (const budget of [2000, 6000, undefined]) {
+      const { context } = await loadProjectContext(vaultPath, projectPath, budget === undefined ? {} : { budget });
+      assert.ok(context.length <= (budget ?? CONTEXT_BUDGET), `${context.length} > ${budget ?? CONTEXT_BUDGET}`);
+      assert.ok(context.startsWith(`## PKM Project Context: ${projectPath}\n`));
+      counts[budget ?? "default"] = labels(context).length;
+    }
+    assert.ok(counts[2000] <= counts[6000], JSON.stringify(counts));
+
+    const { context: compact } = await loadProjectContext(vaultPath, projectPath, { source: "compact", budget: 50 });
+    assert.ok(compact.length > 50 && compact.length <= COMPACT_BUDGET, `${compact.length}`);
+  });
+});
