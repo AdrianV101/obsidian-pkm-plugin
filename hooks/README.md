@@ -8,7 +8,7 @@ Claude Code hooks that load project context from the vault at the start of each 
 |------|-------|---------|
 | `session-start.js` | SessionStart | Loads project context from the vault at the start of each session |
 | `capture-context.js` | SubagentStart (`^vault-pkm:pkm-capture$`) | Hands pkm-capture its project, the session and a digest of the activity since the last capture |
-| `capture-reminder.js` | PostToolUse (Bash) | After a successful `gh pr create`, asks Claude to dispatch pkm-capture in the background |
+| `capture-reminder.js` | PostToolUse (Bash) | After a successful `gh pr create`, asks Claude to dispatch pkm-capture in the background, on opus for a PR over 1,000 changed lines |
 
 ### How it works
 
@@ -27,7 +27,7 @@ Claude Code hooks that load project context from the vault at the start of each 
   1. Some simple command in the Bash input is a real `gh pr create` invocation. The input is split on `&&`, `||`, `;`, `|` and newlines outside quotes, and leading `VAR=value` assignments are skipped.
   2. The command's stdout contains a `https://github.com/<owner>/<repo>/pull/<n>` URL.
 
-  A mention such as `grep "gh pr create" notes.md`, or a create that printed no PR URL, produces no output. When it fires, it returns a one-line `additionalContext` asking Claude to dispatch pkm-capture in the background with the PR URL in its prompt. It stays silent inside subagents (they can't dispatch agents), so a PR a subagent creates is left to the main conversation. It is plain Node with no dependencies (no `jq`) and no AI invocation.
+  A mention such as `grep "gh pr create" notes.md`, or a create that printed no PR URL, produces no output. When it fires, it reads the PR's size with `gh pr view <url> --json additions,deletions` (5 s timeout) and returns a one-line `additionalContext` asking Claude to dispatch pkm-capture in the background with the PR URL in its prompt, with model `opus` when the PR adds and removes more than 1,000 lines and `sonnet` otherwise. A size it can't read (gh missing, failing, timing out or printing anything but integer counts) gets `sonnet`. It stays silent inside subagents (they can't dispatch agents), so a PR a subagent creates is left to the main conversation. It is plain Node with no dependencies (no `jq`) and no AI invocation; its only outside call is that `gh pr view`, made once a reminder is due.
 
 ## Setup
 

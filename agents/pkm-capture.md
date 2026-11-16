@@ -56,7 +56,7 @@ description: >-
   Research finding about a technology — reusable knowledge worth documenting.
   </commentary>
   </example>
-model: haiku
+model: sonnet
 color: green
 background: true
 disallowedTools: Write, Edit
