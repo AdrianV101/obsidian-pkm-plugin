@@ -1,7 +1,10 @@
 #!/usr/bin/env node
 
 import { resolveProject, describeVia } from "./resolve-project.js";
-import { loadProjectContext } from "./load-context.js";
+import { loadProjectContext, CONTEXT_BUDGET } from "./load-context.js";
+import { formatUpgradeBlock } from "./upgrade-block.js";
+import { checkUpgrade, readPackageSpec, cliCommand } from "../upgrade-checks.js";
+import { dismissalFile } from "../upgrade-dismissals.js";
 import { healthFromStats, describeHealth } from "../semantic-health.js";
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -32,6 +35,34 @@ function unresolvedMessage({ code, reason = "", inGitRepo }) {
   if (code === "invalid-annotation" || code === "no-vault") return `vault-pkm: ${reason.replace(/\.$/, "")}.`;
   if (!inGitRepo) return null;
   return code === "ambiguous" ? `${UNLINKED_HINT} (${reason})` : UNLINKED_HINT;
+}
+
+/** Sources after which Claude has not seen the block yet in this conversation. */
+const UPGRADE_SOURCES = new Set(["startup", "clear", undefined]);
+
+/**
+ * The block telling Claude which upgrade steps are left, or "" when none are or the checks fail.
+ * @param {string} cwd
+ * @param {string} projectPath
+ * @returns {Promise<string>}
+ */
+async function upgradeBlock(cwd, projectPath) {
+  try {
+    const packageSpec = await readPackageSpec();
+    if (!packageSpec) {
+      console.error("PKM upgrade check: no obsidian-pkm server in .claude-plugin/plugin.json; skipped");
+      return "";
+    }
+    const report = await checkUpgrade({ vaultPath: VAULT_PATH, projectPath, cwd, packageSpec });
+    for (const error of report.errors) console.error(`PKM upgrade check failed: ${error}`);
+    if (report.dismissalError) {
+      console.error(`PKM upgrade check: could not read ${dismissalFile()} (${report.dismissalError}); no step counts as dismissed`);
+    }
+    return formatUpgradeBlock(report, { doctorCommand: cliCommand({ vaultPath: VAULT_PATH, packageSpec }, "doctor") });
+  } catch (e) {
+    console.error(`PKM upgrade check failed: ${e.message}`);
+    return "";
+  }
 }
 
 async function main() {
@@ -100,9 +131,12 @@ async function main() {
     process.exit(0);
   }
 
+  const block = UPGRADE_SOURCES.has(source) ? await upgradeBlock(cwd, projectPath) : "";
+
   let context, meta;
   try {
-    ({ context, meta } = await loadProjectContext(VAULT_PATH, projectPath, { source }));
+    const budget = block ? CONTEXT_BUDGET - block.length - 2 : CONTEXT_BUDGET;
+    ({ context, meta } = await loadProjectContext(VAULT_PATH, projectPath, { source, budget }));
   } catch (e) {
     const output = {
       hookSpecificOutput: {
@@ -147,7 +181,7 @@ async function main() {
   const output = {
     hookSpecificOutput: {
       hookEventName: "SessionStart",
-      additionalContext: staleEnvWarning + context
+      additionalContext: staleEnvWarning + context + (block ? `\n\n${block}` : "")
     },
     systemMessage: msg
   };

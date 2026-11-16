@@ -91,7 +91,7 @@ export async function checkUpgrade({ vaultPath, projectPath, cwd, packageSpec, h
 
   const othersFix = otherProjects.length === 0
     ? ""
-    : `Offer to migrate them too, once every device that uses this vault runs the updated plugin: preview each with \`${cliCommand(where, "migrate-devlog")} <project path>\`, then run it again with --apply once the user agrees.`;
+    : `For each, once every device using this vault has the updated plugin: preview with \`${cliCommand(where, "migrate-devlog")} <project path>\`, then rerun it with --apply on the user's OK.`;
   return { steps, otherProjects, othersFix, dismissalError, errors };
 }
 
@@ -137,8 +137,8 @@ async function templateStep(vault, where) {
   return {
     ...step,
     state: "left",
-    summary: "05-Templates/devlog.md is the old devlog template, so a devlog.md created from it gets no hub table.",
-    fix: `Delete it so the bundled hub template applies, or, if the user customised it, replace it with ${BUNDLED_HUB} and carry their changes over.`,
+    summary: "05-Templates/devlog.md is the old devlog template, so new hubs made from it lack their table.",
+    fix: `Delete it (the bundled hub template then applies), or, if the user customised it, replace it with ${BUNDLED_HUB}.`,
   };
 }
 
@@ -159,7 +159,7 @@ async function migrationStep(vault, projectPath, where) {
     ...step,
     state: "left",
     summary: `${rel} still holds ${count} old-style ${count === 1 ? "entry" : "entries"}.`,
-    fix: `First ask whether every device that uses this vault has updated the vault-pkm plugin, since an older one keeps writing old-style entries; then preview with \`${cliCommand(where, "migrate-devlog", target)}\` and run it again with --apply once the user agrees.`,
+    fix: `Ask whether every device using this vault has the updated plugin, then preview with \`${cliCommand(where, "migrate-devlog", target)}\` and rerun it with --apply on the user's OK.`,
   };
 }
 
@@ -197,8 +197,8 @@ async function claudeMdStep(cwd, where, options) {
   return {
     ...step,
     state: "left",
-    summary: `${files.join(" and ")} ${files.length === 1 ? "has" : "have"} a "## PKM Integration" section, which the plugin's server instructions now replace.`,
-    fix: 'Offer to remove the section, from that heading to the next # or ## heading, keeping any "# PKM:" line; edit the file only if the user agrees.',
+    summary: `${files.join(" and ")} ${files.length === 1 ? "has" : "have"} a "## PKM Integration" section, which the server instructions now replace.`,
+    fix: 'Offer to remove it, from the heading to the next # or ## heading but keeping any "# PKM:" line; edit only with the user\'s OK.',
   };
 }
 

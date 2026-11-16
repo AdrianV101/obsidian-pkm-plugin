@@ -174,8 +174,8 @@ async function renderItems(candidates, room) {
 }
 
 /**
- * Session-start context for a vault project, capped at CONTEXT_BUDGET characters
- * (COMPACT_BUDGET for source "compact").
+ * Session-start context for a vault project, capped at `budget` characters (CONTEXT_BUDGET
+ * unless given; COMPACT_BUDGET for source "compact").
  * @param {string} vaultPath
  * @param {string} projectPath - vault-relative project folder, "/"-separated
  * @param {{ source?: string, budget?: number }} [opts] - source: SessionStart hook `source`
@@ -211,8 +211,8 @@ export async function loadProjectContext(vaultPath, projectPath, { source = "sta
 
   const head = [`## PKM Project Context: ${projectPath}`, indexSection, "### Recent Development Activity"]
     .filter(s => s !== null).join("\n\n") + "\n";
-  const items = await renderItems(candidates, CONTEXT_BUDGET - head.length);
+  const items = await renderItems(candidates, budget - head.length);
   meta.devlog = items.length;
   const context = head + (items.length > 0 ? items.join("\n\n") : "No devlog entries found.");
-  return { context: truncateAtLine(context, CONTEXT_BUDGET, "[truncated]"), meta };
+  return { context: truncateAtLine(context, budget, "[truncated]"), meta };
 }
