@@ -8,6 +8,20 @@ tags:
 
 # Development Log
 
-This log tracks development progress, decisions made, and lessons learned.
+Each session has its own note in the devlog folder next to this one; the table lists them newest first.
 
-## Sessions
+```base
+filters:
+  and:
+    - file.inFolder("<% devlog_folder %>")
+views:
+  - type: table
+    name: Sessions
+    order:
+      - file.name
+      - type
+      - file.mtime
+    sort:
+      - property: file.name
+        direction: DESC
+```

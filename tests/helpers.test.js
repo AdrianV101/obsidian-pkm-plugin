@@ -1,24 +1,24 @@
-import { before, describe, it } from "node:test";
+import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import fs from "fs/promises";
+import os from "node:os";
 import path from "path";
-import yaml from "js-yaml";
+import { fileURLToPath } from "node:url";
+import { extractFrontmatter, parseFrontmatterText } from "../frontmatter.js";
 import {
   resolvePath,
   matchesFilters,
   formatMetadata,
   countOccurrences,
   extractTemplateDescription,
+  loadTemplates,
   substituteTemplateVariables,
   validateFrontmatterStrict,
   extractInlineTags,
   matchesTagPattern,
-  parseHeadingLevel,
-  findSectionRange,
-  listHeadings,
-  extractTailSections,
+  findTailSections,
+  capReadOutput,
   buildBasenameMap,
-  resolveFuzzyPath,
   resolveFuzzyFolder,
   computePeek,
   formatPeek,
@@ -34,14 +34,15 @@ import {
 } from "../helpers.js";
 
 describe("resolvePath", () => {
+  // A POSIX-style root: on Windows path.resolve gives it the current drive, so expectations go through path.resolve too.
   const vault = "/home/user/vault";
 
   it("resolves a simple relative path", () => {
-    assert.equal(resolvePath("notes/hello.md", vault), path.join(vault, "notes/hello.md"));
+    assert.equal(resolvePath("notes/hello.md", vault), path.resolve(vault, "notes/hello.md"));
   });
 
   it("resolves empty string to vault root", () => {
-    assert.equal(resolvePath("", vault), vault);
+    assert.equal(resolvePath("", vault), path.resolve(vault));
   });
 
   it("throws on directory traversal with ../", () => {
@@ -59,12 +60,12 @@ describe("resolvePath", () => {
 
   it("allows nested path within vault", () => {
     const result = resolvePath("a/b/c/d.md", vault);
-    assert.equal(result, path.join(vault, "a/b/c/d.md"));
+    assert.equal(result, path.resolve(vault, "a/b/c/d.md"));
   });
 
   it("normalizes redundant separators", () => {
     const result = resolvePath("notes//hello.md", vault);
-    assert.ok(result.startsWith(vault));
+    assert.equal(result, path.resolve(vault, "notes", "hello.md"));
   });
 });
 
@@ -392,6 +393,93 @@ describe("substituteTemplateVariables", () => {
   });
 });
 
+describe("substituteTemplateVariables (YAML-safe rendering)", () => {
+  const RESEARCH = "---\ntype: research\ntopic:\nstatus: exploring\ncreated: <% tp.date.now(\"YYYY-MM-DD\") %>\ntags: [research]\n---\n# <% tp.file.title %>\n";
+  const TASK = "---\ntype: task\nstatus: pending\npriority: normal\ntags:\n  - task\n---\n# Task\n";
+
+  it("keeps a frontmatter value containing \": \" as that exact string in valid frontmatter (2026-10-13 live repro)", () => {
+    const result = substituteTemplateVariables(RESEARCH, {
+      title: "Review",
+      frontmatter: { topic: "Review fixes: release hygiene + correctness", tags: ["review"] },
+    });
+    assert.equal(validateFrontmatterStrict(result).valid, true);
+    assert.equal(extractFrontmatter(result).topic, "Review fixes: release hygiene + correctness");
+  });
+
+  for (const value of ["$$E=mc^2$$", "$'", "$&", "$`"]) {
+    it(`inserts ${JSON.stringify(value)} literally from the title and from custom variables`, () => {
+      const result = substituteTemplateVariables("# <% tp.file.title %>\n<% formula %>\n", {
+        title: value,
+        custom: { formula: value },
+      });
+      assert.equal(result, `# ${value}\n${value}\n`);
+    });
+  }
+
+  it("strips leading #s from tags", () => {
+    const result = substituteTemplateVariables(RESEARCH, { frontmatter: { tags: ["#dev", "##deep", "plain"] } });
+    assert.deepEqual(extractFrontmatter(result).tags, ["dev", "deep", "plain"]);
+  });
+
+  it("keeps non-string frontmatter fields with their types", () => {
+    const result = substituteTemplateVariables(RESEARCH, {
+      frontmatter: { resolved: true, count: 3, aliases: ["a", "b"] },
+    });
+    const fm = extractFrontmatter(result);
+    assert.deepEqual([fm.resolved, fm.count, fm.aliases], [true, 3, ["a", "b"]]);
+  });
+
+  it("keeps the template's key order and untouched fields, overrides in place, and appends new fields", () => {
+    const result = substituteTemplateVariables(RESEARCH, {
+      now: new Date(2026, 9, 13, 9, 30),
+      frontmatter: { project: "PKM", topic: "Parsers", tags: ["a"] },
+    });
+    assert.equal(
+      result,
+      "---\ntype: research\ntopic: Parsers\nstatus: exploring\ncreated: 2026-10-13\ntags:\n  - a\nproject: PKM\n---\n# Untitled\n"
+    );
+  });
+
+  it("renders date tokens in local time, not UTC", () => {
+    const previousTZ = process.env.TZ;
+    process.env.TZ = "Pacific/Kiritimati"; // UTC+14
+    try {
+      const now = new Date("2026-10-13T12:30:00Z"); // 2026-10-14 02:30 in Kiritimati
+      const result = substituteTemplateVariables(
+        "<% tp.date.now(\"YYYY-MM-DD\") %>|<% tp.date.now(\"YYYY-MM-DD HH:mm\") %>|<% tp.date.now(\"YYYY\") %>|<% tp.date.now(\"MM\") %>|<% tp.date.now(\"DD\") %>",
+        { now }
+      );
+      assert.equal(result, "2026-10-14|2026-10-14 02:30|2026|10|14");
+    } finally {
+      if (previousTZ === undefined) delete process.env.TZ;
+      else process.env.TZ = previousTZ;
+    }
+  });
+
+  it("substitutes placeholders inside template frontmatter values without breaking YAML", () => {
+    const template = "---\ntype: moc\ntopic: \"<% tp.file.title %>\"\ncreated: 2026-01-01\ntags: [moc]\n---\n";
+    const title = "He said \"hi\": #1";
+    const fm = extractFrontmatter(substituteTemplateVariables(template, { title }));
+    assert.equal(fm.topic, title);
+  });
+
+  it("rejects a template whose frontmatter is not valid YAML", () => {
+    assert.throws(
+      () => substituteTemplateVariables("---\ntype: [broken\n---\n# T\n", { frontmatter: {} }),
+      /^Error: Failed to parse frontmatter: /
+    );
+  });
+
+  for (const [name, frontmatter, pattern] of [
+    ["an invalid key with a number value", { "bad key": 3 }, /Invalid frontmatter key: "bad key"/],
+    ["a task status given as a number", { status: 5 }, /Invalid status "5" for type "task"/],
+  ]) {
+    it(`validates keys and enums for non-string values: ${name}`, () => {
+      assert.throws(() => substituteTemplateVariables(TASK, { frontmatter }), pattern);
+    });
+  }
+});
+
 describe("validateFrontmatterStrict", () => {
   it("valid frontmatter passes", () => {
     const content = "---\ntype: research\ncreated: 2025-01-01\ntags:\n  - dev\n---\n\n# Title";
@@ -444,9 +532,9 @@ describe("validateFrontmatterStrict", () => {
 
 describe("template defaults", () => {
   it("note.md template has a non-empty default tag", async () => {
-    const templatePath = path.join(path.dirname(new URL(import.meta.url).pathname), "..", "templates", "note.md");
+    const templatePath = fileURLToPath(new URL("../templates/note.md", import.meta.url));
     const content = await fs.readFile(templatePath, "utf-8");
-    const frontmatter = yaml.load(content.split("---")[1], { schema: yaml.JSON_SCHEMA });
+    const frontmatter = parseFrontmatterText(content.split("---")[1]);
     assert.ok(Array.isArray(frontmatter.tags), "tags should be an array");
     assert.ok(frontmatter.tags.length > 0, "tags should not be empty — validateFrontmatterStrict requires at least one tag");
   });
@@ -502,6 +590,15 @@ describe("extractInlineTags", () => {
     assert.equal(tags.length, 0);
   });
 
+  for (const [name, content] of [
+    ["~~~ fence", "---\ntype: note\n---\n~~~\n#not-a-tag\n~~~\n#real-tag"],
+    ["unclosed ``` fence", "---\ntype: note\n---\n#real-tag\n```\n#not-a-tag\n"],
+  ]) {
+    it(`ignores tags inside fenced code: ${name}`, () => {
+      assert.deepEqual(extractInlineTags(content), ["real-tag"]);
+    });
+  }
+
   it("does not extract tags from frontmatter with --- mid-line in value", () => {
     // Frontmatter with --- mid-line should be properly excluded from inline tag extraction
     const content = "---\ntype: note\ntags:\n  - frontmatter-tag\ndescription: This --- has #fake-tag\n---\n\n#real-tag in body";
@@ -552,144 +649,12 @@ describe("matchesTagPattern", () => {
   });
 });
 
-describe("parseHeadingLevel", () => {
-  it("parses h1 through h6", () => {
-    assert.equal(parseHeadingLevel("# Title"), 1);
-    assert.equal(parseHeadingLevel("## Section"), 2);
-    assert.equal(parseHeadingLevel("### Sub"), 3);
-    assert.equal(parseHeadingLevel("#### Deep"), 4);
-    assert.equal(parseHeadingLevel("##### Deeper"), 5);
-    assert.equal(parseHeadingLevel("###### Deepest"), 6);
-  });
-
-  it("returns 0 for non-headings", () => {
-    assert.equal(parseHeadingLevel("not a heading"), 0);
-    assert.equal(parseHeadingLevel(""), 0);
-    assert.equal(parseHeadingLevel("#no-space"), 0);
-    assert.equal(parseHeadingLevel("####### seven hashes"), 0);
-  });
-});
-
-describe("findSectionRange", () => {
-  const doc = `---
-type: note
----
-# Title
-
-Intro text.
-
-## Section One
-
-Content one.
-
-## Section Two
-
-Content two.
-
-### Nested
-
-Nested content.
-`;
-
-  it("finds a section with correct boundaries", () => {
-    const range = findSectionRange(doc, "## Section One");
-    assert.ok(range);
-    const section = doc.slice(range.afterHeading, range.sectionEnd);
-    assert.ok(section.includes("Content one."));
-    assert.ok(!section.includes("Content two."));
-  });
-
-  it("handles nested headings within a section", () => {
-    const range = findSectionRange(doc, "## Section Two");
-    assert.ok(range);
-    const section = doc.slice(range.afterHeading, range.sectionEnd);
-    assert.ok(section.includes("Content two."));
-    assert.ok(section.includes("### Nested"));
-    assert.ok(section.includes("Nested content."));
-  });
-
-  it("returns null for heading not found", () => {
-    assert.equal(findSectionRange(doc, "## Nonexistent"), null);
-  });
-
-  it("section extends to EOF when it is the last section at its level", () => {
-    const range = findSectionRange(doc, "## Section Two");
-    assert.ok(range);
-    assert.equal(range.sectionEnd, doc.length);
-  });
-
-  it("includes heading line in headingStart..afterHeading span", () => {
-    const range = findSectionRange(doc, "## Section One");
-    assert.ok(range);
-    const headingLine = doc.slice(range.headingStart, range.afterHeading);
-    assert.ok(headingLine.startsWith("## Section One"));
-  });
-
-  it("does NOT match heading text embedded in a paragraph", () => {
-    const content = "# Title\n\nThis paragraph mentions ## Section One inline.\n\n## Section One\n\nReal content.\n";
-    const range = findSectionRange(content, "## Section One");
-    assert.ok(range, "Should find the real heading");
-    // headingStart must be at the line-start occurrence, not the inline one
-    const before = content.slice(0, range.headingStart);
-    assert.ok(before.includes("inline"), "The inline mention should be before the matched heading");
-    const section = content.slice(range.afterHeading, range.sectionEnd);
-    assert.ok(section.includes("Real content."));
-  });
-
-  it("does NOT match heading text mid-line (e.g. in inline content)", () => {
-    // The heading text appears mid-line, not at line start
-    const content = "# Title\n\nSee also: ## Section One is referenced here.\n\n## Section One\n\nReal content.\n";
-    const range = findSectionRange(content, "## Section One");
-    assert.ok(range, "Should find the line-anchored heading");
-    const section = content.slice(range.afterHeading, range.sectionEnd);
-    assert.ok(section.includes("Real content."));
-    // Ensure it did NOT match the mid-line occurrence
-    assert.ok(range.headingStart > content.indexOf("See also:"), "Should skip the mid-line match");
-  });
-
-  it("matches heading at the very start of the string", () => {
-    const content = "## Section One\n\nContent here.\n";
-    const range = findSectionRange(content, "## Section One");
-    assert.ok(range, "Should find heading at start of string");
-    assert.equal(range.headingStart, 0);
-  });
-});
-
-describe("listHeadings", () => {
-  it("lists all headings excluding frontmatter", () => {
-    const content = `---
-type: note
----
-# Title
-
-## Section One
-
-### Sub
-
-## Section Two
-`;
-    const headings = listHeadings(content);
-    assert.deepEqual(headings, ["# Title", "## Section One", "### Sub", "## Section Two"]);
-  });
-
-  it("returns empty array for no headings", () => {
-    const content = "Just plain text\nwith no headings.\n";
-    assert.deepEqual(listHeadings(content), []);
-  });
-
-  it("excludes headings inside frontmatter", () => {
-    const content = `---
-# Not a heading
-type: note
----
-## Real Heading
-`;
-    const headings = listHeadings(content);
-    assert.deepEqual(headings, ["## Real Heading"]);
-  });
-});
-
-describe("extractTailSections", () => {
+describe("findTailSections", () => {
+  // Assemble the text vault_read returns, so the original assertions still apply
+  const extractTailSections = (content, n, level) => {
+    const { frontmatter, start } = findTailSections(content, n, level);
+    return frontmatter + content.slice(start);
+  };
   const doc = `---
 type: devlog
 created: 2026-01-01
@@ -750,6 +715,32 @@ Entry three.
     assert.ok(result.includes("## B"));
     assert.ok(!result.includes("## A"));
   });
+
+  it("does not count headings inside fenced code and reports the tail's first line", () => {
+    const content = "---\ntype: devlog\n---\n## A\n```\n## not a section\n```\n## B\nb\n";
+    assert.deepEqual(findTailSections(content, 2, 2), { frontmatter: "---\ntype: devlog\n---\n", start: 21, line: 4 });
+  });
+});
+
+describe("capReadOutput", () => {
+  it("returns the text unchanged when it fits the cap", () => {
+    assert.equal(capReadOutput("a\nbb\n", { firstLine: 1, totalLines: 3, cap: 5 }), "a\nbb\n");
+  });
+
+  it("keeps the whole lines that fit and names the next line to read", () => {
+    const text = "line1\nline2\nline3\nline4\n";
+    assert.equal(
+      capReadOutput(text, { firstLine: 10, totalLines: 40, cap: 14 }),
+      "line1\nline2\n[truncated: lines 10–11 of 40; continue with lines: {start: 12}]"
+    );
+  });
+
+  it("cuts a single line longer than the cap mid-line and continues at the next line", () => {
+    assert.equal(
+      capReadOutput("abcdefghij\nk\n", { firstLine: 3, totalLines: 9, cap: 4 }),
+      "abcd\n[truncated: lines 3–3 of 9; continue with lines: {start: 4}]"
+    );
+  });
 });
 
 describe("buildBasenameMap", () => {
@@ -778,67 +769,6 @@ describe("buildBasenameMap", () => {
   it("is case-insensitive for basenames", () => {
     const { basenameMap } = buildBasenameMap(["notes/MyNote.md"]);
     assert.deepStrictEqual(basenameMap.get("mynote"), ["notes/MyNote.md"]);
-  });
-});
-
-describe("resolveFuzzyPath", () => {
-  const files = [
-    "01-Projects/MyApp/devlog.md",
-    "01-Projects/Other/devlog.md",
-    "notes/unique-note.md",
-    "research/deep-dive.md",
-  ];
-  let basenameMap, allFilesSet;
-
-  before(() => {
-    ({ basenameMap, allFilesSet } = buildBasenameMap(files));
-  });
-
-  it("returns exact path unchanged when it exists in file set", () => {
-    const result = resolveFuzzyPath("notes/unique-note.md", basenameMap, allFilesSet);
-    assert.equal(result, "notes/unique-note.md");
-  });
-
-  it("resolves basename without extension", () => {
-    const result = resolveFuzzyPath("unique-note", basenameMap, allFilesSet);
-    assert.equal(result, "notes/unique-note.md");
-  });
-
-  it("resolves basename with .md extension", () => {
-    const result = resolveFuzzyPath("unique-note.md", basenameMap, allFilesSet);
-    assert.equal(result, "notes/unique-note.md");
-  });
-
-  it("throws on ambiguous basename", () => {
-    assert.throws(
-      () => resolveFuzzyPath("devlog", basenameMap, allFilesSet),
-      (err) => {
-        assert.match(err.message, /matches 2 files/);
-        assert.match(err.message, /01-Projects\/MyApp\/devlog\.md/);
-        assert.match(err.message, /01-Projects\/Other\/devlog\.md/);
-        return true;
-      }
-    );
-  });
-
-  it("throws on no match", () => {
-    assert.throws(
-      () => resolveFuzzyPath("nonexistent", basenameMap, allFilesSet),
-      (err) => {
-        assert.match(err.message, /not found/i);
-        return true;
-      }
-    );
-  });
-
-  it("resolves ambiguous basename when scoped to a folder", () => {
-    const result = resolveFuzzyPath("devlog", basenameMap, allFilesSet, "01-Projects/MyApp");
-    assert.equal(result, "01-Projects/MyApp/devlog.md");
-  });
-
-  it("resolves exact path with .md added", () => {
-    const result = resolveFuzzyPath("notes/unique-note", basenameMap, allFilesSet);
-    assert.equal(result, "notes/unique-note.md");
   });
 });
 
@@ -992,6 +922,15 @@ describe("computePeek", () => {
     assert.ok(result.frontmatter !== null);
     assert.equal(result.preview, "");
   });
+
+  for (const [name, content, expected] of [
+    ["headings inside fenced code are not in the outline", "# T\n```\n## code\n```\n## Real\n", [["# T", 1], ["## Real", 5]]],
+    ["CRLF frontmatter and headings", "---\r\n# yaml comment\r\ntype: x\r\n---\r\n# T\r\n## A\r\n", [["# T", 5], ["## A", 6]]],
+  ]) {
+    it(`builds the outline with markdown.js parsing: ${name}`, () => {
+      assert.deepEqual(computePeek(content, "t.md").headings.map(h => [h.heading, h.lineNumber]), expected);
+    });
+  }
 });
 
 describe("formatPeek", () => {
@@ -1017,12 +956,9 @@ describe("formatPeek", () => {
     assert.ok(text.includes("2 chunks"));
   });
 
-  it("includes heading outline as indented tree without line numbers", () => {
+  it("shows each heading indented by level with its line number and section size", () => {
     const text = formatPeek(basePeekData);
-    assert.ok(text.includes("Title [100 chars]"));
-    assert.ok(text.includes("  Section A [45000 chars]"));
-    assert.ok(text.includes("  Section B [400 chars]"));
-    assert.ok(!text.match(/L\d+/), "should not contain line number prefixes");
+    assert.ok(text.includes("### Heading Outline\nTitle [line 7, 100 chars]\n  Section A [line 10, 45000 chars]\n  Section B [line 500, 400 chars]\n"), text);
     assert.ok(!text.includes("# Title"), "should not contain # markers");
   });
 
@@ -1058,6 +994,32 @@ describe("formatPeek", () => {
     const data = { ...basePeekData, headings: [] };
     const text = formatPeek(data);
     assert.ok(text.includes("notes/big.md"));
+  });
+
+  /** 157 headings, alternating ## and ###, the n-th on line n. */
+  const many = Array.from({ length: 157 }, (_, i) => ({ heading: `${i % 2 ? "###" : "##"} H${i + 1}`, level: i % 2 ? 3 : 2, lineNumber: i + 1, charCount: 10 }));
+  const outlineOf = (text) => text.split("### Heading Outline")[1].split("\n\n")[0];
+
+  it("shows the first 50 of more than 50 headings, naming the range and the offset of the next page", () => {
+    const outline = outlineOf(formatPeek({ ...basePeekData, headings: many, preview: "" }));
+    const lines = outline.split("\n");
+    assert.equal(lines[0], " (headings 1-50 of 157)");
+    assert.equal(lines.length, 52);
+    assert.equal(lines[1], "  H1 [line 1, 10 chars]");
+    assert.equal(lines[50], "    H50 [line 50, 10 chars]");
+    assert.equal(lines[51], "… +107 more (vault_peek outline_offset: 50)");
+  });
+
+  it("outlineOffset k shows headings k+1 to k+50, indented by level; the last page has no next-page line", () => {
+    let lines = outlineOf(formatPeek({ ...basePeekData, headings: many, preview: "" }, { outlineOffset: 50 })).split("\n");
+    assert.equal(lines[0], " (headings 51-100 of 157)");
+    assert.deepEqual([lines[1], lines[2], lines[50]], ["  H51 [line 51, 10 chars]", "    H52 [line 52, 10 chars]", "    H100 [line 100, 10 chars]"]);
+    assert.equal(lines[51], "… +57 more (vault_peek outline_offset: 100)");
+
+    lines = outlineOf(formatPeek({ ...basePeekData, headings: many, preview: "" }, { outlineOffset: 150 })).split("\n");
+    assert.equal(lines[0], " (headings 151-157 of 157)");
+    assert.equal(lines.length, 8);
+    assert.equal(lines[7], "  H157 [line 157, 10 chars]");
   });
 });
 
@@ -1425,5 +1387,55 @@ describe("obsidianLink", () => {
     assert.equal(obsidianLink(null, "PKM"), "");
     assert.equal(obsidianLink(undefined, "PKM"), "");
     assert.equal(obsidianLink("", "PKM"), "");
+  });
+});
+
+describe("loadTemplates bundled fallback", () => {
+  const BUNDLED = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "templates");
+  const tpl = (type) => `---\ntype: ${type}\ncreated: 2026-01-01\ntags: []\n---\n# ${type}\n`;
+
+  async function withVault(files, fn) {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "tpl-vault-"));
+    try {
+      for (const [rel, content] of Object.entries(files)) {
+        await fs.mkdir(path.dirname(path.join(root, rel)), { recursive: true });
+        await fs.writeFile(path.join(root, rel), content);
+      }
+      return await fn(root);
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  }
+
+  it("fills names the vault lacks from the bundled folder; the vault's copy wins; no 05-Templates/ gives the bundled set", async () => {
+    await withVault({ "05-Templates/devlog.md": tpl("mine"), "05-Templates/custom.md": tpl("custom") }, async (root) => {
+      const map = await loadTemplates(root);
+      assert.equal(map.get("devlog").source, "vault");
+      assert.equal(map.get("devlog").frontmatter.type, "mine");
+      assert.equal(map.get("custom").source, "vault");
+      assert.equal(map.get("devlog-session").source, "bundled");
+      assert.equal(map.get("devlog-session").frontmatter.type, "devlog-session");
+      assert.equal(map.get("devlog-session").path, "templates/devlog-session.md");
+    });
+    await withVault({}, async (root) => {
+      const map = await loadTemplates(root);
+      const bundled = (await fs.readdir(BUNDLED)).filter((f) => f.endsWith(".md")).map((f) => f.slice(0, -3));
+      assert.deepEqual([...map.keys()].sort(), bundled.sort());
+      assert.ok([...map.values()].every((t) => t.source === "bundled"));
+    });
+  });
+
+  it("a missing bundled folder leaves the vault's templates loaded", async () => {
+    await withVault({ "05-Templates/note.md": tpl("note") }, async (root) => {
+      const map = await loadTemplates(root, { bundledDir: path.join(root, "nope") });
+      assert.deepEqual([...map.keys()], ["note"]);
+    });
+  });
+
+  it("describes the session template sensibly", async () => {
+    await withVault({}, async (root) => {
+      const { description } = (await loadTemplates(root)).get("devlog-session");
+      assert.ok(description.length > 0 && !description.includes("<%"), description);
+    });
   });
 });

@@ -13,15 +13,16 @@ const LINK_FORMAT_NOTE = " Paths in this tool's output are formatted as markdown
  * @returns {Array<Object>} MCP tool definitions
  */
 export function createToolsList(templateDescriptions, templateNames, hasSemanticIndex) {
+  /** @type {Array<Object>} */
   const tools = [
     {
       name: "vault_read",
-      description: "Read the contents of a markdown file from the vault. Supports pagination: read a single section by heading, last N lines, last N heading-level sections, chunk number, or line range. Files exceeding ~80k characters auto-redirect to peek data (file structure/outline) unless a pagination param or force=true is specified." + LINK_FORMAT_NOTE,
+      description: "Read the contents of a markdown file from the vault. Supports pagination: read a single section by heading, last N lines, last N heading-level sections, chunk number, or line range. Files exceeding ~80k characters auto-redirect to peek data (file structure/outline) unless a pagination param or force=true is specified. Every pagination mode's output is capped at ~80k characters (~400k with force), cut at a line boundary with a note naming the next 'lines' range to read." + LINK_FORMAT_NOTE,
       inputSchema: {
         type: "object",
         properties: {
           path: { type: "string", description: "Path relative to vault root (supports short names, e.g. 'devlog')" },
-          heading: { type: "string", description: "Read only the section under this heading (exact match, case-sensitive). Returns heading line + content until next same-or-higher-level heading." },
+          heading: { type: "string", description: "Read only the section under this heading. '## Foo' matches level and text; 'Foo' matches the text at any level (exact, case-sensitive, no prefix matching). Errors if the heading is missing or appears more than once. Returns heading line + content until next same-or-higher-level heading." },
           tail: { type: "number", description: "Return the last N lines of the file. Frontmatter is always prepended." },
           tail_sections: { type: "number", description: "Return the last N sections at the specified heading level. Frontmatter is always prepended." },
           section_level: { type: "number", description: "Heading level for tail_sections (1=`#`, 2=`##`, etc). Default: 2.", default: 2 },
@@ -42,18 +43,23 @@ export function createToolsList(templateDescriptions, templateNames, hasSemantic
     },
     {
       name: "vault_peek",
-      description: "Inspect a file's metadata and structure without reading full content. Returns file size, frontmatter, heading outline with approximate section sizes, and a brief preview. Use this to plan which sections to read from large files." + LINK_FORMAT_NOTE,
+      description: "Inspect a file's metadata and structure without reading full content. Returns file size, frontmatter, a heading outline with each heading's line number and section size, and a brief preview. The outline lists 50 headings at a time; a longer one ends with the outline_offset of the next page. Use this to plan which sections to read from large files." + LINK_FORMAT_NOTE,
       inputSchema: {
         type: "object",
         properties: {
-          path: { type: "string", description: "Path relative to vault root (supports fuzzy resolution: 'devlog' resolves to full path)" }
+          path: { type: "string", description: "Path relative to vault root (supports fuzzy resolution: 'devlog' resolves to full path)" },
+          outline_offset: {
+            type: "number",
+            description: "How many headings to skip before the 50 the outline lists (default: 0). A whole number below the note's heading count.",
+            default: 0
+          }
         },
         required: ["path"]
       }
     },
     {
       name: "vault_write",
-      description: `Create a new note from a template. Notes must be created from templates to ensure proper frontmatter.
+      description: `Create a new note from a template. Notes must be created from templates to ensure proper frontmatter. The path must be a .md file outside dot-folders (not .obsidian/, .git/ or .trash/), and an existing note is never overwritten.
 
 Available templates:
 ${templateDescriptions || "(Loading...)"}
@@ -63,7 +69,7 @@ Built-in variables (auto-substituted):
 - <% tp.file.title %> - Derived from output path filename
 
 Required: frontmatter.tags - provide at least one tag for the note.
-Optional: frontmatter.status, frontmatter.priority, frontmatter.project, frontmatter.deciders, frontmatter.due, frontmatter.source (depending on template type).
+Optional: frontmatter.session, frontmatter.status, frontmatter.priority, frontmatter.project, frontmatter.deciders, frontmatter.due, frontmatter.source (depending on template type).
 Pass custom <%...%> variables via the 'variables' parameter.` + LINK_FORMAT_NOTE,
       inputSchema: {
         type: "object",
@@ -89,7 +95,8 @@ Pass custom <%...%> variables via the 'variables' parameter.` + LINK_FORMAT_NOTE
               project: { type: "string", description: "Project name (for devlogs)" },
               deciders: { type: "string", description: "Decision makers (for ADRs)" },
               due: { type: "string", description: "Due date (for tasks)" },
-              source: { type: "string", description: "Source reference (for tasks)" }
+              source: { type: "string", description: "Source reference (for tasks)" },
+              session: { type: "string", description: "Session identifier the note belongs to" }
             }
           },
           createDirs: { type: "boolean", description: "Create parent directories if they don't exist", default: true }
@@ -105,7 +112,7 @@ Pass custom <%...%> variables via the 'variables' parameter.` + LINK_FORMAT_NOTE
         properties: {
           path: { type: "string", description: "Path relative to vault root" },
           content: { type: "string", description: "Content to append" },
-          heading: { type: "string", description: "Optional: append under this heading (e.g., '## Notes')" },
+          heading: { type: "string", description: "Optional: append under this heading (e.g., '## Notes', or 'Notes' to match any level). Errors if the heading appears more than once; without 'position', a missing heading appends at the end of the file." },
           position: { type: "string", enum: ["after_heading", "before_heading", "end_of_section"], description: "Where to insert relative to heading. after_heading: right after the heading line. before_heading: right before the heading line. end_of_section: at the end of the section (before the next same-or-higher-level heading, or EOF). Requires heading." }
         },
         required: ["path", "content"]
@@ -209,6 +216,11 @@ Pass custom <%...%> variables via the 'variables' parameter.` + LINK_FORMAT_NOTE
           semantic_limit: {
             type: "number",
             description: "Max semantic results to include (default: 5)"
+          },
+          max_nodes: {
+            type: "number",
+            description: "Max graph nodes to list, closest first (default: 50). The rest are reported as '+N not shown'.",
+            default: 50
           }
         },
         required: ["path"]
@@ -293,14 +305,14 @@ Pass custom <%...%> variables via the 'variables' parameter.` + LINK_FORMAT_NOTE
           },
           path: {
             type: "string",
-            description: "Filter by file path substring in arguments"
+            description: "Filter by note path (exact) or folder (every note beneath it), e.g. '01-Projects/MyApp'"
           }
         }
       }
     },
     {
       name: "vault_trash",
-      description: "Soft-delete a file by moving it to .trash/ (Obsidian convention). Reports files with broken incoming links as warnings. Use vault_move to relocate files instead." + LINK_FORMAT_NOTE,
+      description: "Soft-delete a note by moving it to .trash/ (Obsidian convention). Only .md notes outside dot-folders can be trashed; folders are refused (trash the notes inside one by one). Reports files with broken incoming links as warnings. Use vault_move to relocate files instead." + LINK_FORMAT_NOTE,
       inputSchema: {
         type: "object",
         properties: {
@@ -311,7 +323,7 @@ Pass custom <%...%> variables via the 'variables' parameter.` + LINK_FORMAT_NOTE
     },
     {
       name: "vault_move",
-      description: "Move or rename a markdown file within the vault. Automatically updates wikilinks in all files that reference the moved file. Both paths must be exact." + LINK_FORMAT_NOTE,
+      description: "Move or rename a markdown note (or a folder) within the vault. Moving a note automatically updates wikilinks in all files that reference it; moving a folder does not rewrite links that pointed at the notes inside it. Both paths must be exact." + LINK_FORMAT_NOTE,
       inputSchema: {
         type: "object",
         properties: {
@@ -325,7 +337,7 @@ Pass custom <%...%> variables via the 'variables' parameter.` + LINK_FORMAT_NOTE
     {
       name: "vault_add_links",
       description: "Add annotated wikilinks to a note's section (default: ## Related). " +
-        "Deduplicates by basename (skips links already present). " +
+        "Skips targets the note already links to (links are resolved like Obsidian: path, path suffix, then basename). " +
         "Creates the section if missing. Requires exact path." + LINK_FORMAT_NOTE,
       inputSchema: {
         type: "object",
@@ -396,7 +408,7 @@ Pass custom <%...%> variables via the 'variables' parameter.` + LINK_FORMAT_NOTE
   if (hasSemanticIndex) {
     tools.push({
       name: "vault_semantic_search",
-      description: "Search the vault using semantic similarity. Finds conceptually related notes even when they use different words. Requires VAULT_PKM_OPENAI_KEY." + LINK_FORMAT_NOTE,
+      description: "Search the vault using semantic similarity. Finds conceptually related notes even when they use different words. Requires VAULT_PKM_OPENAI_KEY. Score scale: embeddings are text-embedding-3-large cosine similarity, which compresses hard. Even a verbatim title or heading of an existing note scores about 0.55-0.65 against that note, and scores above 0.7 are essentially never seen. On-topic notes typically land at 0.45-0.65, and tangential notes sharing surface tokens often score 0.40-0.45, so absolute scores cannot separate relevant from tangential: read the top hits and judge." + LINK_FORMAT_NOTE,
       inputSchema: {
         type: "object",
         properties: {

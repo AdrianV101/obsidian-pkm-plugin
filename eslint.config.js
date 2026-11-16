@@ -17,6 +17,7 @@ export default [
         BigInt: "readonly",
         AbortSignal: "readonly",
         AbortController: "readonly",
+        DOMException: "readonly",
         Map: "readonly",
         Set: "readonly",
       },

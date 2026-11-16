@@ -1,7 +1,11 @@
 #!/usr/bin/env node
 
-import { resolveProject } from "./resolve-project.js";
-import { loadProjectContext } from "./load-context.js";
+import { resolveProject, describeVia } from "./resolve-project.js";
+import { loadProjectContext, CONTEXT_BUDGET } from "./load-context.js";
+import { formatUpgradeBlock } from "./upgrade-block.js";
+import { checkUpgrade, readPackageSpec, cliCommand } from "../upgrade-checks.js";
+import { dismissalFile } from "../upgrade-dismissals.js";
+import { healthFromStats, describeHealth } from "../semantic-health.js";
 import fs from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
@@ -17,6 +21,47 @@ async function getSemanticStats(vaultPath) {
     return stats;
   } catch {
     return null;
+  }
+}
+
+const UNLINKED_HINT = "vault-pkm: this repo isn't linked to a vault project. Run /vault-pkm:init-project to link it.";
+
+/**
+ * The user message for an unresolved project, or null to stay silent (no match outside git).
+ * @param {import("./resolve-project.js").ProjectResolution} resolution
+ * @returns {string|null}
+ */
+function unresolvedMessage({ code, reason = "", inGitRepo }) {
+  if (code === "invalid-annotation" || code === "no-vault") return `vault-pkm: ${reason.replace(/\.$/, "")}.`;
+  if (!inGitRepo) return null;
+  return code === "ambiguous" ? `${UNLINKED_HINT} (${reason})` : UNLINKED_HINT;
+}
+
+/** Sources after which Claude has not seen the block yet in this conversation. */
+const UPGRADE_SOURCES = new Set(["startup", "clear", undefined]);
+
+/**
+ * The block telling Claude which upgrade steps are left, or "" when none are or the checks fail.
+ * @param {string} cwd
+ * @param {string} projectPath
+ * @returns {Promise<string>}
+ */
+async function upgradeBlock(cwd, projectPath) {
+  try {
+    const packageSpec = await readPackageSpec();
+    if (!packageSpec) {
+      console.error("PKM upgrade check: no obsidian-pkm server in .claude-plugin/plugin.json; skipped");
+      return "";
+    }
+    const report = await checkUpgrade({ vaultPath: VAULT_PATH, projectPath, cwd, packageSpec });
+    for (const error of report.errors) console.error(`PKM upgrade check failed: ${error}`);
+    if (report.dismissalError) {
+      console.error(`PKM upgrade check: could not read ${dismissalFile()} (${report.dismissalError}); no step counts as dismissed`);
+    }
+    return formatUpgradeBlock(report, { commandPrefix: cliCommand({ vaultPath: VAULT_PATH, packageSpec }) });
+  } catch (e) {
+    console.error(`PKM upgrade check failed: ${e.message}`);
+    return "";
   }
 }
 
@@ -40,7 +85,7 @@ async function main() {
     process.exit(0);
   }
 
-  const { cwd } = input;
+  const { cwd, source } = input;
 
   if (!cwd || typeof cwd !== "string") {
     const output = {
@@ -77,60 +122,21 @@ async function main() {
     // settings.json missing or unreadable — not an error
   }
 
-  const { projectPath, error } = await resolveProject(cwd, VAULT_PATH);
+  const resolution = await resolveProject(cwd, VAULT_PATH);
+  const { projectPath } = resolution;
 
-  if (error) {
-    const output = {
-      hookSpecificOutput: {
-        hookEventName: "SessionStart",
-        additionalContext: staleEnvWarning + `PKM: ${error}\n\n` +
-          "The vault-pkm plugin is installed but no vault project could be resolved for this directory. " +
-          "If the user asks about PKM or documentation, suggest running /vault-pkm:init-project."
-      },
-      systemMessage: "Vault PKM: No vault project found. Run /vault-pkm:init-project to set up vault integration."
-    };
-    console.log(JSON.stringify(output));
+  if (projectPath === null) {
+    const message = unresolvedMessage(resolution);
+    if (message) console.log(JSON.stringify({ systemMessage: message }));
     process.exit(0);
   }
 
-  // Check if CWD's CLAUDE.md has ## PKM Integration section
-  let hasPkmSection = false;
-  try {
-    const claudeMdContent = await fs.readFile(path.join(cwd, "CLAUDE.md"), "utf-8");
-    hasPkmSection = /^## PKM Integration/m.test(claudeMdContent);
-  } catch (e) {
-    if (e.code !== "ENOENT") {
-      console.error(`PKM session-start: error reading CLAUDE.md: ${e.message}`);
-    }
-    // hasPkmSection stays false
-  }
-
-  if (!hasPkmSection) {
-    let context = "";
-    try {
-      ({ context } = await loadProjectContext(VAULT_PATH, projectPath));
-    } catch (e) {
-      console.error(`PKM session-start: failed to load project context: ${e.message}`);
-      // context stays "" — still show the nudge
-    }
-
-    const output = {
-      hookSpecificOutput: {
-        hookEventName: "SessionStart",
-        additionalContext: staleEnvWarning + (context ? context + "\n\n" : "") +
-          "PKM: This project's CLAUDE.md does not have a ## PKM Integration section. " +
-          "The vault-pkm plugin is installed but this project is not configured for proactive vault usage. " +
-          "If the user asks about PKM or documentation, suggest running /vault-pkm:init-project."
-      },
-      systemMessage: "Vault PKM: This project isn't configured yet. Run /vault-pkm:init-project to set up vault integration."
-    };
-    console.log(JSON.stringify(output));
-    process.exit(0);
-  }
+  const block = UPGRADE_SOURCES.has(source) ? await upgradeBlock(cwd, projectPath) : "";
 
   let context, meta;
   try {
-    ({ context, meta } = await loadProjectContext(VAULT_PATH, projectPath));
+    const budget = block ? CONTEXT_BUDGET - block.length - 2 : CONTEXT_BUDGET;
+    ({ context, meta } = await loadProjectContext(VAULT_PATH, projectPath, { source, budget }));
   } catch (e) {
     const output = {
       hookSpecificOutput: {
@@ -144,21 +150,28 @@ async function main() {
 
   const projectName = path.basename(projectPath);
   const loaded = [];
-  if (meta.index) loaded.push("index");
-  if (meta.devlog) loaded.push("devlog");
-  if (meta.tasks > 0) loaded.push(`${meta.tasks} task${meta.tasks !== 1 ? "s" : ""}`);
   const missing = [];
-  if (!meta.index) missing.push("index");
-  if (!meta.devlog) missing.push("devlog");
-  if (meta.tasks === 0) missing.push("tasks");
+  if (meta.source === "compact") {
+    loaded.push("compact");
+  } else {
+    if (meta.index) loaded.push("index");
+    if (meta.devlog > 0) loaded.push(`${meta.devlog} devlog item${meta.devlog !== 1 ? "s" : ""}`);
+    if (!meta.index) missing.push("index");
+    if (meta.devlog === 0) missing.push("devlog");
+  }
+  if (meta.tasks > 0) loaded.push(`${meta.tasks} open task${meta.tasks !== 1 ? "s" : ""}`);
 
   let msg = `Obsidian PKM: Loaded ${projectName}`;
   if (loaded.length > 0) msg += ` (${loaded.join(", ")})`;
   if (missing.length > 0) msg += ` [missing: ${missing.join(", ")}]`;
-  msg += ` \u2014 ${context.length.toLocaleString()} chars`;
+  msg += ` \u2014 ${context.length.toLocaleString()} chars (${describeVia(resolution)})`;
 
   const stats = await getSemanticStats(VAULT_PATH);
-  if (stats) {
+  const health = healthFromStats(stats);
+  if (health) {
+    msg += ` | semantic: ${describeHealth(health)}`;
+  } else if (stats) {
+    // Stats written by a server version that does not report health yet.
     if (stats.vault_files > 0 && stats.indexed_files < stats.vault_files) {
       msg += ` | semantic: ${stats.indexed_files}/${stats.vault_files} notes`;
     } else {
@@ -169,14 +182,16 @@ async function main() {
   const output = {
     hookSpecificOutput: {
       hookEventName: "SessionStart",
-      additionalContext: staleEnvWarning + context
+      additionalContext: staleEnvWarning + context + (block ? `\n\n${block}` : "")
     },
     systemMessage: msg
   };
   console.log(JSON.stringify(output));
 }
 
+// A failing SessionStart hook is reported to the user as a hook error; missing PKM context is not
+// worth that, so log and exit cleanly.
 main().catch((err) => {
   console.error(`PKM SessionStart hook error: ${err.message}`);
-  process.exit(1);
+  process.exit(0);
 });

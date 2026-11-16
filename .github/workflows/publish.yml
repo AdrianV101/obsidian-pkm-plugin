@@ -8,33 +8,42 @@ on:
 permissions: {}
 
 jobs:
-  test:
+  build:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        node-version: [20, 22]
+        node-version: [20, 22, 24]
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: ${{ matrix.node-version }}
           cache: 'npm'
+      - name: Check the tag matches package.json and plugin.json
+        run: node scripts/check-release-version.js
       - run: npm ci
+      - run: npm audit --omit=dev --audit-level=high
       - run: npm run lint
+      - run: npm run typecheck
       - run: npm test
 
   publish:
-    needs: test
+    needs: build
     runs-on: ubuntu-latest
     permissions:
       contents: read
       id-token: write
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
-          cache: 'npm'
+      - name: Check the tag matches package.json and plugin.json
+        run: node scripts/check-release-version.js
+      # Trusted publishing (OIDC) needs npm >= 11.5.1; this upgrades npm itself, not project dependencies.
       - run: npm install -g npm@11.5.1
-      - run: npm ci
-      - run: npm publish --provenance
+      - run: npm publish --provenance --access public --ignore-scripts

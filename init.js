@@ -199,21 +199,21 @@ plugin and run /vault-pkm:setup in Claude Code.
     const vaultPath = await resolveVaultPath(resolveInputPath(rawPath.trim()), hasVault);
 
     // ── Step 3: Templates ──
-    const templateMode = await select({
+    const templateMode = /** @type {"full"|"minimal"|"skip"} */ (await select({
       message: "Install note templates? These are used by the vault_write tool to create structured notes with proper frontmatter.",
       choices: [
-        { name: "Full set (13 templates — ADR, devlog, research, task, etc.)", value: "full" },
+        { name: "Full set (14 templates — ADR, devlog, research, task, etc.)", value: "full" },
         { name: "Minimal (just note.md — a single generic template)", value: "minimal" },
         { name: "Skip (I have my own templates)", value: "skip" },
       ],
-    });
+    }));
 
     const templateDest = path.join(vaultPath, "05-Templates");
     const templateResult = await copyTemplates(bundledTemplatesDir, templateDest, templateMode);
     if (templateMode !== "skip") {
       console.log(`  Templates: ${templateResult.created} installed, ${templateResult.skipped} already existed`);
     } else {
-      console.log("  Note: vault_write requires at least one template in 05-Templates/ to function. All other tools work without templates.");
+      console.log("  Note: vault_write falls back to the bundled templates for names missing from 05-Templates/. All other tools work without templates.");
     }
 
     // ── Step 4: Folders ──

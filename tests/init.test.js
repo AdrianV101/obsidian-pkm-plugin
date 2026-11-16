@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import os from "os";
 import path from "path";
 import fs from "fs/promises";
+import { fileURLToPath } from "node:url";
 import { resolveInputPath, copyTemplates, scaffoldFolders, backupVault, dirSize } from "../init.js";
 
 describe("resolveInputPath", () => {
@@ -25,21 +26,22 @@ describe("resolveInputPath", () => {
   it("resolves relative paths to absolute", () => {
     const result = resolveInputPath("my/vault");
     assert.ok(path.isAbsolute(result));
-    assert.ok(result.endsWith("my/vault"));
+    assert.ok(result.endsWith(path.join("my", "vault")));
   });
 
+  // POSIX-style inputs: on Windows path.resolve gives them the current drive, so expectations go through path.resolve too.
   it("strips trailing slashes", () => {
     const result = resolveInputPath("/tmp/vault/");
-    assert.equal(result, "/tmp/vault");
+    assert.equal(result, path.resolve("/tmp/vault"));
   });
 
   it("normalises double slashes", () => {
     const result = resolveInputPath("/tmp//vault///notes");
-    assert.equal(result, "/tmp/vault/notes");
+    assert.equal(result, path.resolve("/tmp/vault/notes"));
   });
 
   it("handles absolute paths unchanged (except normalisation)", () => {
-    assert.equal(resolveInputPath("/tmp/vault"), "/tmp/vault");
+    assert.equal(resolveInputPath("/tmp/vault"), path.resolve("/tmp/vault"));
   });
 
   it("expands multiple $HOME occurrences", () => {
@@ -230,7 +232,7 @@ describe("dirSize", () => {
     assert.equal(size, 0);
   });
 
-  it("skips symlinks", async () => {
+  it("skips symlinks", { skip: process.platform === "win32" && "file symlinks need privileges on Windows" }, async () => {
     await fs.writeFile(path.join(tmpDir, "real.txt"), "data"); // 4 bytes
     await fs.symlink(path.join(tmpDir, "real.txt"), path.join(tmpDir, "link.txt"));
     const size = await dirSize(tmpDir);
@@ -238,3 +240,18 @@ describe("dirSize", () => {
   });
 });
 
+
+describe("bundled templates", () => {
+  it("full mode installs 14 templates, devlog-session among them", async () => {
+    const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "init-bundled-"));
+    try {
+      const src = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "templates");
+      const dest = path.join(tmp, "05-Templates");
+      const result = await copyTemplates(src, dest, "full");
+      assert.equal(result.created, 14);
+      assert.ok((await fs.readdir(dest)).includes("devlog-session.md"));
+    } finally {
+      await fs.rm(tmp, { recursive: true, force: true });
+    }
+  });
+});

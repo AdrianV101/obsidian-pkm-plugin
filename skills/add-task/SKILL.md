@@ -22,9 +22,9 @@ Priority shorthands: `h` / `hi` / `high` → `high`; `u` / `urg` / `urgent` → 
 
 ## Step 2: Detect Project
 
-Read CLAUDE.md for the `# PKM: <path>` line (regex: `/^#\s+PKM:\s*(.+)$/m`):
-- **Matched**: use the vault project path (e.g., `01-Projects/Obsidian-MCP`)
-- **No match**: ask which project, or offer `00-Inbox` for unassigned tasks
+Take the project from the session context's `## PKM Project Context: <path>` header:
+- **Present**: use that vault project path (e.g., `01-Projects/Obsidian-MCP`)
+- **Absent**: ask which project, or offer `00-Inbox` for unassigned tasks
 
 Task path: `<project>/tasks/<kebab-title>.md`
 - `<kebab-title>` = title lowercased, spaces → `-`, strip characters other than `a-z0-9-`
@@ -33,7 +33,7 @@ Task path: `<project>/tasks/<kebab-title>.md`
 ## Step 3: Duplicate Check
 
 ```
-vault_semantic_search({ query: "<title>", folder: "<project>", limit: 3, threshold: 0.7 })
+vault_semantic_search({ query: "<title>", folder: "<project>", limit: 3 })
 ```
 
 If unavailable (no `VAULT_PKM_OPENAI_KEY`):
@@ -42,7 +42,7 @@ vault_search({ query: "<title>", folder: "<project>" })
 vault_query({ type: "task", folder: "<project>" })
 ```
 
-If a similar task exists (similarity > 0.8 or exact/near-exact title in search results):
+Read any semantic hit scoring 0.5 or above (scores are on the scale described in the `vault_semantic_search` tool description) to confirm it is the same task before treating it as a duplicate, since a 0.5 hit can be a same-area neighbor. An exact or near-exact title in search results also counts. If a similar task exists:
 > "Similar task found: `<path>` — `<title>`. Create a new one anyway, or skip?"
 
 If skipping, exit cleanly. If creating anyway, proceed.

@@ -4,12 +4,21 @@ import { spawn } from "node:child_process";
 import fs from "fs/promises";
 import path from "path";
 import os from "os";
+import { makeRepo, makeProject } from "./git-fixture.js";
+import { addDismissal, dismissalFile } from "../upgrade-dismissals.js";
+import { readPackageSpec, cliCommand } from "../upgrade-checks.js";
+import { CONTEXT_BUDGET } from "../hooks/load-context.js";
 
 const SCRIPT = path.join(import.meta.dirname, "..", "hooks", "session-start.js");
+// The hook reads ~/.claude/settings.json. A test's fake HOME is passed as USERPROFILE too (Windows
+// takes the home directory from there); without one the hook gets a home that does not exist, so
+// it never reads the real settings.
+const NO_HOME = path.join(os.tmpdir(), `pkm-ss-no-home-${process.pid}`);
 
 function runScript(args, env, stdinData) {
+  const home = env.HOME && env.HOME !== process.env.HOME ? env.HOME : NO_HOME;
   return new Promise((resolve, reject) => {
-    const child = spawn("node", args, { env, stdio: ["pipe", "pipe", "pipe"] });
+    const child = spawn("node", args, { env: { ...env, HOME: home, USERPROFILE: home }, stdio: ["pipe", "pipe", "pipe"] });
     let stdout = "";
     let stderr = "";
     child.stdout.on("data", (d) => { stdout += d; });
@@ -55,7 +64,7 @@ describe("session-start.js", () => {
     await fs.mkdir(cwdDir, { recursive: true });
     await fs.writeFile(
       path.join(cwdDir, "CLAUDE.md"),
-      "# PKM: 01-Projects/MyApp\n\n## PKM Integration\n\nConfigured.\n"
+      "# PKM: 01-Projects/MyApp\n"
     );
 
     const result = await runHook({ cwd: cwdDir });
@@ -75,6 +84,13 @@ describe("session-start.js", () => {
     assert.ok(result.hookSpecificOutput.additionalContext.includes("could not parse"));
   });
 
+  it("an unexpected failure exits 0 with the error on stderr, so it never surfaces as a hook error", async () => {
+    // Valid JSON that is not an object: reading its fields throws outside every handled path.
+    const { code, stderr } = await runScript([SCRIPT], { ...process.env, VAULT_PATH: vaultPath }, "null");
+    assert.equal(code, 0, stderr);
+    assert.match(stderr, /PKM SessionStart hook error: /);
+  });
+
   it("returns JSON warning when VAULT_PATH not set", async () => {
     const { stdout } = await runScript(
       [SCRIPT],
@@ -90,41 +106,12 @@ describe("session-start.js", () => {
     assert.ok(result.hookSpecificOutput.additionalContext.includes("cwd"));
   });
 
-  it("returns JSON error with systemMessage when project not found", async () => {
-    const result = await runHook({ cwd: "/home/user/Projects/unknown" });
-    assert.ok(result.hookSpecificOutput.additionalContext.includes("No vault project found"));
-    assert.ok(result.hookSpecificOutput.additionalContext.includes("init-project"));
-    assert.ok(result.systemMessage);
-    assert.ok(result.systemMessage.includes("init-project"));
-  });
-
-  it("returns systemMessage when CLAUDE.md has no PKM Integration section", async () => {
-    const cwdDir = path.join(tmpDir, "MyApp");
-    await fs.mkdir(cwdDir, { recursive: true });
-    await fs.writeFile(path.join(cwdDir, "CLAUDE.md"), "# MyApp\n\nSome instructions.\n");
-
-    const result = await runHook({ cwd: cwdDir });
-    assert.ok(result.systemMessage);
-    assert.ok(result.systemMessage.includes("init-project"));
-    assert.ok(result.hookSpecificOutput.additionalContext.includes("not configured"));
-    assert.ok(result.hookSpecificOutput.additionalContext.includes("PKM Project Context"));
-  });
-
-  it("returns systemMessage when no CLAUDE.md exists", async () => {
-    const cwdDir = path.join(tmpDir, "MyApp");
-    await fs.mkdir(cwdDir, { recursive: true });
-
-    const result = await runHook({ cwd: cwdDir });
-    assert.ok(result.systemMessage);
-    assert.ok(result.systemMessage.includes("init-project"));
-  });
-
   it("returns context summary systemMessage when configured", async () => {
     const cwdDir = path.join(tmpDir, "MyApp");
     await fs.mkdir(cwdDir, { recursive: true });
     await fs.writeFile(
       path.join(cwdDir, "CLAUDE.md"),
-      "# PKM: 01-Projects/MyApp\n\n## PKM Integration\n\nConfigured.\n"
+      "# PKM: 01-Projects/MyApp\n"
     );
 
     const result = await runHook({ cwd: cwdDir });
@@ -139,7 +126,7 @@ describe("session-start.js", () => {
     await fs.mkdir(cwdDir, { recursive: true });
     await fs.writeFile(
       path.join(cwdDir, "CLAUDE.md"),
-      "# PKM: 01-Projects/MyApp\n\n## PKM Integration\n\nConfigured.\n"
+      "# PKM: 01-Projects/MyApp\n"
     );
     await fs.mkdir(path.join(vaultPath, ".obsidian"), { recursive: true });
     await fs.writeFile(
@@ -156,7 +143,7 @@ describe("session-start.js", () => {
     await fs.mkdir(cwdDir, { recursive: true });
     await fs.writeFile(
       path.join(cwdDir, "CLAUDE.md"),
-      "# PKM: 01-Projects/MyApp\n\n## PKM Integration\n\nConfigured.\n"
+      "# PKM: 01-Projects/MyApp\n"
     );
     await fs.mkdir(path.join(vaultPath, ".obsidian"), { recursive: true });
     await fs.writeFile(
@@ -174,7 +161,7 @@ describe("session-start.js", () => {
     await fs.mkdir(cwdDir, { recursive: true });
     await fs.writeFile(
       path.join(cwdDir, "CLAUDE.md"),
-      "# PKM: 01-Projects/MyApp\n\n## PKM Integration\n\nConfigured.\n"
+      "# PKM: 01-Projects/MyApp\n"
     );
 
     const result = await runHook({ cwd: cwdDir });
@@ -186,7 +173,7 @@ describe("session-start.js", () => {
     await fs.mkdir(cwdDir, { recursive: true });
     await fs.writeFile(
       path.join(cwdDir, "CLAUDE.md"),
-      "# PKM: 01-Projects/MyApp\n\n## PKM Integration\n\nConfigured.\n"
+      "# PKM: 01-Projects/MyApp\n"
     );
     await fs.mkdir(path.join(vaultPath, ".obsidian"), { recursive: true });
     await fs.writeFile(
@@ -204,7 +191,7 @@ describe("session-start.js", () => {
     await fs.mkdir(cwdDir, { recursive: true });
     await fs.writeFile(
       path.join(cwdDir, "CLAUDE.md"),
-      "# PKM: 01-Projects/MyApp\n\n## PKM Integration\n\nConfigured.\n"
+      "# PKM: 01-Projects/MyApp\n"
     );
 
     // Create a fake HOME with .claude/settings.json pointing to a different vault
@@ -236,7 +223,7 @@ describe("session-start.js", () => {
     await fs.mkdir(cwdDir, { recursive: true });
     await fs.writeFile(
       path.join(cwdDir, "CLAUDE.md"),
-      "# PKM: 01-Projects/MyApp\n\n## PKM Integration\n\nConfigured.\n"
+      "# PKM: 01-Projects/MyApp\n"
     );
 
     // Create a fake HOME with .claude/settings.json matching the actual vault path
@@ -264,7 +251,7 @@ describe("session-start.js", () => {
     await fs.mkdir(cwdDir, { recursive: true });
     await fs.writeFile(
       path.join(cwdDir, "CLAUDE.md"),
-      "# PKM: 01-Projects/MyApp\n\n## PKM Integration\n\nConfigured.\n"
+      "# PKM: 01-Projects/MyApp\n"
     );
 
     // Create a fake HOME with no .claude/settings.json
@@ -281,5 +268,353 @@ describe("session-start.js", () => {
       !result.hookSpecificOutput.additionalContext.includes("VAULT_PATH may be stale"),
       "should not warn when settings.json does not exist"
     );
+  });
+});
+
+describe("session-start.js context budget and semantic health", () => {
+  let tmpDir, vaultPath, cwdDir;
+
+  beforeEach(async () => {
+    tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "pkm-ss-health-"));
+    vaultPath = path.join(tmpDir, "vault");
+    const projectDir = path.join(vaultPath, "01-Projects", "MyApp");
+    await fs.mkdir(path.join(projectDir, "tasks"), { recursive: true });
+    await fs.mkdir(path.join(projectDir, "development"), { recursive: true });
+    await fs.writeFile(path.join(projectDir, "_index.md"), "---\ntype: project\n---\n# MyApp\n\n## Overview\nINDEXBODY\n");
+    await fs.mkdir(path.join(projectDir, "development", "devlog"), { recursive: true });
+    await fs.writeFile(
+      path.join(projectDir, "development", "devlog", "2026-10-08 1000 Work.md"),
+      "## 2026-10-08 10:00 Work\n\n### Summary\nDEVLOGBODY\n\n### Next steps\nMore.\n"
+    );
+    await fs.writeFile(path.join(projectDir, "tasks", "t.md"), "---\ntype: task\nstatus: active\npriority: high\n---\n# Ship it\n");
+    cwdDir = path.join(tmpDir, "MyApp");
+    await fs.mkdir(cwdDir, { recursive: true });
+    await fs.writeFile(path.join(cwdDir, "CLAUDE.md"), "# PKM: 01-Projects/MyApp\n");
+  });
+
+  afterEach(async () => {
+    await fs.rm(tmpDir, { recursive: true, force: true });
+  });
+
+  async function run(input) {
+    const { stdout } = await runScript([SCRIPT], { ...process.env, VAULT_PATH: vaultPath, HOME: tmpDir }, JSON.stringify(input));
+    return JSON.parse(stdout);
+  }
+
+  it("passes the hook input's source through: \"compact\" lists task and session names only", async () => {
+    const result = await run({ cwd: cwdDir, source: "compact" });
+    const context = result.hookSpecificOutput.additionalContext;
+    assert.ok(context.startsWith("## PKM Project Context: 01-Projects/MyApp (compact)\n### Open Tasks\n- t (active, high)\n### Recent sessions\n- 2026-10-08 1000 Work"), context);
+    assert.ok(!context.includes("Project: 01-Projects/MyApp"), context);
+    assert.ok(!context.includes("INDEXBODY") && !context.includes("DEVLOGBODY"));
+    assert.ok(result.systemMessage.startsWith("Obsidian PKM: Loaded MyApp (compact, 1 open task)"), result.systemMessage);
+  });
+
+  it("the status line reports the index, the devlog item count and the open task count, and nothing about tasks when there are none", async () => {
+    const result = await run({ cwd: cwdDir });
+    const context = result.hookSpecificOutput.additionalContext;
+    assert.ok(result.systemMessage.startsWith("Obsidian PKM: Loaded MyApp (index, 1 devlog item, 1 open task) \u2014 "), result.systemMessage);
+    assert.ok(!result.systemMessage.includes("missing"));
+    assert.ok(context.includes("#### 2026-10-08 1000 Work") && context.includes("DEVLOGBODY"));
+    assert.ok(context.includes("### Open Tasks\n- t (active, high)"), context);
+
+    const projectDir = path.join(vaultPath, "01-Projects", "MyApp");
+    await fs.writeFile(path.join(projectDir, "development", "devlog", "2026-10-09 1000 More.md"), "## 2026-10-09 10:00 More\n\nBody.\n");
+    await fs.writeFile(path.join(projectDir, "tasks", "u.md"), "---\ntype: task\nstatus: pending\n---\n# Later\n");
+    assert.ok((await run({ cwd: cwdDir })).systemMessage.startsWith("Obsidian PKM: Loaded MyApp (index, 2 devlog items, 2 open tasks) \u2014 "));
+
+    await fs.rm(path.join(projectDir, "tasks"), { recursive: true });
+    const none = await run({ cwd: cwdDir });
+    assert.ok(none.systemMessage.startsWith("Obsidian PKM: Loaded MyApp (index, 2 devlog items) \u2014 "), none.systemMessage);
+    assert.ok(!none.systemMessage.includes("task"), none.systemMessage);
+  });
+
+  it("the status line lists devlog as missing when there are no items", async () => {
+    await fs.rm(path.join(vaultPath, "01-Projects", "MyApp", "development"), { recursive: true });
+    const result = await run({ cwd: cwdDir });
+    assert.ok(result.systemMessage.startsWith("Obsidian PKM: Loaded MyApp (index, 1 open task) [missing: devlog] \u2014 "), result.systemMessage);
+    assert.ok(result.hookSpecificOutput.additionalContext.includes("No devlog entries found."));
+  });
+
+  const statsCases = [
+    {
+      name: "ok",
+      stats: { indexed_files: 50, vault_files: 50, status: "ok", reason: null, since: null, last_success_at: "2026-10-13T08:00:00.000Z", stale_files: 0 },
+      summary: "| semantic: ok",
+    },
+    {
+      name: "syncing with stale notes",
+      stats: { indexed_files: 40, vault_files: 50, status: "syncing", reason: null, since: null, last_success_at: "2026-10-13T08:00:00.000Z", stale_files: 10 },
+      summary: "| semantic: syncing, 10 notes stale",
+    },
+    {
+      name: "disabled",
+      stats: { indexed_files: 735, vault_files: 2469, status: "disabled", reason: "OpenAI quota exhausted. Add credits; it re-enables automatically.", since: "2026-07-03T09:12:00.000Z", last_success_at: "2026-07-02T22:00:00.000Z", stale_files: 1734 },
+      summary: "| semantic: disabled since 2026-07-03 (OpenAI quota exhausted. Add credits; it re-enables automatically.), 1734 notes stale",
+    },
+  ];
+  for (const c of statsCases) {
+    it(`summary line shows semantic health: ${c.name}`, async () => {
+      await fs.mkdir(path.join(vaultPath, ".obsidian"), { recursive: true });
+      await fs.writeFile(path.join(vaultPath, ".obsidian", "semantic-stats.json"), JSON.stringify(c.stats));
+      const result = await run({ cwd: cwdDir });
+      assert.ok(result.systemMessage.endsWith(c.summary), result.systemMessage);
+    });
+  }
+});
+
+describe("session-start.js project resolution output", () => {
+  const HINT = "vault-pkm: this repo isn't linked to a vault project. Run /vault-pkm:init-project to link it.";
+  let tmpDir, vaultPath;
+
+  beforeEach(async () => {
+    tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "pkm-ss-res-"));
+    vaultPath = path.join(tmpDir, "vault");
+    await makeProject(vaultPath, "MyApp", "repos: [github.com/acme/myapp]");
+  });
+
+  afterEach(async () => {
+    await fs.rm(tmpDir, { recursive: true, force: true });
+  });
+
+  async function run(input, env = {}) {
+    const res = await runScript([SCRIPT], { ...process.env, VAULT_PATH: vaultPath, ...env }, JSON.stringify(input));
+    return { ...res, json: res.stdout.trim() ? JSON.parse(res.stdout) : null };
+  }
+
+  const linkedCases = [
+    {
+      name: "folder name",
+      setup: async () => {
+        const cwd = path.join(tmpDir, "myapp");
+        await fs.mkdir(cwd);
+        return cwd;
+      },
+      via: /\(via folder name: myapp\)/,
+    },
+    {
+      name: "annotation",
+      setup: async () => {
+        const cwd = path.join(tmpDir, "elsewhere");
+        await fs.mkdir(cwd);
+        await fs.writeFile(path.join(cwd, "CLAUDE.md"), "# PKM: 01-Projects/MyApp\n");
+        return cwd;
+      },
+      via: /\(via # PKM in .*CLAUDE\.md\)/,
+    },
+    {
+      name: "repos",
+      setup: async () => makeRepo(path.join(tmpDir, "checkout"), { origin: "git@github.com:acme/myapp.git" }),
+      via: /\(via repos: github\.com\/acme\/myapp\)/,
+    },
+  ];
+  for (const c of linkedCases) {
+    it(`a folder linked by ${c.name} says how in the summary and names the full path in the header`, async () => {
+      const cwd = await c.setup();
+      const { json } = await run({ cwd });
+      assert.ok(json.hookSpecificOutput.additionalContext.startsWith("## PKM Project Context: 01-Projects/MyApp\n"));
+      assert.match(json.systemMessage, /^Obsidian PKM: Loaded MyApp /);
+      assert.match(json.systemMessage, c.via);
+      assert.match(json.systemMessage, / chars \(via /);
+    });
+  }
+
+  it("an unlinked git repo gets exactly the hint as a systemMessage", async () => {
+    const cwd = await makeRepo(path.join(tmpDir, "other"), { origin: "git@github.com:acme/other.git" });
+    const { json, code } = await run({ cwd });
+    assert.equal(code, 0);
+    assert.deepEqual(json, { systemMessage: HINT });
+  });
+
+  it("an ambiguous remote gets the hint plus a reason naming both projects, and no context", async () => {
+    await makeProject(vaultPath, "Twin", "repos: [github.com/acme/myapp]");
+    const cwd = await makeRepo(path.join(tmpDir, "checkout"), { origin: "https://github.com/acme/myapp.git" });
+    const { json } = await run({ cwd });
+    assert.equal(json.hookSpecificOutput, undefined);
+    assert.ok(json.systemMessage.startsWith(`${HINT} (`), json.systemMessage);
+    assert.ok(json.systemMessage.includes("01-Projects/MyApp") && json.systemMessage.includes("01-Projects/Twin"), json.systemMessage);
+    assert.ok(json.systemMessage.endsWith(")"));
+  });
+
+  it("an invalid annotation outside git gets a systemMessage naming it, and no context", async () => {
+    const cwd = path.join(tmpDir, "plain");
+    await fs.mkdir(cwd);
+    await fs.writeFile(path.join(cwd, "CLAUDE.md"), "# PKM: 01-Projects/Missing\n");
+    const { json } = await run({ cwd });
+    assert.deepEqual(Object.keys(json), ["systemMessage"]);
+    assert.match(json.systemMessage, /^vault-pkm: .*Missing.*\.$/);
+  });
+
+  it("a non-git folder with no match produces no output and exits 0", async () => {
+    const cwd = path.join(tmpDir, "nomatch");
+    await fs.mkdir(cwd);
+    const { stdout, code, stderr } = await run({ cwd });
+    assert.equal(code, 0, stderr);
+    assert.equal(stdout, "");
+  });
+
+  it("a linked project whose CLAUDE.md has no PKM Integration section gets its context and no setup nudge", async () => {
+    const cwd = path.join(tmpDir, "myapp");
+    await fs.mkdir(cwd);
+    await fs.writeFile(path.join(cwd, "CLAUDE.md"), "# MyApp\n\nSome instructions.\n");
+    const { json } = await run({ cwd });
+    const context = json.hookSpecificOutput.additionalContext;
+    assert.ok(context.includes("## PKM Project Context: 01-Projects/MyApp"));
+    assert.ok(!/not configured|PKM Integration|init-project/.test(context + json.systemMessage));
+  });
+
+  it("a VAULT_PATH that does not exist gets a systemMessage naming VAULT_PATH, and no context", async () => {
+    const cwd = path.join(tmpDir, "myapp");
+    await fs.mkdir(cwd);
+    const { json } = await run({ cwd }, { VAULT_PATH: path.join(tmpDir, "missing-vault") });
+    assert.deepEqual(Object.keys(json), ["systemMessage"]);
+    assert.match(json.systemMessage, /^vault-pkm: .*VAULT_PATH.*\.$/);
+  });
+
+  it("credentials in the origin URL never reach the output", async () => {
+    const remote = "https://deploy:s3cr3t-token@github.com/acme/%s.git";
+    const cases = [
+      await makeRepo(path.join(tmpDir, "unlinked"), { origin: remote.replace("%s", "other") }),
+      await makeRepo(path.join(tmpDir, "linked"), { origin: remote.replace("%s", "myapp") }),
+    ];
+    await makeProject(vaultPath, "Twin", "repos: [github.com/acme/myapp]");
+    const ambiguous = await makeRepo(path.join(tmpDir, "ambiguous"), { origin: remote.replace("%s", "myapp") });
+    for (const cwd of [...cases, ambiguous]) {
+      const { stdout, stderr } = await run({ cwd });
+      assert.ok(!/s3cr3t|deploy:/.test(stdout + stderr), `${cwd}: ${stdout}${stderr}`);
+    }
+  });
+});
+
+describe("session-start.js upgrade steps", () => {
+  const HEADING = "### vault-pkm: upgrade steps left";
+  const OLD_TEMPLATE = "---\ntype: devlog\n---\n# Development Log\n\n## Sessions\n";
+  const OLD_DEVLOG = "---\ntype: devlog\n---\n# Development Log\n\n### 2026-10-27 09:14 First\n- a\n";
+  let tmpDir, vaultPath, cwdDir;
+
+  beforeEach(async () => {
+    tmpDir = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "pkm-ss-upgrade-")));
+    vaultPath = path.join(tmpDir, "vault");
+    await makeProject(vaultPath, "MyApp");
+    await fs.mkdir(path.join(vaultPath, "05-Templates"), { recursive: true });
+    await fs.writeFile(path.join(vaultPath, "05-Templates", "devlog.md"), OLD_TEMPLATE);
+    cwdDir = path.join(tmpDir, "work");
+    await fs.mkdir(cwdDir);
+    await fs.writeFile(path.join(cwdDir, "CLAUDE.md"), "# PKM: 01-Projects/MyApp\n");
+  });
+
+  afterEach(async () => {
+    await fs.rm(tmpDir, { recursive: true, force: true });
+  });
+
+  async function run(input, script = SCRIPT) {
+    const result = await runScript([script], { ...process.env, VAULT_PATH: vaultPath, HOME: tmpDir }, JSON.stringify(input));
+    return { ...result, json: result.stdout ? JSON.parse(result.stdout) : null };
+  }
+
+  // The block states the command prefix once and writes each command as `obsidian-pkm <args>`.
+  const TEMPLATE_DISMISS = "`obsidian-pkm upgrade dismiss devlog-template`";
+  const prefixOf = async () => cliCommand({ vaultPath, packageSpec: await readPackageSpec() });
+
+  it("appends the block only when a project resolved and the session starts or is cleared", async () => {
+    for (const source of ["startup", "clear", undefined]) {
+      const { json, code } = await run(source === undefined ? { cwd: cwdDir } : { cwd: cwdDir, source });
+      assert.equal(code, 0);
+      const [context, block] = json.hookSpecificOutput.additionalContext.split(`\n\n${HEADING}`);
+      assert.ok(context.startsWith("## PKM Project Context: 01-Projects/MyApp"), String(source));
+      assert.ok(block !== undefined && block.includes(TEMPLATE_DISMISS), String(source));
+      assert.ok(block.includes(`\`${await prefixOf()} <args>\``), block);
+      assert.doesNotMatch(json.systemMessage, /upgrade|devlog-template|devlog-migration|claude-md-section/i);
+    }
+    for (const source of ["compact", "resume"]) {
+      const { json } = await run({ cwd: cwdDir, source });
+      assert.ok(!json.hookSpecificOutput.additionalContext.includes(HEADING), source);
+    }
+
+    const unlinked = await makeRepo(path.join(tmpDir, "unlinked"));
+    const { stdout } = await run({ cwd: unlinked, source: "startup" });
+    assert.deepEqual(JSON.parse(stdout), {
+      systemMessage: "vault-pkm: this repo isn't linked to a vault project. Run /vault-pkm:init-project to link it.",
+    });
+  });
+
+  it("leaves out steps dismissed on this device, and the block once every step is", async () => {
+    await fs.mkdir(path.join(vaultPath, "01-Projects", "MyApp", "development"), { recursive: true });
+    await fs.writeFile(path.join(vaultPath, "01-Projects", "MyApp", "development", "devlog.md"), OLD_DEVLOG);
+    await addDismissal({ step: "devlog-template", vault: vaultPath, target: null }, { home: tmpDir });
+    const partly = (await run({ cwd: cwdDir, source: "startup" })).json.hookSpecificOutput.additionalContext;
+    assert.ok(partly.includes(HEADING));
+    assert.ok(partly.includes("upgrade dismiss devlog-migration"));
+    assert.ok(!partly.includes(TEMPLATE_DISMISS));
+
+    await addDismissal({ step: "devlog-migration", vault: vaultPath, target: "01-Projects/MyApp" }, { home: tmpDir });
+    const context = (await run({ cwd: cwdDir, source: "startup" })).json.hookSpecificOutput.additionalContext;
+    assert.ok(context.startsWith("## PKM Project Context: 01-Projects/MyApp"));
+    assert.ok(!context.includes(HEADING));
+  });
+
+  it("still loads the project context when a check, the dismissal file or plugin.json fails", async () => {
+    await fs.mkdir(path.dirname(dismissalFile(tmpDir)), { recursive: true });
+    await fs.writeFile(dismissalFile(tmpDir), "not json");
+    const corrupt = await run({ cwd: cwdDir, source: "startup" });
+    assert.equal(corrupt.code, 0);
+    assert.ok(corrupt.json.hookSpecificOutput.additionalContext.includes(TEMPLATE_DISMISS));
+    assert.match(corrupt.stderr, /upgrade-dismissals\.json/);
+    await fs.rm(dismissalFile(tmpDir));
+
+    await fs.mkdir(path.join(vaultPath, "01-Projects", "MyApp", "development", "devlog.md"), { recursive: true });
+    const failing = await run({ cwd: cwdDir, source: "startup" });
+    assert.equal(failing.code, 0);
+    const context = failing.json.hookSpecificOutput.additionalContext;
+    assert.ok(context.startsWith("## PKM Project Context: 01-Projects/MyApp"));
+    assert.ok(context.includes(TEMPLATE_DISMISS));
+    assert.ok(!context.includes("upgrade dismiss devlog-migration"));
+    assert.match(failing.stderr, /devlog-migration: /);
+
+    const root = path.join(tmpDir, "plugin root");
+    const repo = path.join(import.meta.dirname, "..");
+    await fs.mkdir(root);
+    await fs.cp(path.join(repo, "hooks"), path.join(root, "hooks"), { recursive: true });
+    for (const name of await fs.readdir(repo)) {
+      if (name.endsWith(".js") || name === "package.json") await fs.copyFile(path.join(repo, name), path.join(root, name));
+    }
+    const noManifest = await run({ cwd: cwdDir, source: "startup" }, path.join(root, "hooks", "session-start.js"));
+    assert.equal(noManifest.code, 0, noManifest.stderr);
+    assert.ok(noManifest.json.hookSpecificOutput.additionalContext.startsWith("## PKM Project Context: 01-Projects/MyApp"));
+    assert.ok(!noManifest.json.hookSpecificOutput.additionalContext.includes(HEADING));
+    assert.match(noManifest.stderr, /plugin\.json/);
+  });
+
+  it("keeps the whole context within Claude Code's 10,000 characters with a full devlog and a full block", async () => {
+    vaultPath = path.join(tmpDir, "v".repeat(120 - tmpDir.length - 1));
+    await fs.rename(path.join(tmpDir, "vault"), vaultPath);
+    const devlogDir = path.join(vaultPath, "01-Projects", "MyApp", "development", "devlog");
+    await fs.mkdir(devlogDir, { recursive: true });
+    for (let i = 0; i < 10; i++) {
+      const day = `2026-10-${String(10 + i).padStart(2, "0")}`;
+      await fs.writeFile(
+        path.join(devlogDir, `${day} 0900 Work${i}.md`),
+        `## ${day} 09:00 Work\n\n### Summary\n${"Long summary text. ".repeat(110)}\n\n### Next steps\nMore.\n`,
+      );
+    }
+    await fs.writeFile(path.join(vaultPath, "01-Projects", "MyApp", "development", "devlog.md"), OLD_DEVLOG);
+    for (const name of ["Alpha", "Beta", "Gamma"]) {
+      await fs.mkdir(path.join(vaultPath, "01-Projects", name, "development"), { recursive: true });
+      await fs.writeFile(path.join(vaultPath, "01-Projects", name, "development", "devlog.md"), OLD_DEVLOG);
+    }
+    await fs.writeFile(path.join(cwdDir, "CLAUDE.md"), "# PKM: 01-Projects/MyApp\n\n## PKM Integration\n\n- old\n");
+
+    const { json } = await run({ cwd: cwdDir, source: "startup" });
+    const all = json.hookSpecificOutput.additionalContext;
+    const at = all.indexOf(`\n\n${HEADING}`);
+    assert.ok(at > 0, "no block");
+    const block = all.slice(at + 2);
+    assert.ok(all.length <= 10000, `${all.length} chars`);
+    assert.ok(block.length <= 1200, `block ${block.length} chars`);
+    assert.ok(at <= CONTEXT_BUDGET - block.length - 2, `context ${at} chars, block ${block.length}`);
+    assert.ok(at > CONTEXT_BUDGET - 1200 - 2 - 500, "the devlog should fill most of the budget");
+    // Long vault paths (iCloud vaults run past 70 characters) must not push a required step out.
+    assert.ok(block.includes("upgrade dismiss devlog-template"), block);
+    assert.ok(block.includes("upgrade dismiss devlog-migration 01-Projects/MyApp"), block);
   });
 });
