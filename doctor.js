@@ -4,6 +4,8 @@ import path from "path";
 import { loadTemplates } from "./helpers.js";
 import { resolveProject, describeVia } from "./hooks/resolve-project.js";
 import { healthFromStats, describeHealth } from "./semantic-health.js";
+import { checkUpgrade, readPackageSpec } from "./upgrade-checks.js";
+import { dismissalFile } from "./upgrade-dismissals.js";
 
 const SETTINGS_LABEL = "~/.claude/settings.json";
 // Same precedence as the server's key lookup in index.js.
@@ -109,9 +111,11 @@ export async function runDoctor() {
   }
 
   // 3b. The project this folder resolves to
+  let projectPath = null;
   if (vaultOk) {
     const cwd = process.cwd();
     const resolution = await resolveProject(cwd, vaultPath);
+    projectPath = resolution.projectPath;
     if (resolution.projectPath) {
       ok(`Project for ${cwd}: ${resolution.projectPath} (${describeVia(resolution)})`);
       passed++;
@@ -132,19 +136,46 @@ export async function runDoctor() {
       warn("No templates found in 05-Templates/ \u2014 run 'npx obsidian-pkm init' to install");
       warnings++;
     }
-    // The vault copy wins over the bundled one, and init never overwrites it, so a
-    // vault set up before devlog.md became a hub keeps creating old-style devlogs.
-    const devlog = templates.get("devlog");
-    if (devlog?.source === "vault" && !/^```base\r?$/m.test(devlog.content)) {
-      warn(
-        "05-Templates/devlog.md is an old devlog template without the hub's ```base table; " +
-          "delete it to use the bundled hub template, or replace it with the package's templates/devlog.md"
-      );
-      warnings++;
-    }
   } catch {
     warn("Could not load templates (05-Templates/ may not exist)");
     warnings++;
+  }
+
+  // 4b. Upgrade steps an older setup left behind
+  if (vaultOk) {
+    try {
+      const packageSpec = (await readPackageSpec()) ?? "obsidian-pkm";
+      const report = await checkUpgrade({ vaultPath, projectPath, cwd: process.cwd(), packageSpec });
+      for (const step of report.steps) {
+        const target = step.target === null ? "" : ` for ${step.target}`;
+        if (step.state === "left") {
+          warn(`Upgrade: ${step.id} left${target}. ${step.summary} ${step.fix}`);
+          warnings++;
+        } else if (step.state === "dismissed") {
+          ok(`Upgrade: ${step.id} dismissed on this device${target} (undo: obsidian-pkm upgrade reset)`);
+          passed++;
+        } else {
+          ok(`Upgrade: ${step.id} done`);
+          passed++;
+        }
+      }
+      const others = report.otherProjects;
+      if (others.length > 0) {
+        warn(`Upgrade: devlog-migration left in ${others.length} other project${others.length === 1 ? "" : "s"}: ${others.join(", ")}. ${report.othersFix}`);
+        warnings++;
+      }
+      if (report.dismissalError) {
+        warn(`Upgrade: could not read ${dismissalFile()}: ${report.dismissalError}; no step counts as dismissed`);
+        warnings++;
+      }
+      for (const error of report.errors) {
+        warn(`Upgrade: check failed: ${error}`);
+        warnings++;
+      }
+    } catch (e) {
+      warn(`Upgrade: check failed: ${e.message}`);
+      warnings++;
+    }
   }
 
   // 5. OpenAI key
