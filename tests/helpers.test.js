@@ -956,12 +956,9 @@ describe("formatPeek", () => {
     assert.ok(text.includes("2 chunks"));
   });
 
-  it("includes heading outline as indented tree without line numbers", () => {
+  it("shows each heading indented by level with its line number and section size", () => {
     const text = formatPeek(basePeekData);
-    assert.ok(text.includes("Title [100 chars]"));
-    assert.ok(text.includes("  Section A [45000 chars]"));
-    assert.ok(text.includes("  Section B [400 chars]"));
-    assert.ok(!text.match(/L\d+/), "should not contain line number prefixes");
+    assert.ok(text.includes("### Heading Outline\nTitle [line 7, 100 chars]\n  Section A [line 10, 45000 chars]\n  Section B [line 500, 400 chars]\n"), text);
     assert.ok(!text.includes("# Title"), "should not contain # markers");
   });
 
@@ -999,12 +996,30 @@ describe("formatPeek", () => {
     assert.ok(text.includes("notes/big.md"));
   });
 
-  it("caps the heading outline at 50 entries with a +N more line", () => {
-    const headings = Array.from({ length: 57 }, (_, i) => ({ heading: `## H${i + 1}`, level: 2, lineNumber: i + 1, charCount: 10 }));
-    const text = formatPeek({ ...basePeekData, headings, preview: "" });
-    assert.ok(text.includes("  H50 [10 chars]"));
-    assert.ok(!text.includes("H51 ["));
-    assert.ok(text.includes("… +7 more"));
+  /** 157 headings, alternating ## and ###, the n-th on line n. */
+  const many = Array.from({ length: 157 }, (_, i) => ({ heading: `${i % 2 ? "###" : "##"} H${i + 1}`, level: i % 2 ? 3 : 2, lineNumber: i + 1, charCount: 10 }));
+  const outlineOf = (text) => text.split("### Heading Outline")[1].split("\n\n")[0];
+
+  it("shows the first 50 of more than 50 headings, naming the range and the offset of the next page", () => {
+    const outline = outlineOf(formatPeek({ ...basePeekData, headings: many, preview: "" }));
+    const lines = outline.split("\n");
+    assert.equal(lines[0], " (headings 1-50 of 157)");
+    assert.equal(lines.length, 52);
+    assert.equal(lines[1], "  H1 [line 1, 10 chars]");
+    assert.equal(lines[50], "    H50 [line 50, 10 chars]");
+    assert.equal(lines[51], "… +107 more (vault_peek outline_offset: 50)");
+  });
+
+  it("outlineOffset k shows headings k+1 to k+50, indented by level; the last page has no next-page line", () => {
+    let lines = outlineOf(formatPeek({ ...basePeekData, headings: many, preview: "" }, { outlineOffset: 50 })).split("\n");
+    assert.equal(lines[0], " (headings 51-100 of 157)");
+    assert.deepEqual([lines[1], lines[2], lines[50]], ["  H51 [line 51, 10 chars]", "    H52 [line 52, 10 chars]", "    H100 [line 100, 10 chars]"]);
+    assert.equal(lines[51], "… +57 more (vault_peek outline_offset: 100)");
+
+    lines = outlineOf(formatPeek({ ...basePeekData, headings: many, preview: "" }, { outlineOffset: 150 })).split("\n");
+    assert.equal(lines[0], " (headings 151-157 of 157)");
+    assert.equal(lines.length, 8);
+    assert.equal(lines[7], "  H157 [line 157, 10 chars]");
   });
 });
 

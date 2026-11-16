@@ -159,6 +159,7 @@ async function main() {
     if (!meta.index) missing.push("index");
     if (meta.devlog === 0) missing.push("devlog");
   }
+  if (meta.tasks > 0) loaded.push(`${meta.tasks} open task${meta.tasks !== 1 ? "s" : ""}`);
 
   let msg = `Obsidian PKM: Loaded ${projectName}`;
   if (loaded.length > 0) msg += ` (${loaded.join(", ")})`;

@@ -43,11 +43,16 @@ export function createToolsList(templateDescriptions, templateNames, hasSemantic
     },
     {
       name: "vault_peek",
-      description: "Inspect a file's metadata and structure without reading full content. Returns file size, frontmatter, heading outline with approximate section sizes, and a brief preview. Use this to plan which sections to read from large files." + LINK_FORMAT_NOTE,
+      description: "Inspect a file's metadata and structure without reading full content. Returns file size, frontmatter, a heading outline with each heading's line number and section size, and a brief preview. The outline lists 50 headings at a time; a longer one ends with the outline_offset of the next page. Use this to plan which sections to read from large files." + LINK_FORMAT_NOTE,
       inputSchema: {
         type: "object",
         properties: {
-          path: { type: "string", description: "Path relative to vault root (supports fuzzy resolution: 'devlog' resolves to full path)" }
+          path: { type: "string", description: "Path relative to vault root (supports fuzzy resolution: 'devlog' resolves to full path)" },
+          outline_offset: {
+            type: "number",
+            description: "How many headings to skip before the 50 the outline lists (default: 0). A whole number below the note's heading count.",
+            default: 0
+          }
         },
         required: ["path"]
       }
