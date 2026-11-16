@@ -26,7 +26,10 @@ async function makeVault(files) {
     activityLog: null,
     sessionId: "writes-test",
   });
-  return { root, handlers: await make(), make, cleanup: () => fs.rm(root, { recursive: true, force: true }) };
+  // Windows keeps a file that another process deleted listed until its last handle closes, so
+  // removing the folder right after worker processes exit can fail with ENOTEMPTY; retry.
+  const cleanup = () => fs.rm(root, { recursive: true, force: true, maxRetries: 10 });
+  return { root, handlers: await make(), make, cleanup };
 }
 
 describe("note-modifying tools go through mutateFile", () => {
