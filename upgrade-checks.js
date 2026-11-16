@@ -39,7 +39,7 @@ import { readActivityRetention } from "./activity-retention.js";
  * @property {string} vaultPath
  * @property {string|null} projectPath vault-relative, "/"-separated; null skips devlog-migration
  * @property {string|null} cwd null skips claude-md-section
- * @property {string} packageSpec e.g. "obsidian-pkm@^4"
+ * @property {string} packageSpec e.g. "obsidian-pkm@4.0.1"
  * @property {string} [home] for the dismissal file and the home exclusion (default os.homedir())
  * @property {string} [git]
  * @property {number} [timeoutMs]

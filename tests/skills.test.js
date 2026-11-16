@@ -160,10 +160,18 @@ describe("project linking", () => {
     assert.ok(preview < ask && ask < apply, "preview, then ask, then --apply");
     assert.match(body, /upgrade[^.]*every device/i);
     assert.match(body, /without a trailing ` \(compact\)`/);
-    for (const tool of ["Bash", "AskUserQuestion"]) {
-      if (body.includes(tool)) assert.ok(allowed.includes(tool), `${tool} must be allowed`);
-    }
+    if (body.includes("AskUserQuestion")) assert.ok(allowed.includes("AskUserQuestion"), "AskUserQuestion must be allowed");
     for (const name of body.match(/mcp__[\w-]+/g) ?? []) assert.ok(allowed.includes(name), `${name} must be allowed`);
+  });
+
+  it("no command pre-approves Bash, Write or Edit, so the user approves each shell command and file change", async () => {
+    for (const name of await fs.readdir(fileURLToPath(new URL("../commands/", import.meta.url)))) {
+      const frontmatter = extractFrontmatter(await read(`commands/${name}`)) ?? {};
+      const allowed = [].concat(frontmatter["allowed-tools"] ?? []).map(String);
+      for (const tool of ["Bash", "Write", "Edit"]) {
+        assert.ok(!allowed.some((t) => t === tool || t.startsWith(`${tool}(`)), `${name} pre-approves ${tool}`);
+      }
+    }
   });
 
   it("init-project works out how a linked folder was linked and offers a relink", async () => {
