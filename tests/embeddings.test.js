@@ -991,6 +991,27 @@ describe("SemanticIndex health", () => {
     assert.equal(idx.health().since, since);
   });
 
+  it("a restart with nothing stale still probes a persisted disabled state, and re-enables when it succeeds", async () => {
+    const vault = await vaultWith(manyNotes(3));
+    fake = installFakeOpenAI((inputs) => embeddingsResponse(inputs));
+    const first = await openIndex(vault);
+    await first.whenSynced();
+    fake.handler = () => quotaResponse();
+    assert.equal(await first.probe(), false);
+    assert.equal(first.health().status, "disabled");
+    assert.equal(first.health().staleFiles, 0);
+    await first.shutdown();
+
+    fake.handler = (inputs) => embeddingsResponse(inputs);
+    const before = fake.calls.length;
+    const second = await openIndex(vault);
+    await second.whenSynced();
+
+    assert.equal(fake.calls.length, before + 1, "one startup probe");
+    assert.equal(second.health().status, "ok");
+    assert.equal((await readStats(vault)).status, "ok");
+  });
+
   it("the disabled state survives a restart: one probe, no other API calls, original since", async () => {
     const vault = await vaultWith(manyNotes(25));
     fake = installFakeOpenAI(() => quotaResponse());
@@ -1740,8 +1761,12 @@ describe("SemanticIndex freshness", () => {
     const statsPath = path.join(vault, ".obsidian", "semantic-stats.json");
     const stats = JSON.parse(await fs.readFile(statsPath, "utf-8"));
     await fs.writeFile(statsPath, JSON.stringify({ ...stats, status: "disabled", reason: "quota", since: "2026-10-01T00:00:00Z" }));
+    // The quota is still exhausted, so the startup probe fails and the index stays disabled.
+    fake.handler = () => quotaResponse();
     const watcher = fakeWatch();
     const disabled = await openIndex(vault, { watch: watcher.watch });
+    await disabled.whenSynced();
+    assert.equal(disabled.health().status, "disabled");
     for (let i = 0; i < 3; i++) {
       await fs.mkdir(path.join(vault, "drop"), { recursive: true });
       await fs.writeFile(path.join(vault, "drop", `n${i}.md`), `Dropped ${i}.`);
