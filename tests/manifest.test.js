@@ -243,9 +243,10 @@ describe("plugin manifest contracts", () => {
         await fs.mkdir(pluginRoot);
         await fs.mkdir(vault);
         await fs.cp(path.join(ROOT, "hooks"), path.join(pluginRoot, "hooks"), { recursive: true });
-        // Dependency-free modules the hooks import from the plugin root.
-        for (const file of ["markdown.js", "semantic-health.js", "devlog.js"]) {
-          await fs.copyFile(path.join(ROOT, file), path.join(pluginRoot, file));
+        // Dependency-free modules the hook imports from the plugin root.
+        const { files } = await importClosure([path.join(ROOT, "hooks", "session-start.js")]);
+        for (const rel of files.map((f) => path.relative(ROOT, f)).filter((rel) => !rel.startsWith(`hooks${path.sep}`))) {
+          await fs.copyFile(path.join(ROOT, rel), path.join(pluginRoot, rel));
         }
 
         const hooks = await readJson("hooks/hooks.json");
