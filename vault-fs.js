@@ -507,7 +507,7 @@ async function removeStaleTemps(target, staleLockMs) {
  * Removing a stale lock also removes the note's temp files its crashed holder left behind.
  * @returns {Promise<boolean>} true when the lock is gone (try to create it again at once)
  */
-async function takeOverIfStale(target, lock, staleLockMs, beforeTakeover) {
+async function takeOverIfStale(target, lock, staleLockMs, beforeTakeover, create) {
   const state = await lockState(lock, staleLockMs);
   if (state !== "stale") return state === "gone";
   if (beforeTakeover) await beforeTakeover();
@@ -515,7 +515,7 @@ async function takeOverIfStale(target, lock, staleLockMs, beforeTakeover) {
   const guard = lock.replace(/\.lock$/, ".takeover.lock");
   const token = uniqueToken();
   try {
-    await fs.writeFile(guard, token, { flag: "wx" });
+    await create(guard, token);
   } catch (e) {
     if (e.code !== "EEXIST") throw e;
     // A guard is held for a few system calls only; an old one was left by a crash mid-takeover.
@@ -537,27 +537,48 @@ async function takeOverIfStale(target, lock, staleLockMs, beforeTakeover) {
 /**
  * Take the cross-process lock for a note: an exclusively created `.<hash>.lock` file next to it,
  * holding a token unique to this holder. A lock older than `staleLockMs` is treated as left by a
- * crashed process and taken over. Use withNoteLock; this is exported for tests.
+ * crashed process and taken over. On Windows a lock file another process has just deleted cannot
+ * be created or opened again until every handle to it closes, and that shows as EPERM; it is
+ * waited for like a held lock, and reported as EPERM if it lasts for `lockTimeoutMs`. Use
+ * withNoteLock; this is exported for tests.
  * @param {string} target real path of the note
  * @param {{
  *   staleLockMs: number, lockTimeoutMs: number, sleep: (ms: number) => Promise<void>,
  *   beforeTakeover?: () => Promise<void>,
- * }} options `beforeTakeover` is a test seam, awaited after a lock is judged stale
+ *   create?: (file: string, token: string) => Promise<void>,
+ *   windows?: boolean,
+ * }} options `beforeTakeover` (awaited after a lock is judged stale), `create` (exclusive
+ *   creation of a lock or takeover guard file) and `windows` are test seams
  * @returns {Promise<() => Promise<void>>} release function
  */
-export async function acquireLockFile(target, { staleLockMs, lockTimeoutMs, sleep, beforeTakeover }) {
+export async function acquireLockFile(target, {
+  staleLockMs, lockTimeoutMs, sleep, beforeTakeover,
+  create = (file, token) => fs.writeFile(file, token, { flag: "wx" }),
+  windows = process.platform === "win32",
+}) {
   const lock = lockPathFor(target);
   const token = uniqueToken();
+  const deletePending = (e) => windows && e.code === "EPERM";
   let waited = 0;
   for (let i = 0; ; i++) {
+    let refused;
     try {
-      await fs.writeFile(lock, token, { flag: "wx" });
+      await create(lock, token);
       return () => releaseLockFile(lock, token);
     } catch (e) {
-      if (e.code !== "EEXIST") throw e;
+      if (e.code !== "EEXIST" && !deletePending(e)) throw e;
+      refused = e;
     }
-    if (await takeOverIfStale(target, lock, staleLockMs, beforeTakeover)) continue;
+    if (refused.code === "EEXIST") {
+      try {
+        if (await takeOverIfStale(target, lock, staleLockMs, beforeTakeover, create)) continue;
+      } catch (e) {
+        if (!deletePending(e)) throw e;
+        refused = e;
+      }
+    }
     if (waited >= lockTimeoutMs) {
+      if (deletePending(refused)) throw refused;
       throw conflict(`Gave up updating ${path.basename(target)}: another process held its lock for ${waited} ms. Try again.`);
     }
     // Jitter, so waiters that started together do not retry in lockstep.

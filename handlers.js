@@ -444,6 +444,9 @@ export async function createHandlers({ vaultPath: rawVaultPath, templateRegistry
     if (!args.old_string) {
       throw new Error("old_string must be a non-empty string");
     }
+    if (typeof args.new_string !== "string") {
+      throw new Error("new_string must be a string (\"\" deletes the match)");
+    }
     const rel = entryRel(args.path);
     const filePath = await safe(rel);
     await writableNote(rel);
@@ -1220,13 +1223,17 @@ export async function createHandlers({ vaultPath: rawVaultPath, templateRegistry
   }
 
   async function handleUpdateFrontmatter(args) {
+    const { fields } = args;
+    if (fields === null || typeof fields !== "object" || Array.isArray(fields)) {
+      throw new Error("fields must be an object of frontmatter fields to set");
+    }
     const rel = entryRel(args.path);
     const filePath = await safe(rel);
     await writableNote(rel);
     let frontmatter;
     try {
       await mutateFile(filePath, (content) => {
-        const updated = updateFrontmatter(content, args.fields || {});
+        const updated = updateFrontmatter(content, fields);
         frontmatter = updated.frontmatter;
         return updated.content;
       });

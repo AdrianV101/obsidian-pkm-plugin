@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [4.0.2] - 2026-11-16
+
+### Fixed
+- **`vault_edit` refuses a missing `new_string`**, or one that is not a string, instead of writing the text `undefined` into the note and reporting success. An empty string still deletes the match.
+- **`vault_update_frontmatter` refuses a missing `fields`**, or one that is not an object, instead of reporting success without changing anything.
+- **On Windows, a write no longer fails with `EPERM` when another session releases the note's lock at that moment.** Windows refuses to create a file another process has just deleted until the last handle to it closes. The plugin now waits for it as it waits for a held lock, for up to 15 seconds, and reports `EPERM` only if it lasts that long. The same applies to the guard file used to take over a lock left by a crashed process.
+
+### Changed
+- **The lockfile used for development and CI** moves to newer minor and patch releases of the MCP SDK, `sqlite-vec`, the `@inquirer` prompts and ESLint. The ranges in `package.json` are unchanged, so installs from npm are unaffected.
+
 ## [4.0.1] - 2026-11-16
 
 Changes for the Claude plugin directory's submission checks; the server's behaviour is unchanged from 4.0.0.
@@ -600,7 +610,8 @@ Existing users installed from the personal marketplace:
 - Atomic file creation in `vault_write` (`wx` flag) prevents race conditions
 - Error messages sanitized to prevent leaking absolute vault paths
 
-[Unreleased]: https://github.com/AdrianV101/obsidian-pkm-plugin/compare/v4.0.1...HEAD
+[Unreleased]: https://github.com/AdrianV101/obsidian-pkm-plugin/compare/v4.0.2...HEAD
+[4.0.2]: https://github.com/AdrianV101/obsidian-pkm-plugin/compare/v4.0.1...v4.0.2
 [4.0.1]: https://github.com/AdrianV101/obsidian-pkm-plugin/compare/v4.0.0...v4.0.1
 [4.0.0]: https://github.com/AdrianV101/obsidian-pkm-plugin/compare/v3.10.1...v4.0.0
 [3.10.1]: https://github.com/AdrianV101/obsidian-pkm-plugin/compare/v3.10.0...v3.10.1
