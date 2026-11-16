@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [4.0.1] - 2026-11-16
+
+Changes for the Claude plugin directory's submission checks; the server's behaviour is unchanged from 4.0.0.
+
+### Changed
+- **The plugin starts an exact server version, `npx -y obsidian-pkm@4.0.1`** (it was `^4`), so the server that installs is the one released with the plugin. The publish workflow refuses a release whose `plugin.json` does not start `obsidian-pkm@<version>`.
+- **Hooks are declared as `node` plus the script in `args`** instead of a line of shell text, and no longer pass `VAULT_PATH` on the command line: the scripts read it from the environment Claude Code gives them.
+- **`/vault-pkm:setup`, `/vault-pkm:init-project` and `/vault-pkm:migrate-devlog` no longer pre-approve `Bash`, `Write` or `Edit`**, so Claude Code asks before each shell command and file change they make.
+
 ## [4.0.0] - 2026-11-16
 
 ### Added
@@ -591,7 +600,8 @@ Existing users installed from the personal marketplace:
 - Atomic file creation in `vault_write` (`wx` flag) prevents race conditions
 - Error messages sanitized to prevent leaking absolute vault paths
 
-[Unreleased]: https://github.com/AdrianV101/obsidian-pkm-plugin/compare/v4.0.0...HEAD
+[Unreleased]: https://github.com/AdrianV101/obsidian-pkm-plugin/compare/v4.0.1...HEAD
+[4.0.1]: https://github.com/AdrianV101/obsidian-pkm-plugin/compare/v4.0.0...v4.0.1
 [4.0.0]: https://github.com/AdrianV101/obsidian-pkm-plugin/compare/v3.10.1...v4.0.0
 [3.10.1]: https://github.com/AdrianV101/obsidian-pkm-plugin/compare/v3.10.0...v3.10.1
 [3.10.0]: https://github.com/AdrianV101/obsidian-pkm-plugin/compare/v3.9.0...v3.10.0

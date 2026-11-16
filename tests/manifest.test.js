@@ -32,32 +32,18 @@ function allStrings(value) {
   return [];
 }
 
-/** Every `command` string under a parsed hooks.json. */
-function hookCommands(hooksJson) {
-  const commands = [];
+/** Every hook object (one with a `type`) under a parsed hooks.json. */
+function hookEntries(hooksJson) {
+  const hooks = [];
   const walk = (value) => {
     if (Array.isArray(value)) value.forEach(walk);
     else if (value && typeof value === "object") {
-      if (typeof value.command === "string") commands.push(value.command);
-      Object.values(value).forEach(walk);
+      if (typeof value.type === "string") hooks.push(value);
+      else Object.values(value).forEach(walk);
     }
   };
   walk(hooksJson);
-  return commands;
-}
-
-/** True when every `${name}` occurrence in `command` sits inside double quotes. */
-function expansionsAreQuoted(command, name) {
-  const token = "${" + name + "}";
-  let inQuotes = false;
-  for (let i = 0; i < command.length; i++) {
-    if (command[i] === '"') inQuotes = !inQuotes;
-    else if (command.startsWith(token, i)) {
-      if (!inQuotes) return false;
-      i += token.length - 1;
-    }
-  }
-  return true;
+  return hooks;
 }
 
 const STATIC_FROM_RE = /^\s*(?:import|export)\b[^"'`;()]*?\bfrom\s*["']([^"']+)["']/gm;
@@ -107,6 +93,12 @@ describe("plugin manifest contracts", () => {
     const pkg = await readJson("package.json");
     const plugin = await readJson(".claude-plugin/plugin.json");
     assert.equal(plugin.version, pkg.version);
+  });
+
+  it("plugin.json starts exactly the server version it ships with, so the code that runs is the code released", async () => {
+    const pkg = await readJson("package.json");
+    const plugin = await readJson(".claude-plugin/plugin.json");
+    assert.deepEqual(plugin.mcpServers["vault-pkm"].args, ["-y", `obsidian-pkm@${pkg.version}`]);
   });
 
   it("the upgrade prompt reads the server's npm spec from plugin.json", async () => {
@@ -222,17 +214,16 @@ describe("plugin manifest contracts", () => {
     });
   });
 
-  describe("every hooks.json command quotes its ${CLAUDE_PLUGIN_ROOT} and ${VAULT_PATH} expansions", () => {
-    it("wraps each expansion in double quotes", async () => {
-      const commands = hookCommands(await readJson("hooks/hooks.json"));
-      assert.ok(commands.length > 0, "expected at least one hook command");
-      const unquoted = [];
-      for (const command of commands) {
-        for (const name of ["CLAUDE_PLUGIN_ROOT", "VAULT_PATH"]) {
-          if (!expansionsAreQuoted(command, name)) unquoted.push(`${name} unquoted in: ${command}`);
-        }
+  describe("every hook runs node on a file the plugin ships, named in args", () => {
+    it("gives node as the command and only ${CLAUDE_PLUGIN_ROOT}/hooks/<file>.js in args, with no shell text or other variable", async () => {
+      const hooks = hookEntries(await readJson("hooks/hooks.json"));
+      assert.ok(hooks.length > 0, "expected at least one hook");
+      for (const hook of hooks) {
+        assert.equal(hook.type, "command", JSON.stringify(hook));
+        assert.equal(hook.command, "node", JSON.stringify(hook));
+        assert.ok(Array.isArray(hook.args) && hook.args.length === 1, JSON.stringify(hook));
+        assert.match(hook.args[0], /^\$\{CLAUDE_PLUGIN_ROOT\}\/hooks\/[\w-]+\.js$/, JSON.stringify(hook));
       }
-      assert.deepEqual(unquoted, []);
     });
 
     it("runs the SessionStart command with a space in both the plugin root and the vault path", { skip: process.platform === "win32" }, async () => {
@@ -249,16 +240,15 @@ describe("plugin manifest contracts", () => {
           await fs.copyFile(path.join(ROOT, rel), path.join(pluginRoot, rel));
         }
 
-        const hooks = await readJson("hooks/hooks.json");
-        const command = hookCommands(hooks.hooks.SessionStart)[0]
-          .replaceAll("${CLAUDE_PLUGIN_ROOT}", pluginRoot)
-          .replaceAll("${VAULT_PATH}", vault);
+        const [hook] = hookEntries((await readJson("hooks/hooks.json")).hooks.SessionStart);
+        const args = hook.args.map((arg) => arg.replaceAll("${CLAUDE_PLUGIN_ROOT}", pluginRoot));
 
-        const result = spawnSync("sh", ["-c", command], {
+        // Run as Claude Code runs a hook given as command and args: no shell, the vault from the environment.
+        const result = spawnSync(process.execPath, args, {
           input: JSON.stringify({ cwd: tmp, session_id: "manifest-test", transcript_path: path.join(tmp, "t.jsonl") }),
           encoding: "utf-8",
           // A home without .claude/settings.json, so the hook never reads the real one.
-          env: { ...process.env, HOME: tmp, USERPROFILE: tmp },
+          env: { ...process.env, HOME: tmp, USERPROFILE: tmp, VAULT_PATH: vault },
         });
         assert.equal(result.status, 0, result.stderr);
         assert.doesNotMatch(result.stderr, /Cannot find module/);

@@ -323,7 +323,8 @@ Vault/
 - Project index files: `_index.md`
 - All notes use YAML frontmatter with `type`, `status`, `created` fields
 - Paths passed to MCP tools are relative to vault root
-- **Version bumps must update BOTH files**: `package.json` AND `.claude-plugin/plugin.json`. The plugin system reads version from `plugin.json`, not `package.json` — forgetting `plugin.json` causes updates to appear stuck. `tests/manifest.test.js` and the publish workflow both fail when the two versions differ.
+- **Version bumps must update BOTH files**: `package.json` AND `.claude-plugin/plugin.json`, including the server pin in `plugin.json` (`obsidian-pkm@<version>`, exact, as the plugin directory requires). The plugin system reads version from `plugin.json`, not `package.json` — forgetting `plugin.json` causes updates to appear stuck. `tests/manifest.test.js` and the publish workflow both fail when the versions or the pin differ.
+- **Hooks in `hooks/hooks.json` are `"command": "node"` with `"args": ["${CLAUDE_PLUGIN_ROOT}/hooks/<file>.js"]`**: no shell text and no other variable (the plugin directory refuses a computed path). Hook scripts read `VAULT_PATH` from their environment.
 
 ## Metadata Schema
 

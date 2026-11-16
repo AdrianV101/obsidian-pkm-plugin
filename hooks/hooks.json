@@ -5,7 +5,8 @@
         "matcher": "startup|clear|compact",
         "hooks": [{
           "type": "command",
-          "command": "VAULT_PATH=\"${VAULT_PATH}\" node \"${CLAUDE_PLUGIN_ROOT}/hooks/session-start.js\"",
+          "command": "node",
+          "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/session-start.js"],
           "timeout": 15
         }]
       }
@@ -15,7 +16,8 @@
         "matcher": "^vault-pkm:pkm-capture$",
         "hooks": [{
           "type": "command",
-          "command": "VAULT_PATH=\"${VAULT_PATH}\" node \"${CLAUDE_PLUGIN_ROOT}/hooks/capture-context.js\"",
+          "command": "node",
+          "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/capture-context.js"],
           "timeout": 10
         }]
       }
@@ -26,7 +28,8 @@
         "hooks": [{
           "type": "command",
           "if": "Bash(gh pr create *)",
-          "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/capture-reminder.js\"",
+          "command": "node",
+          "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/capture-reminder.js"],
           "timeout": 10
         }]
       }

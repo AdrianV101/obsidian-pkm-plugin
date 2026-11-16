@@ -1,7 +1,7 @@
 ---
 name: init-project
 description: Link this repo to an Obsidian vault project through the project's repos list, or a CLAUDE.local.md line when there is no remote
-allowed-tools: [Bash, Read, Write, Edit, Glob, AskUserQuestion, mcp__plugin_vault-pkm_vault-pkm__vault_list, mcp__plugin_vault-pkm_vault-pkm__vault_write, mcp__plugin_vault-pkm_vault-pkm__vault_peek, mcp__plugin_vault-pkm_vault-pkm__vault_read, mcp__plugin_vault-pkm_vault-pkm__vault_update_frontmatter]
+allowed-tools: [Read, Glob, AskUserQuestion, mcp__plugin_vault-pkm_vault-pkm__vault_list, mcp__plugin_vault-pkm_vault-pkm__vault_write, mcp__plugin_vault-pkm_vault-pkm__vault_peek, mcp__plugin_vault-pkm_vault-pkm__vault_read, mcp__plugin_vault-pkm_vault-pkm__vault_update_frontmatter]
 ---
 
 # Link This Repo to a Vault Project

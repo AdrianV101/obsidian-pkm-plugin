@@ -1,7 +1,7 @@
 ---
 name: setup
 description: Configure Vault PKM plugin — set vault path, API keys, and verify setup
-allowed-tools: [Bash, Read, Write, Edit, Glob, Grep, AskUserQuestion]
+allowed-tools: [Read, Glob, Grep, AskUserQuestion]
 ---
 
 # Vault PKM Setup
