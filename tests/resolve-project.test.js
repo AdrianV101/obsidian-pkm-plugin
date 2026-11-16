@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
-import { resolveProject, describeVia, normalizeRemote } from "../hooks/resolve-project.js";
+import { resolveProject, describeVia, normalizeRemote, claudeFileDirs } from "../hooks/resolve-project.js";
 import { git, makeRepo, makeProject } from "./git-fixture.js";
 
 const POSIX_ONLY = { skip: process.platform === "win32" ? "needs POSIX symlinks and shell scripts" : false };
@@ -517,4 +517,38 @@ describe("normalizeRemote", () => {
       assert.equal(normalizeRemote(input), "");
     });
   }
+});
+
+describe("claudeFileDirs", () => {
+  let tmp, real;
+
+  beforeEach(async () => {
+    tmp = await fs.mkdtemp(path.join(os.tmpdir(), "claude-dirs-"));
+    real = await fs.realpath(tmp);
+  });
+
+  afterEach(async () => {
+    await fs.rm(tmp, { recursive: true, force: true });
+  });
+
+  it("lists the folders whose CLAUDE files apply, nearest first, with the main checkout as the repo root", async () => {
+    const main = await makeRepo(path.join(tmp, "app"));
+    const worktree = path.join(tmp, "wt");
+    git(main, "worktree", "add", "-b", "feature", worktree);
+    const sub = path.join(worktree, "sub");
+    await fs.mkdir(sub);
+    const plain = path.join(tmp, "plain");
+    await fs.mkdir(plain);
+    const home = path.join(tmp, "home");
+
+    const rows = [
+      [sub, home, { dirs: [path.join(real, "wt", "sub"), path.join(real, "wt"), path.join(real, "app")], repoRoot: path.join(real, "app") }],
+      [plain, home, { dirs: [path.join(real, "plain")], repoRoot: null }],
+      [sub, worktree, { dirs: [path.join(real, "wt", "sub"), path.join(real, "app")], repoRoot: path.join(real, "app") }],
+      [plain, plain, { dirs: [], repoRoot: null }],
+    ];
+    for (const [cwd, rowHome, expected] of rows) {
+      assert.deepEqual(await claudeFileDirs(cwd, { home: rowHome }), expected, `${cwd} (home ${rowHome})`);
+    }
+  });
 });

@@ -297,8 +297,13 @@ export async function resolveProject(cwd, vaultPath, { git = "git", timeoutMs = 
  * @param {{ git?: string, timeoutMs?: number, home?: string }} [options]
  * @returns {Promise<{ dirs: string[], repoRoot: string|null }>} repoRoot: the main checkout's root; null outside git
  */
-export async function claudeFileDirs(cwd, options) {
-  throw new Error("not implemented");
+export async function claudeFileDirs(cwd, { git = "git", timeoutMs = GIT_TIMEOUT_MS, home = os.homedir() } = {}) {
+  const [facts, start, homeDir] = await Promise.all([
+    gitFacts(cwd, git, timeoutMs),
+    canonical(cwd),
+    home ? canonical(home) : null,
+  ]);
+  return { dirs: annotationDirs(start, facts, homeDir), repoRoot: facts ? facts.mainRoot : null };
 }
 
 /**
