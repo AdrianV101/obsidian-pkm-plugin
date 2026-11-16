@@ -80,9 +80,12 @@ describe("checkUpgrade: devlog-template", () => {
       if (state === "left") {
         assert.match(step.summary, /05-Templates\/devlog\.md/);
         assert.ok(step.fix.includes(path.join(REPO_ROOT, "templates", "devlog.md")), step.fix);
+        // The short form leaves out the path, so a long install path can't crowd out another step.
+        assert.equal(step.shortFix, "Delete it (the bundled hub template then applies).");
       } else {
         assert.equal(step.summary, "");
         assert.equal(step.fix, "");
+        assert.ok(!step.shortFix, step.shortFix);
       }
     }
   });

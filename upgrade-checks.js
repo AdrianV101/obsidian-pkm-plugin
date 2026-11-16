@@ -18,6 +18,7 @@ import { readDismissals, isDismissed } from "./upgrade-dismissals.js";
  * @property {"left"|"done"|"dismissed"} state dismissed: left, but dismissed on this device for this vault and target
  * @property {string} summary one sentence: what is left and why it matters; "" when done
  * @property {string} fix one or two sentences telling Claude how to finish it, commands spelled out; "" when done
+ * @property {string} [shortFix] a shorter fix for when the session-start block runs out of room
  * @property {string} dismiss the command that dismisses it on this device
  */
 
@@ -139,6 +140,7 @@ async function templateStep(vault, where) {
     state: "left",
     summary: "05-Templates/devlog.md is the old devlog template, so new hubs made from it lack their table.",
     fix: `Delete it (the bundled hub template then applies), or, if the user customised it, replace it with ${BUNDLED_HUB}.`,
+    shortFix: "Delete it (the bundled hub template then applies).",
   };
 }
 

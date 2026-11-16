@@ -73,7 +73,8 @@ describe("formatUpgradeBlock", () => {
   });
 
   it("cuts to fit maxChars in a fixed order, never mid-line, and then points at doctor", () => {
-    const template = step("devlog-template", true, "left", 60);
+    const template = { ...step("devlog-template", true, "left", 60), shortFix: "Fix it briefly." };
+    const templateShort = { ...template, fix: template.shortFix };
     const migration = step("devlog-migration", true, "left", 50);
     const sectionA = step("claude-md-section", false, "left", 40);
     const sectionB = step("claude-md-section", false, "left", 30);
@@ -90,7 +91,9 @@ describe("formatUpgradeBlock", () => {
       build(stepLine("Required", template), stepLine("Required", migration), countLine, stepLine("Optional", sectionA)),
       build(stepLine("Required", template), stepLine("Required", migration), countLine),
       build(stepLine("Required", template), stepLine("Required", migration)),
-      build(stepLine("Required", template)),
+      // A long path in a fix (the bundled template's) must not push a required step out.
+      build(stepLine("Required", templateShort), stepLine("Required", migration)),
+      build(stepLine("Required", templateShort)),
       build(),
     ];
     for (let i = 1; i < stages.length; i++) assert.ok(stages[i].length < stages[i - 1].length, "fixture stages must shrink");
