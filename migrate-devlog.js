@@ -343,6 +343,7 @@ function printPreview(plan, out) {
     const blocks = parsed.kept.length === 1 ? "1 block" : `${parsed.kept.length} blocks`;
     out(`Kept text: ${blocks}, ${chars} characters, starting at lines ${lines.join(", ")}`);
   }
+  out(`Original: moved unchanged to .trash/${plan.devlogRel} (with a timestamp if that name is taken)`);
   for (const reason of plan.blockers) out(`Blocker: ${reason}`);
   out(PREVIEW_END);
 }
