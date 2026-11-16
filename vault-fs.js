@@ -401,6 +401,30 @@ const DEFAULT_LOCK_TIMEOUT_MS = 15_000;
 /** Per-file promise chains; module-level so every handler instance in the process shares them. */
 const fileQueues = new Map();
 
+/** Writes still running (note updates and creations), each settling when its write ends. */
+const inFlight = new Set();
+
+/**
+ * @template T
+ * @param {Promise<T>} promise
+ * @returns {Promise<T>} the same promise, tracked until it settles
+ */
+function track(promise) {
+  const settled = promise.then(() => {}, () => {});
+  inFlight.add(settled);
+  settled.then(() => inFlight.delete(settled));
+  return promise;
+}
+
+/**
+ * Wait for every write already running in this process to finish, so shutdown does not cut one
+ * off and leave its lock and temp file behind. Never rejects; a failed write counts as finished.
+ * @returns {Promise<void>}
+ */
+export async function settleWrites() {
+  await Promise.all([...inFlight]);
+}
+
 function queueByKey(key, fn) {
   const previous = fileQueues.get(key) ?? Promise.resolve();
   const run = previous.then(fn, fn);
@@ -554,20 +578,22 @@ export async function acquireLockFile(target, { staleLockMs, lockTimeoutMs, slee
  * @returns {Promise<T>}
  * @throws ENOENT (as-is) when the note does not exist
  */
-export async function withNoteLock(absPath, fn, {
+export function withNoteLock(absPath, fn, {
   staleLockMs = DEFAULT_STALE_LOCK_MS,
   lockTimeoutMs = DEFAULT_LOCK_TIMEOUT_MS,
   sleep = defaultSleep,
 } = {}) {
-  const target = await fs.realpath(absPath);
-  return queueByKey(target, async () => {
-    const release = await acquireLockFile(target, { staleLockMs, lockTimeoutMs, sleep });
-    try {
-      return await fn(target);
-    } finally {
-      await release();
-    }
-  });
+  return track((async () => {
+    const target = await fs.realpath(absPath);
+    return queueByKey(target, async () => {
+      const release = await acquireLockFile(target, { staleLockMs, lockTimeoutMs, sleep });
+      try {
+        return await fn(target);
+      } finally {
+        await release();
+      }
+    });
+  })());
 }
 
 function sameVersion(a, b) {
@@ -697,7 +723,11 @@ const LINK_UNSUPPORTED = new Set(["EPERM", "ENOTSUP", "EOPNOTSUPP", "ENOSYS"]);
  * }} [options] test seams
  * @throws {Error} code "EEXIST" when the target exists
  */
-export async function writeNew(absPath, content, {
+export function writeNew(absPath, content, options = {}) {
+  return track(createNew(absPath, content, options));
+}
+
+async function createNew(absPath, content, {
   link = (from, to) => fs.link(from, to),
   write = (tmp, text) => fs.writeFile(tmp, text, { encoding: "utf-8", flag: "wx", flush: true }),
 } = {}) {
