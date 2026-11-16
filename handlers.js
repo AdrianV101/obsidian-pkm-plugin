@@ -49,6 +49,23 @@ function positiveInt(value, fallback) {
 }
 
 /**
+ * vault_peek's outline_offset: a whole number below the note's heading count; 0 when absent, and
+ * always allowed, so a note without headings still peeks.
+ * @param {unknown} value
+ * @param {number} count the note's heading count
+ * @returns {number}
+ */
+function parseOutlineOffset(value, count) {
+  if (value === undefined || value === null) return 0;
+  const n = typeof value === "number" ? value : typeof value === "string" && value.trim() !== "" ? Number(value) : NaN;
+  if (Number.isInteger(n) && n >= 0 && (n === 0 || n < count)) return n;
+  const range = count === 0
+    ? "The note has no headings"
+    : `The note has ${count} heading${count === 1 ? "" : "s"}, so use a whole number from 0 to ${count - 1}`;
+  throw new Error(`Invalid outline_offset: ${JSON.stringify(value)}. ${range}.`);
+}
+
+/**
  * Insert `args.content` into a note per vault_append's heading/position rules, using
  * the note's own line ending so a CRLF note stays CRLF.
  * @param {string} existing
@@ -347,7 +364,8 @@ export async function createHandlers({ vaultPath: rawVaultPath, templateRegistry
     }
     const relativePath = toVaultRel(path.relative(vaultPath, filePath));
     const peekData = computePeek(content, relativePath);
-    return { content: [{ type: "text", text: formatPeek(peekData, { formatPath: linkFor }) }] };
+    const outlineOffset = parseOutlineOffset(args.outline_offset, peekData.headings.length);
+    return { content: [{ type: "text", text: formatPeek(peekData, { formatPath: linkFor, outlineOffset }) }] };
   }
 
   async function handleWrite(args) {

@@ -3,7 +3,7 @@
 // and ../markdown.js is dependency-free for that reason.
 import fs from "node:fs/promises";
 import path from "node:path";
-import { splitFrontmatter, parseHeadings } from "../markdown.js";
+import { splitFrontmatter, parseHeadings, frontmatterList } from "../markdown.js";
 import { devlogFolder, listDevlogNotes, parseDevlog } from "../devlog.js";
 
 // Claude Code caps a hook's additionalContext at 10,000 characters.
@@ -11,6 +11,8 @@ export const CONTEXT_BUDGET = 9500, INDEX_BUDGET = 2500, COMPACT_BUDGET = 1500;
 
 const MAX_ITEMS = 10;
 const MAX_NOTE_READS = 2 * MAX_ITEMS;
+const MAX_TASKS = 10;
+const PRIORITY_RANK = new Map([["urgent", 0], ["high", 1], ["normal", 2], ["low", 3]]);
 const INDEX_FIRST = ["overview", "current status"];
 const INDEX_SKIP = new Set(["key links", "related"]);
 
@@ -126,6 +128,72 @@ function mergeCandidates(notes, legacy, dirAbs, folder) {
   return merged;
 }
 
+/** @typedef {{ name: string, status: string, priority: string, due: string|null }} OpenTask */
+
+/**
+ * Active before pending, then priority (an unknown one ranks as normal), then earliest due date, then name.
+ * @param {OpenTask} a
+ * @param {OpenTask} b
+ * @returns {number}
+ */
+function compareTasks(a, b) {
+  /** @param {OpenTask} t */
+  const rank = (t) => PRIORITY_RANK.get(t.priority.toLowerCase()) ?? PRIORITY_RANK.get("normal");
+  return (a.status === b.status ? 0 : a.status === "active" ? -1 : 1)
+    || rank(a) - rank(b)
+    || (a.due === b.due ? 0 : a.due === null ? 1 : b.due === null ? -1 : a.due < b.due ? -1 : 1)
+    || a.name.localeCompare(b.name);
+}
+
+/**
+ * Active and pending task notes directly in `<project>/tasks/`, in display order.
+ * @param {string} projectDir
+ * @returns {Promise<OpenTask[]>}
+ */
+async function loadTasks(projectDir) {
+  const taskDir = path.join(projectDir, "tasks");
+  let names;
+  try {
+    // Regular files only: symlinks are skipped, as in every other vault listing.
+    names = (await fs.readdir(taskDir, { withFileTypes: true }))
+      .filter(e => e.isFile() && e.name.endsWith(".md"))
+      .map(e => e.name);
+  } catch (e) {
+    if (e.code !== "ENOENT") console.error("PKM load-context: error reading tasks:", e.message);
+    return [];
+  }
+  const tasks = [];
+  for (const name of names) {
+    let content;
+    try {
+      content = await fs.readFile(path.join(taskDir, name), "utf-8");
+    } catch (e) {
+      console.error(`PKM load-context: error reading task ${name}:`, e.message);
+      continue;
+    }
+    const { frontmatterText } = splitFrontmatter(content.replace(/^\uFEFF/, ""));
+    /** @param {string} key */
+    const field = (key) => frontmatterList(frontmatterText, key)[0] ?? null;
+    const status = field("status");
+    if (status !== "active" && status !== "pending") continue;
+    const due = /^\d{4}-\d{2}-\d{2}/.exec(field("due") ?? "")?.[0] ?? null;
+    tasks.push({ name: name.slice(0, -3), status, priority: field("priority") || "normal", due });
+  }
+  return tasks.sort(compareTasks);
+}
+
+/**
+ * The Open Tasks section: up to MAX_TASKS lines, then the query that lists the rest.
+ * @param {OpenTask[]} tasks
+ * @param {string} projectPath
+ * @returns {string}
+ */
+function tasksSection(tasks, projectPath) {
+  const lines = tasks.slice(0, MAX_TASKS).map(t => `- ${t.name} (${t.status}, ${t.priority}${t.due ? `, due ${t.due}` : ""})`);
+  if (tasks.length > MAX_TASKS) lines.push(`+${tasks.length - MAX_TASKS} more (vault_query type: "task", folder: "${projectPath}/tasks")`);
+  return ["### Open Tasks", ...(lines.length > 0 ? lines : ["No open tasks."])].join("\n");
+}
+
 async function listNotes(dirAbs) {
   try {
     return await listDevlogNotes(dirAbs);
@@ -180,20 +248,25 @@ async function renderItems(candidates, room) {
  * @param {string} projectPath - vault-relative project folder, "/"-separated
  * @param {{ source?: string, budget?: number }} [opts] - source: SessionStart hook `source`
  *   (startup|resume|clear|compact); budget: the most characters the context may use outside compact
- * @returns {Promise<{ context: string, meta: { index: boolean, devlog: number, source: string } }>}
+ * @returns {Promise<{ context: string, meta: { index: boolean, devlog: number, tasks: number, source: string } }>}
+ *   meta.tasks: every open task, including those past the ones listed
  */
 export async function loadProjectContext(vaultPath, projectPath, { source = "startup", budget = CONTEXT_BUDGET } = {}) {
   const projectDir = path.join(vaultPath, projectPath);
-  const meta = { index: false, devlog: 0, source };
+  const meta = { index: false, devlog: 0, tasks: 0, source };
   const folder = devlogFolder(projectPath);
   const dirAbs = path.join(vaultPath, ...folder.split("/"));
   const candidates = mergeCandidates(await listNotes(dirAbs), await loadLegacyEntries(projectDir, projectPath), dirAbs, folder);
+  const tasks = await loadTasks(projectDir);
+  meta.tasks = tasks.length;
+  const taskText = tasksSection(tasks, projectPath);
 
   if (source === "compact") {
     const shown = candidates.slice(0, MAX_ITEMS);
     meta.devlog = shown.length;
     const lines = [
       `## PKM Project Context: ${projectPath} (compact)`,
+      taskText,
       "### Recent sessions",
       ...(shown.length > 0 ? shown.map(c => `- ${c.label}`) : ["No devlog entries found."]),
     ];
@@ -209,7 +282,7 @@ export async function loadProjectContext(vaultPath, projectPath, { source = "sta
     if (e.code !== "ENOENT") console.error("PKM load-context: error reading _index.md:", e.message);
   }
 
-  const head = [`## PKM Project Context: ${projectPath}`, indexSection, "### Recent Development Activity"]
+  const head = [`## PKM Project Context: ${projectPath}`, indexSection, taskText, "### Recent Development Activity"]
     .filter(s => s !== null).join("\n\n") + "\n";
   const items = await renderItems(candidates, budget - head.length);
   meta.devlog = items.length;

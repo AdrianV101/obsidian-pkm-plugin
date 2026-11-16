@@ -2088,6 +2088,46 @@ describe("handlePeek", () => {
     assert.ok(text.includes("chars"));
     assert.ok(text.includes("lines"));
   });
+
+  describe("outline_offset", () => {
+    const sixty = Array.from({ length: 60 }, (_, i) => `## H${i + 1}\nText.\n`).join("\n");
+    before(async () => {
+      await fs.writeFile(path.join(tmpDir, "notes/sixty.md"), `---\ntype: note\n---\n${sixty}`);
+      await fs.writeFile(path.join(tmpDir, "notes/flat.md"), "No headings here.\n");
+    });
+    after(async () => {
+      await fs.rm(path.join(tmpDir, "notes/sixty.md"));
+      await fs.rm(path.join(tmpDir, "notes/flat.md"));
+    });
+
+    it("returns headings 51-60 of a 60-heading note for outline_offset 50, with no next-page line", async () => {
+      const text = (await handlers.get("vault_peek")({ path: "notes/sixty.md", outline_offset: 50 })).content[0].text;
+      assert.ok(text.includes("### Heading Outline (headings 51-60 of 60)\n  H51 [line 154, "), text);
+      assert.ok(text.includes("  H60 [line 181, "), text);
+      assert.ok(!text.includes("H50 [") && !text.includes("more (vault_peek"), text);
+    });
+
+    for (const [name, file, offset] of [
+      ["negative", "notes/sixty.md", -1],
+      ["not a whole number", "notes/sixty.md", 1.5],
+      ["not a number", "notes/sixty.md", "abc"],
+      ["at the heading count", "notes/sixty.md", 60],
+      ["past the heading count", "notes/sixty.md", 99],
+      ["past a note with no headings", "notes/flat.md", 1],
+    ]) {
+      it(`rejects an outline_offset that is ${name}, giving the number of headings`, async () => {
+        await assert.rejects(
+          () => handlers.get("vault_peek")({ path: file, outline_offset: offset }),
+          file === "notes/flat.md" ? /outline_offset.*no headings/ : /outline_offset.*60 headings/,
+        );
+      });
+    }
+
+    it("accepts outline_offset 0 on a note with no headings", async () => {
+      const text = (await handlers.get("vault_peek")({ path: "notes/flat.md", outline_offset: 0 })).content[0].text;
+      assert.ok(text.includes("flat.md") && !text.includes("Heading Outline"), text);
+    });
+  });
 });
 
 // ─── createHandlers ────────────────────────────────────────────────────
