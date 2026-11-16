@@ -420,9 +420,7 @@ describe("hooks.json", () => {
     assert.equal(group.matcher, "^vault-pkm:pkm-capture$");
     assert.equal(group.hooks.length, 1);
     assert.equal(group.hooks[0].timeout, 10);
-    assert.equal(
-      group.hooks[0].command,
-      'VAULT_PATH="${VAULT_PATH}" node "${CLAUDE_PLUGIN_ROOT}/hooks/capture-context.js"',
-    );
+    assert.equal(group.hooks[0].command, "node");
+    assert.deepEqual(group.hooks[0].args, ["${CLAUDE_PLUGIN_ROOT}/hooks/capture-context.js"]);
   });
 });

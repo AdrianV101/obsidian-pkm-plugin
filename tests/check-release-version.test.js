@@ -10,30 +10,36 @@ import { checkReleaseVersion } from "../scripts/release-version.js";
 const SCRIPT = path.join(import.meta.dirname, "..", "scripts", "check-release-version.js");
 
 describe("checkReleaseVersion", () => {
-  it("accepts a tag ref named v<version> when package.json and plugin.json agree", () => {
-    assert.equal(
-      checkReleaseVersion({ refType: "tag", refName: "v3.11.0", packageVersion: "3.11.0", pluginVersion: "3.11.0" }),
-      null
-    );
+const OK = { refType: "tag", refName: "v3.11.0", packageVersion: "3.11.0", pluginVersion: "3.11.0", serverSpec: "obsidian-pkm@3.11.0" };
+
+  it("accepts a tag ref named v<version> when package.json and plugin.json agree and plugin.json starts that exact server", () => {
+    assert.equal(checkReleaseVersion(OK), null);
+  });
+
+  it("rejects a plugin.json that does not start exactly the server version it releases", () => {
+    for (const serverSpec of ["obsidian-pkm@^3.11.0", "obsidian-pkm@~3.11.0", "obsidian-pkm@3.10.1", "obsidian-pkm@latest", "obsidian-pkm", null]) {
+      const error = checkReleaseVersion({ ...OK, serverSpec });
+      assert.match(error ?? "", /must start the server as obsidian-pkm@3\.11\.0/, String(serverSpec));
+    }
   });
 
   it("rejects any ref that is not a tag", () => {
     for (const refType of ["branch", "", undefined]) {
-      const error = checkReleaseVersion({ refType, refName: "master", packageVersion: "3.11.0", pluginVersion: "3.11.0" });
+      const error = checkReleaseVersion({ ...OK, refType, refName: "master" });
       assert.match(error ?? "", /must run on a tag/, `refType ${JSON.stringify(refType)}`);
     }
   });
 
   it("rejects a tag that is not exactly v<package.json version>", () => {
     for (const refName of ["3.11.0", "v3.11.1", "v3.11.0-rc.1", "release-3.11.0", "V3.11.0"]) {
-      const error = checkReleaseVersion({ refType: "tag", refName, packageVersion: "3.11.0", pluginVersion: "3.11.0" });
+      const error = checkReleaseVersion({ ...OK, refName });
       assert.match(error ?? "", /expected v3\.11\.0/, refName);
     }
   });
 
   it("rejects mismatched package.json and plugin.json versions even when the tag matches one of them", () => {
     for (const [packageVersion, pluginVersion] of [["3.11.0", "3.10.1"], ["3.10.1", "3.11.0"]]) {
-      const error = checkReleaseVersion({ refType: "tag", refName: "v3.11.0", packageVersion, pluginVersion });
+      const error = checkReleaseVersion({ ...OK, packageVersion, pluginVersion });
       assert.match(error ?? "", /does not match \.claude-plugin\/plugin\.json/, `${packageVersion} vs ${pluginVersion}`);
     }
   });
@@ -46,7 +52,10 @@ describe("check-release-version CLI", () => {
     dir = await fs.mkdtemp(path.join(os.tmpdir(), "pkm-release-"));
     await fs.mkdir(path.join(dir, ".claude-plugin"));
     await fs.writeFile(path.join(dir, "package.json"), JSON.stringify({ version: "3.11.0" }));
-    await fs.writeFile(path.join(dir, ".claude-plugin", "plugin.json"), JSON.stringify({ version: "3.11.0" }));
+    await fs.writeFile(path.join(dir, ".claude-plugin", "plugin.json"), JSON.stringify({
+      version: "3.11.0",
+      mcpServers: { "vault-pkm": { command: "npx", args: ["-y", "obsidian-pkm@3.11.0"] } },
+    }));
   });
 
   afterEach(async () => {
@@ -77,6 +86,14 @@ describe("check-release-version CLI", () => {
     const failure = await run({ GITHUB_REF_TYPE: "branch", GITHUB_REF_NAME: "master" });
     assert.equal(failure.code, 1);
     assert.match(failure.stderr, /must run on a tag/);
+
+    await fs.writeFile(path.join(dir, ".claude-plugin", "plugin.json"), JSON.stringify({
+      version: "3.11.0",
+      mcpServers: { "vault-pkm": { command: "npx", args: ["-y", "obsidian-pkm@^3"] } },
+    }));
+    const unpinned = await run({ GITHUB_REF_TYPE: "tag", GITHUB_REF_NAME: "v3.11.0" });
+    assert.equal(unpinned.code, 1);
+    assert.match(unpinned.stderr, /obsidian-pkm@3\.11\.0/);
   });
 
   it("never exits silently with 0: even when loaded rather than run as the entry point, a mismatch fails and a match prints the pass line", async () => {

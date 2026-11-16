@@ -2,7 +2,7 @@
 name: migrate-devlog
 description: Split a project's single-file devlog into per-day notes and turn devlog.md into the hub; previews first, writes only after you confirm
 argument-hint: "[project]"
-allowed-tools: [Bash, AskUserQuestion]
+allowed-tools: [AskUserQuestion]
 ---
 
 # Migrate a Project's Devlog
