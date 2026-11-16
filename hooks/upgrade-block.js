@@ -14,24 +14,28 @@ const stepLine = (label) => (step) => `- ${label}: ${step.summary} ${step.fix} N
 
 /**
  * @param {import("../upgrade-checks.js").UpgradeReport} report
- * @param {{ doctorCommand: string, maxChars?: number }} options
+ * @param {{ commandPrefix: string, maxChars?: number }} options commandPrefix: what every command in the
+ *   report starts with (`cliCommand(where)`), stated once in the header so long vault paths don't crowd out steps
  * @returns {string} "" when nothing is left
  */
-export function formatUpgradeBlock(report, { doctorCommand, maxChars = UPGRADE_BLOCK_MAX }) {
+export function formatUpgradeBlock(report, { commandPrefix, maxChars = UPGRADE_BLOCK_MAX }) {
+  /** @param {string} text */
+  const short = (text) => text.replaceAll(`${commandPrefix} `, "obsidian-pkm ");
   const left = report.steps.filter((s) => s.state === "left");
-  const required = left.filter((s) => s.required).map(stepLine("Required"));
-  const optional = left.filter((s) => !s.required).map(stepLine("Optional"));
+  const required = left.filter((s) => s.required).map(stepLine("Required")).map(short);
+  const optional = left.filter((s) => !s.required).map(stepLine("Optional")).map(short);
   const others = report.otherProjects;
   if (required.length === 0 && optional.length === 0 && others.length === 0) return "";
 
-  const named = others.length > 0 ? `- Also never migrated: ${others.join(", ")}. ${report.othersFix}` : null;
+  const header = [...HEADER, `\`obsidian-pkm\` is not installed: run each \`obsidian-pkm <args>\` command below as \`${commandPrefix} <args>\`.`];
+  const named = others.length > 0 ? short(`- Also never migrated: ${others.join(", ")}. ${report.othersFix}`) : null;
   const counted = others.length > 0
-    ? `- Also never migrated: ${others.length} other project${others.length === 1 ? "" : "s"}. ${report.othersFix}`
+    ? short(`- Also never migrated: ${others.length} other project${others.length === 1 ? "" : "s"}. ${report.othersFix}`)
     : null;
-  const doctorLine = `- Not every step fits here: \`${doctorCommand}\` lists them all.`;
+  const doctorLine = "- Not every step fits here: `obsidian-pkm doctor` lists them all.";
   /** @param {string[]} req @param {string|null} othersLine @param {string[]} opt @param {boolean} cut */
   const build = (req, othersLine, opt, cut) =>
-    [...HEADER, ...req, ...(othersLine ? [othersLine] : []), ...opt, ...(cut ? [doctorLine] : [])].join("\n");
+    [...header, ...req, ...(othersLine ? [othersLine] : []), ...opt, ...(cut ? [doctorLine] : [])].join("\n");
 
   // Cuts in order of what Claude can best do without: other projects' names, optional
   // steps (last first), the other projects altogether, then required steps (last first).

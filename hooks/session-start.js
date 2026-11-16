@@ -58,7 +58,7 @@ async function upgradeBlock(cwd, projectPath) {
     if (report.dismissalError) {
       console.error(`PKM upgrade check: could not read ${dismissalFile()} (${report.dismissalError}); no step counts as dismissed`);
     }
-    return formatUpgradeBlock(report, { doctorCommand: cliCommand({ vaultPath: VAULT_PATH, packageSpec }, "doctor") });
+    return formatUpgradeBlock(report, { commandPrefix: cliCommand({ vaultPath: VAULT_PATH, packageSpec }) });
   } catch (e) {
     console.error(`PKM upgrade check failed: ${e.message}`);
     return "";

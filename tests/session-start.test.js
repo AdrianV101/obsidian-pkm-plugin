@@ -506,8 +506,9 @@ describe("session-start.js upgrade steps", () => {
     return { ...result, json: result.stdout ? JSON.parse(result.stdout) : null };
   }
 
-  const templateDismiss = async () =>
-    cliCommand({ vaultPath, packageSpec: await readPackageSpec() }, "upgrade", "dismiss", "devlog-template");
+  // The block states the command prefix once and writes each command as `obsidian-pkm <args>`.
+  const TEMPLATE_DISMISS = "`obsidian-pkm upgrade dismiss devlog-template`";
+  const prefixOf = async () => cliCommand({ vaultPath, packageSpec: await readPackageSpec() });
 
   it("appends the block only when a project resolved and the session starts or is cleared", async () => {
     for (const source of ["startup", "clear", undefined]) {
@@ -515,7 +516,8 @@ describe("session-start.js upgrade steps", () => {
       assert.equal(code, 0);
       const [context, block] = json.hookSpecificOutput.additionalContext.split(`\n\n${HEADING}`);
       assert.ok(context.startsWith("## PKM Project Context: 01-Projects/MyApp"), String(source));
-      assert.ok(block !== undefined && block.includes(await templateDismiss()), String(source));
+      assert.ok(block !== undefined && block.includes(TEMPLATE_DISMISS), String(source));
+      assert.ok(block.includes(`\`${await prefixOf()} <args>\``), block);
       assert.doesNotMatch(json.systemMessage, /upgrade|devlog-template|devlog-migration|claude-md-section/i);
     }
     for (const source of ["compact", "resume"]) {
@@ -537,7 +539,7 @@ describe("session-start.js upgrade steps", () => {
     const partly = (await run({ cwd: cwdDir, source: "startup" })).json.hookSpecificOutput.additionalContext;
     assert.ok(partly.includes(HEADING));
     assert.ok(partly.includes("upgrade dismiss devlog-migration"));
-    assert.ok(!partly.includes(await templateDismiss()));
+    assert.ok(!partly.includes(TEMPLATE_DISMISS));
 
     await addDismissal({ step: "devlog-migration", vault: vaultPath, target: "01-Projects/MyApp" }, { home: tmpDir });
     const context = (await run({ cwd: cwdDir, source: "startup" })).json.hookSpecificOutput.additionalContext;
@@ -550,7 +552,7 @@ describe("session-start.js upgrade steps", () => {
     await fs.writeFile(dismissalFile(tmpDir), "not json");
     const corrupt = await run({ cwd: cwdDir, source: "startup" });
     assert.equal(corrupt.code, 0);
-    assert.ok(corrupt.json.hookSpecificOutput.additionalContext.includes(await templateDismiss()));
+    assert.ok(corrupt.json.hookSpecificOutput.additionalContext.includes(TEMPLATE_DISMISS));
     assert.match(corrupt.stderr, /upgrade-dismissals\.json/);
     await fs.rm(dismissalFile(tmpDir));
 
@@ -559,7 +561,7 @@ describe("session-start.js upgrade steps", () => {
     assert.equal(failing.code, 0);
     const context = failing.json.hookSpecificOutput.additionalContext;
     assert.ok(context.startsWith("## PKM Project Context: 01-Projects/MyApp"));
-    assert.ok(context.includes(await templateDismiss()));
+    assert.ok(context.includes(TEMPLATE_DISMISS));
     assert.ok(!context.includes("upgrade dismiss devlog-migration"));
     assert.match(failing.stderr, /devlog-migration: /);
 
@@ -605,5 +607,8 @@ describe("session-start.js upgrade steps", () => {
     assert.ok(block.length <= 1200, `block ${block.length} chars`);
     assert.ok(at <= CONTEXT_BUDGET - block.length - 2, `context ${at} chars, block ${block.length}`);
     assert.ok(at > CONTEXT_BUDGET - 1200 - 2 - 500, "the devlog should fill most of the budget");
+    // Long vault paths (iCloud vaults run past 70 characters) must not push a required step out.
+    assert.ok(block.includes("upgrade dismiss devlog-template"), block);
+    assert.ok(block.includes("upgrade dismiss devlog-migration 01-Projects/MyApp"), block);
   });
 });
