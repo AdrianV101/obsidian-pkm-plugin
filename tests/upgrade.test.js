@@ -43,6 +43,7 @@ describe("obsidian-pkm upgrade", () => {
       [["dismiss", "devlog-migration", "01-Projects/A"], { step: "devlog-migration", target: "01-Projects/A" }],
       [["dismiss", "claude-md-section", "/repo"], { step: "claude-md-section", target: path.resolve("/repo") }],
       [["dismiss", "devlog-template"], { step: "devlog-template", target: null }],
+      [["dismiss", "devlog-migration", "Old A"], { step: "devlog-migration", target: "01-Projects/Old A" }],
     ];
     for (const [args, key] of rows) {
       const { code, stdout, stderr } = await upgrade(args);

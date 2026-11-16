@@ -53,13 +53,16 @@ export function validateDismissal(key) {
 
 /**
  * The key as stored: vault and repo root resolved, the project path without trailing slashes.
+ * A project given as a bare name is a folder under 01-Projects, as `migrate-devlog` reads it.
  * @param {DismissalKey} key
  * @returns {DismissalKey}
  */
 function normalise({ step, vault, target }) {
   let normalTarget = null;
-  if (step === "devlog-migration") normalTarget = target.replace(/\/+$/, "");
-  else if (step === "claude-md-section") normalTarget = path.resolve(target);
+  if (step === "devlog-migration") {
+    normalTarget = target.replace(/\/+$/, "");
+    if (!normalTarget.includes("/")) normalTarget = `01-Projects/${normalTarget}`;
+  } else if (step === "claude-md-section") normalTarget = path.resolve(target);
   return { step, vault: path.resolve(vault), target: normalTarget };
 }
 

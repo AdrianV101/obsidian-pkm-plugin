@@ -39,7 +39,7 @@ describe("upgrade dismissals", () => {
     });
   });
 
-  it("isDismissed matches only the same step, vault and target", () => {
+  it("isDismissed matches only the same step, vault and target; a bare project name is a folder under 01-Projects", () => {
     const recorded = [
       { step: "devlog-migration", vault: path.resolve("/v"), target: "01-Projects/A", at: NOW.toISOString() },
       { step: "claude-md-section", vault: path.resolve("/v"), target: path.resolve("/repo"), at: NOW.toISOString() },
@@ -50,6 +50,7 @@ describe("upgrade dismissals", () => {
       [{ step: "devlog-migration", vault: "/v/", target: "01-Projects/A" }, true],
       [{ step: "devlog-migration", vault: "/x/../v", target: "01-Projects/A" }, true],
       [{ step: "devlog-migration", vault: "/v", target: "01-Projects/A/" }, true],
+      [{ step: "devlog-migration", vault: "/v", target: "A" }, true],
       [{ step: "claude-md-section", vault: "/v", target: "/repo/" }, true],
       [{ step: "devlog-template", vault: "/v", target: null }, true],
       [{ step: "devlog-migration", vault: "/other", target: "01-Projects/A" }, false],

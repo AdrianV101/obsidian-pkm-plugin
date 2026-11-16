@@ -134,6 +134,7 @@ describe("checkUpgrade: devlog-migration", () => {
     assert.deepEqual(report.otherProjects, ["01-Projects/A", "01-Projects/C"]);
     assert.deepEqual(report.errors, []);
     assert.ok(report.othersFix.includes(cliCommand({ vaultPath: vault, packageSpec: SPEC }, "migrate-devlog")), report.othersFix);
+    assert.ok(report.othersFix.includes(cliCommand({ vaultPath: vault, packageSpec: SPEC }, "upgrade", "dismiss", "devlog-migration")), report.othersFix);
     assert.equal((await check({ projectPath: "01-Projects/A" })).otherProjects.includes("01-Projects/A"), false);
   });
 });

@@ -91,7 +91,7 @@ export async function checkUpgrade({ vaultPath, projectPath, cwd, packageSpec, h
 
   const othersFix = otherProjects.length === 0
     ? ""
-    : `For each, once every device using this vault has the updated plugin: preview with \`${cliCommand(where, "migrate-devlog")} <project path>\`, then rerun it with --apply on the user's OK.`;
+    : `For each, once every device using this vault has the updated plugin: preview with \`${cliCommand(where, "migrate-devlog")} <project path>\`, then rerun it with --apply on the user's OK. Never: \`${cliCommand(where, "upgrade", "dismiss", "devlog-migration")} <project path>\`.`;
   return { steps, otherProjects, othersFix, dismissalError, errors };
 }
 
