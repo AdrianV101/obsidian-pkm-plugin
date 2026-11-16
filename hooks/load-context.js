@@ -178,10 +178,11 @@ async function renderItems(candidates, room) {
  * (COMPACT_BUDGET for source "compact").
  * @param {string} vaultPath
  * @param {string} projectPath - vault-relative project folder, "/"-separated
- * @param {{ source?: string }} [opts] - SessionStart hook `source` (startup|resume|clear|compact)
+ * @param {{ source?: string, budget?: number }} [opts] - source: SessionStart hook `source`
+ *   (startup|resume|clear|compact); budget: the most characters the context may use outside compact
  * @returns {Promise<{ context: string, meta: { index: boolean, devlog: number, source: string } }>}
  */
-export async function loadProjectContext(vaultPath, projectPath, { source = "startup" } = {}) {
+export async function loadProjectContext(vaultPath, projectPath, { source = "startup", budget = CONTEXT_BUDGET } = {}) {
   const projectDir = path.join(vaultPath, projectPath);
   const meta = { index: false, devlog: 0, source };
   const folder = devlogFolder(projectPath);

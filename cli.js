@@ -18,12 +18,15 @@ try {
   } else if (subcommand === "migrate-devlog") {
     const { runMigrateDevlog } = await import("./migrate-devlog.js");
     process.exitCode = await runMigrateDevlog(process.argv.slice(3));
+  } else if (subcommand === "upgrade") {
+    const { runUpgrade } = await import("./upgrade.js");
+    process.exitCode = await runUpgrade(process.argv.slice(3));
   } else if (!subcommand) {
     const { startServer } = await import("./index.js");
     await startServer();
   } else {
     console.error(`Unknown command: ${subcommand}`);
-    console.error("Usage: obsidian-pkm [init | doctor | migrate-devlog <project> [--apply]]");
+    console.error("Usage: obsidian-pkm [init | doctor | migrate-devlog <project> [--apply] | upgrade dismiss <step> [<target>] | upgrade reset]");
     process.exit(1);
   }
 } catch (e) {

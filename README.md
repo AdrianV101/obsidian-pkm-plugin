@@ -307,9 +307,12 @@ File layout:
 ├── activity.js       # Activity log (session tracking, SQLite)
 ├── utils.js          # Shared utilities (file listing; re-exports frontmatter parsing)
 ├── instructions.js   # Server instructions (vault rules every session receives) and the note routing table
-├── cli.js            # CLI entry point (routes `init` / `doctor` subcommands or starts the server)
+├── cli.js            # CLI entry point (routes `init` / `doctor` / `migrate-devlog` / `upgrade` or starts the server)
 ├── init.js           # Vault scaffolding wizard (templates, PARA folders)
 ├── doctor.js         # `obsidian-pkm doctor` setup diagnostics
+├── upgrade-checks.js # Dependency-free checks for the upgrade steps an older setup left behind (hooks, doctor)
+├── upgrade-dismissals.js # Upgrade steps dismissed on this device (`~/.claude/vault-pkm/upgrade-dismissals.json`)
+├── upgrade.js        # `obsidian-pkm upgrade dismiss` / `reset`
 ├── .claude-plugin/   # Plugin packaging
 │   └── plugin.json   # Plugin manifest (identity, version, MCP server launch config)
 ├── hooks/            # Claude Code hooks
@@ -317,6 +320,7 @@ File layout:
 │   ├── session-start.js    # Loads project context at session start
 │   ├── resolve-project.js  # Maps the working directory to a vault project (annotation, repos:, folder name)
 │   ├── load-context.js     # Reads the index and the newest devlog items for the context block
+│   ├── upgrade-block.js    # Formats the upgrade steps left into a capped block for Claude
 │   ├── capture-context.js  # SubagentStart: gives pkm-capture its project and new session activity
 │   ├── capture-state.js    # Per-session capture cursor, delta file paths and pruning
 │   ├── transcript.js       # Condenses a session transcript into a short digest
@@ -364,6 +368,13 @@ Session start shows the full project path and how it was found (`via repos: …`
 
 **Migrating an existing devlog.** Projects with a single-file `devlog.md` keep working: session start still shows the newest entries, and new sessions write their notes beside the old file. To split the old file into one note per day, first upgrade the plugin on every device that uses the vault, because an older version would write old-style entries into the hub. Then run `/vault-pkm:migrate-devlog <project>` (or `npx obsidian-pkm migrate-devlog <project>`). It previews by default and writes nothing; add `--apply` (the command asks first) to write one note per day, move the original to `.trash/`, and turn `devlog.md` into the hub. Text in the old file that is not an entry is kept under `## Kept from the old devlog`. If a step fails, the vault is put back as it was.
 
+**Finishing the upgrade.** You don't need to remember these steps. When a session starts, the plugin checks for what an older setup left behind:
+- an old `05-Templates/devlog.md`;
+- a `devlog.md` that still holds old-style entries;
+- a `## PKM Integration` section in the repo's `CLAUDE.md`.
+
+Anything it finds goes into Claude's context only, with the exact commands. Claude mentions it once, after your first request, and asks before running anything. Say "not now" and it comes back next session. Say "never" and Claude runs `npx obsidian-pkm upgrade dismiss`, which remembers the answer on that device; `npx obsidian-pkm upgrade reset` brings every dismissed step back. `npx obsidian-pkm doctor` lists each step as done, left or dismissed.
+
 **Fuzzy path resolution** lets read-only tools accept short names instead of full vault paths. `vault_read({ path: "devlog" })` resolves to `01-Projects/MyApp/development/devlog.md` automatically (`.md` extension optional). Folder-scoped tools like `vault_list`, `vault_search`, and `vault_query` accept partial folder names — `folder: "MyApp"` resolves to `01-Projects/MyApp`. A short name containing `/` must match the end of the real path (`development/devlog` finds `01-Projects/MyApp/development/devlog.md`). Ambiguous matches return an error listing candidates; pass the full path. Write/destructive tools always require exact paths and only accept `.md` notes outside dot-folders.
 
 ## Troubleshooting
@@ -393,7 +404,7 @@ OpenAI rejected the key (HTTP 401/403) or the account has no credits left (HTTP 
 Every note write briefly creates hidden files beside the note: a lock (`.<hash>.lock`, plus `.<hash>.takeover.lock` while a stale lock is being taken over) and a staging file (`.<hash>.<pid>.<rand>.tmp`). They are removed within moments, but a sync or version-control tool that does not skip dotfiles can pick them up. Ignore the patterns `.*.lock` and `.*.tmp` there (for example `(?d).*.lock` and `(?d).*.tmp` in Syncthing's `.stignore`, or `.*.lock` and `.*.tmp` in the `.gitignore` used by obsidian-git). A crashed write can leave one behind; it is safe to delete, and the plugin treats a lock older than 10 seconds as stale.
 
 **Not sure if everything is set up correctly?**
-Run `npx obsidian-pkm doctor` for a diagnostic checklist that validates your Node version, vault path, templates, API keys, and native dependencies. It reads `VAULT_PATH` and the OpenAI key from your shell environment or, failing that, from the `env` block of `~/.claude/settings.json`, and says which source it used.
+Run `npx obsidian-pkm doctor` for a diagnostic checklist that validates your Node version, vault path, templates, API keys, and native dependencies, and lists which upgrade steps are left. It reads `VAULT_PATH` and the OpenAI key from your shell environment or, failing that, from the `env` block of `~/.claude/settings.json`, and says which source it used.
 
 ## Contributing
 
