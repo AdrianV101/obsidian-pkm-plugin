@@ -959,6 +959,90 @@ describe("mutateFile staging and locking", () => {
     assert.deepEqual(await tempNames(d), []);
   });
 
+  describe("Windows: creating a lock file refused while the previous one is still being deleted", () => {
+    const eperm = (file) => Object.assign(new Error(`EPERM: operation not permitted, open '${file}'`), { code: "EPERM" });
+    // Refuses the first `times` creations of files whose name passes `which`, as Windows does for
+    // a file another process has deleted while a handle to it is still open.
+    const refusing = (times, which = () => true) => {
+      let refused = 0;
+      return {
+        create: async (file, token) => {
+          if (which(file) && refused < times) {
+            refused++;
+            throw eperm(file);
+          }
+          await fs.writeFile(file, token, { flag: "wx" });
+        },
+        refused: () => refused,
+      };
+    };
+    const recording = () => {
+      const delays = [];
+      return { delays, sleep: async (ms) => { delays.push(ms); } };
+    };
+
+    it("waits and takes the lock once it can be created", async () => {
+      const { d, p } = await sub();
+      const target = await fs.realpath(p);
+      const c = refusing(2);
+      const s = recording();
+      const release = await acquireLockFile(target, {
+        staleLockMs: 10_000, lockTimeoutMs: 15_000, sleep: s.sleep, windows: true, create: c.create,
+      });
+      assert.equal(c.refused(), 2);
+      assert.equal(s.delays.length, 2);
+      assert.equal((await tempNames(d)).filter((n) => n.endsWith(".lock")).length, 1);
+      await release();
+      assert.deepEqual(await tempNames(d), []);
+    });
+
+    it("reports EPERM once it has lasted for the lock timeout, leaving no lock behind", async () => {
+      const { d, p } = await sub();
+      const target = await fs.realpath(p);
+      const s = recording();
+      await assert.rejects(
+        () => acquireLockFile(target, {
+          staleLockMs: 10_000, lockTimeoutMs: 500, sleep: s.sleep, windows: true, create: refusing(Infinity).create,
+        }),
+        { code: "EPERM" }
+      );
+      assert.ok(s.delays.reduce((a, b) => a + b, 0) >= 500);
+      assert.deepEqual(await tempNames(d), []);
+    });
+
+    it("fails at once with EPERM on other platforms", async () => {
+      const { p } = await sub();
+      const target = await fs.realpath(p);
+      const s = recording();
+      await assert.rejects(
+        () => acquireLockFile(target, {
+          staleLockMs: 10_000, lockTimeoutMs: 15_000, sleep: s.sleep, windows: false, create: refusing(1).create,
+        }),
+        { code: "EPERM" }
+      );
+      assert.deepEqual(s.delays, []);
+    });
+
+    it("a takeover guard that cannot be created yet sends the waiter back to waiting, and it then takes over the stale lock", async () => {
+      const { d, p } = await sub();
+      const lock = await lockPathFor(d, p);
+      await fs.writeFile(lock, "token of a crashed process");
+      const old = new Date(Date.now() - 60_000);
+      await fs.utimes(lock, old, old);
+      const target = await fs.realpath(p);
+      const c = refusing(1, (file) => file.endsWith(".takeover.lock"));
+      const s = recording();
+      const release = await acquireLockFile(target, {
+        staleLockMs: 10_000, lockTimeoutMs: 15_000, sleep: s.sleep, windows: true, create: c.create,
+      });
+      assert.equal(c.refused(), 1);
+      assert.equal(s.delays.length, 1);
+      assert.notEqual(await fs.readFile(lock, "utf-8"), "token of a crashed process");
+      await release();
+      assert.deepEqual(await tempNames(d), []);
+    });
+  });
+
   it("withNoteLock runs its function under the same lock, so an update queued behind a rename cannot recreate the old path", async () => {
     const { d, p } = await sub();
     const moved = path.join(d, "moved.md");
