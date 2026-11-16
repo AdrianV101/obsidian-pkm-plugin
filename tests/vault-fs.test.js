@@ -808,6 +808,26 @@ describe("mutateFile staging and locking", () => {
     assert.deepEqual(await tempNames(d), []);
   });
 
+  it("taking over a stale lock removes the note's old temp files, keeping recent ones and other notes'", async () => {
+    const { d, p } = await sub();
+    const held = await lockPathFor(d, p);
+    // Temp names start with the first 8 characters of the hash the lock name carries.
+    const hash = path.basename(held).slice(1, 9);
+    const old = new Date(Date.now() - 60_000);
+    const orphan = `.${hash}.99999999.aaaaaa.tmp`;
+    const recent = `.${hash}.99999998.bbbbbb.tmp`;
+    const otherNote = `.${hash === "00000000" ? "11111111" : "00000000"}.99999999.cccccc.tmp`;
+    for (const name of [orphan, recent, otherNote]) await fs.writeFile(path.join(d, name), "staged");
+    for (const name of [orphan, otherNote]) await fs.utimes(path.join(d, name), old, old);
+    await fs.writeFile(held, "99999999 0");
+    await fs.utimes(held, old, old);
+
+    await mutateFile(p, (c) => c + "x", { staleLockMs: 10_000, sleep: async () => {} });
+
+    assert.equal(await fs.readFile(p, "utf-8"), "start\nx");
+    assert.deepEqual((await tempNames(d)).sort(), [otherNote, recent].sort());
+  });
+
   it("release leaves in place a lock that another process has taken over meanwhile", async () => {
     const { d, p } = await sub();
     let lock;
