@@ -23,6 +23,8 @@ export function formatUpgradeBlock(report, { commandPrefix, maxChars = UPGRADE_B
   const short = (text) => text.replaceAll(`${commandPrefix} `, "obsidian-pkm ");
   const left = report.steps.filter((s) => s.state === "left");
   const required = left.filter((s) => s.required).map(stepLine("Required")).map(short);
+  const requiredShort = left.filter((s) => s.required)
+    .map((s) => ({ ...s, fix: s.shortFix || s.fix })).map(stepLine("Required")).map(short);
   const optional = left.filter((s) => !s.required).map(stepLine("Optional")).map(short);
   const others = report.otherProjects;
   if (required.length === 0 && optional.length === 0 && others.length === 0) return "";
@@ -38,9 +40,11 @@ export function formatUpgradeBlock(report, { commandPrefix, maxChars = UPGRADE_B
     [...header, ...req, ...(othersLine ? [othersLine] : []), ...opt, ...(cut ? [doctorLine] : [])].join("\n");
 
   // Cuts in order of what Claude can best do without: other projects' names, optional
-  // steps (last first), the other projects altogether, then required steps (last first).
+  // steps (last first), the other projects altogether, the detail in required steps' fixes
+  // (a long install path), then required steps (last first).
   const candidates = [build(required, named, optional, false)];
   for (let keep = optional.length; keep >= 0; keep--) candidates.push(build(required, counted, optional.slice(0, keep), true));
-  for (let keep = required.length; keep >= 0; keep--) candidates.push(build(required.slice(0, keep), null, [], true));
+  candidates.push(build(required, null, [], true));
+  for (let keep = requiredShort.length; keep >= 0; keep--) candidates.push(build(requiredShort.slice(0, keep), null, [], true));
   return candidates.find((block) => block.length <= maxChars) ?? "";
 }
