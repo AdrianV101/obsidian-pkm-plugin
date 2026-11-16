@@ -138,7 +138,7 @@ function mergeCandidates(notes, legacy, dirAbs, folder) {
  */
 function compareTasks(a, b) {
   /** @param {OpenTask} t */
-  const rank = (t) => PRIORITY_RANK.get(t.priority) ?? PRIORITY_RANK.get("normal");
+  const rank = (t) => PRIORITY_RANK.get(t.priority.toLowerCase()) ?? PRIORITY_RANK.get("normal");
   return (a.status === b.status ? 0 : a.status === "active" ? -1 : 1)
     || rank(a) - rank(b)
     || (a.due === b.due ? 0 : a.due === null ? 1 : b.due === null ? -1 : a.due < b.due ? -1 : 1)
@@ -154,7 +154,10 @@ async function loadTasks(projectDir) {
   const taskDir = path.join(projectDir, "tasks");
   let names;
   try {
-    names = (await fs.readdir(taskDir)).filter(name => name.endsWith(".md"));
+    // Regular files only: symlinks are skipped, as in every other vault listing.
+    names = (await fs.readdir(taskDir, { withFileTypes: true }))
+      .filter(e => e.isFile() && e.name.endsWith(".md"))
+      .map(e => e.name);
   } catch (e) {
     if (e.code !== "ENOENT") console.error("PKM load-context: error reading tasks:", e.message);
     return [];
@@ -165,7 +168,7 @@ async function loadTasks(projectDir) {
     try {
       content = await fs.readFile(path.join(taskDir, name), "utf-8");
     } catch (e) {
-      if (e.code !== "EISDIR") console.error(`PKM load-context: error reading task ${name}:`, e.message);
+      console.error(`PKM load-context: error reading task ${name}:`, e.message);
       continue;
     }
     const { frontmatterText } = splitFrontmatter(content.replace(/^\uFEFF/, ""));
@@ -174,7 +177,7 @@ async function loadTasks(projectDir) {
     const status = field("status");
     if (status !== "active" && status !== "pending") continue;
     const due = /^\d{4}-\d{2}-\d{2}/.exec(field("due") ?? "")?.[0] ?? null;
-    tasks.push({ name: name.slice(0, -3), status, priority: (field("priority") ?? "normal").toLowerCase(), due });
+    tasks.push({ name: name.slice(0, -3), status, priority: field("priority") || "normal", due });
   }
   return tasks.sort(compareTasks);
 }

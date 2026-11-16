@@ -243,18 +243,18 @@ describe("loadProjectContext open tasks", () => {
     assert.equal(meta.tasks, 4);
   });
 
-  it("orders active before pending, then priority (missing or unknown counts as normal), then earliest due, then name", async () => {
+  it("orders active before pending, then priority in any case (missing, empty or unknown counts as normal), then earliest due, then name; priority shows as written", async () => {
     const tasks = {
       "p-low": { status: "pending", priority: "low" },
-      "a-normal": { status: "active", priority: "normal" },
       "a-high-late": { status: "active", priority: "high", due: "2026-12-01" },
       "a-high-early": { status: "active", priority: "high", due: "2026-11-01" },
       "a-high-undated": { status: "active", priority: "high", due: "null" },
+      "a-caps": { status: "active", priority: "HIGH" },
       "a-urgent": { status: "active", priority: "urgent" },
-      "a-unknown": { status: "active", priority: "whenever" },
+      "a-unknown": { status: "active", priority: "Whenever" },
       "a-missing": { status: "active" },
+      "a-empty": { status: "active", priority: '""' },
       "p-urgent": { status: "pending", priority: "urgent" },
-      "b-normal": { status: "active", priority: "normal" },
     };
     for (const [name, fields] of Object.entries(tasks)) await write(`tasks/${name}.md`, taskNote(fields));
     const { context } = await loadProjectContext(vaultPath, projectPath);
@@ -262,14 +262,31 @@ describe("loadProjectContext open tasks", () => {
       "- a-urgent (active, urgent)",
       "- a-high-early (active, high, due 2026-11-01)",
       "- a-high-late (active, high, due 2026-12-01)",
+      "- a-caps (active, HIGH)",
       "- a-high-undated (active, high)",
+      "- a-empty (active, normal)",
       "- a-missing (active, normal)",
-      "- a-normal (active, normal)",
-      "- a-unknown (active, whenever)",
-      "- b-normal (active, normal)",
+      "- a-unknown (active, Whenever)",
       "- p-urgent (pending, urgent)",
       "- p-low (pending, low)",
     ]);
+  });
+
+  it("skips symlinked task notes, as every other vault listing does, without a stderr line", { skip: process.platform === "win32" }, async (t) => {
+    const outside = await fs.mkdtemp(path.join(os.tmpdir(), "pkm-outside-"));
+    try {
+      await fs.writeFile(path.join(outside, "secret.md"), taskNote({ status: "active", priority: "urgent" }));
+      await write("tasks/real.md", taskNote({ status: "pending" }));
+      await fs.symlink(path.join(outside, "secret.md"), path.join(projectDir(), "tasks", "linked.md"));
+      await fs.symlink(path.join(outside, "missing.md"), path.join(projectDir(), "tasks", "dangling.md"));
+      const errors = t.mock.method(console, "error", () => {});
+      const { context, meta } = await loadProjectContext(vaultPath, projectPath);
+      assert.deepEqual(taskLines(context), ["- real (pending, normal)"]);
+      assert.equal(meta.tasks, 1);
+      assert.equal(errors.mock.callCount(), 0);
+    } finally {
+      await fs.rm(outside, { recursive: true, force: true });
+    }
   });
 
   it("lists at most 10 tasks, then +N more with the vault_query that finds the rest", async () => {
