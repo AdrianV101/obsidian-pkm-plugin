@@ -1,7 +1,8 @@
 // Whether the activity log may delete entries older than its retention window. A log this
 // version creates may; a log an older version left behind waits for the user's approval
-// (`obsidian-pkm trim-activity`). The server records the state beside the log, and session
-// start reads it to raise the upgrade step, so this module uses only node: imports.
+// (`obsidian-pkm trim-activity`). The log itself holds the approval (activity.js); at each start
+// the server copies the state here for session start, which raises the upgrade step and cannot
+// open SQLite, so this module uses only node: imports. Nothing reads this file to decide a deletion.
 
 import fs from "node:fs/promises";
 import path from "node:path";

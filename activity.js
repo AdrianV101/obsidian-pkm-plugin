@@ -1,7 +1,7 @@
 import Database from "better-sqlite3";
 import fs from "fs/promises";
 import path from "path";
-import { readActivityRetention, writeActivityRetention } from "./activity-retention.js";
+import { writeActivityRetention } from "./activity-retention.js";
 
 const MAX_ARG_CHARS = 200;
 // Top-level arguments whose value is a vault path. The same names inside free-text containers
@@ -137,7 +137,7 @@ export class ActivityLog {
    * @param {number|string} [opts.retentionDays] - days of history kept at startup; 0 keeps everything.
    *   Defaults to VAULT_PKM_ACTIVITY_RETENTION_DAYS, else 90. Invalid values fall back to 90.
    *   A log an older version left behind keeps everything until the user approves trimming
-   *   (activity-retention.js), unless this value was set explicitly.
+   *   (approveRetention), unless this value was set explicitly.
    */
   constructor({ vaultPath, sessionId, retentionDays = process.env.VAULT_PKM_ACTIVITY_RETENTION_DAYS }) {
     this.vaultPath = vaultPath;
@@ -154,7 +154,6 @@ export class ActivityLog {
   async initialize() {
     const dbDir = path.dirname(this.dbPath);
     await fs.mkdir(dbDir, { recursive: true });
-    const existed = await fs.access(this.dbPath).then(() => true, () => false);
 
     this.db = new Database(this.dbPath);
     try {
@@ -167,7 +166,28 @@ export class ActivityLog {
       // drops does not linger in the file even if the one-time VACUUM below fails.
       this.db.pragma("secure_delete = ON");
 
-      this.db.exec(`
+      this.#createTables();
+      this.#migrate();
+      await this.#applyRetention();
+      this.#reclaimSpace();
+    } catch (e) {
+      this.db.close();
+      this.db = null;
+      throw e;
+    }
+  }
+
+  /**
+   * Create the tables. A log created here may trim entries outside the window from the start; the
+   * approval is kept in the log itself, so an older log that later takes its place (a restored
+   * backup, a late sync) does not inherit it. IMMEDIATE makes the check and the creation one step
+   * when two servers start on a new vault together.
+   */
+  #createTables() {
+    const db = this.db;
+    db.transaction(() => {
+      const fresh = !db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'activity'").get();
+      db.exec(`
         CREATE TABLE IF NOT EXISTS activity (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
           timestamp TEXT NOT NULL,
@@ -178,15 +198,18 @@ export class ActivityLog {
         CREATE INDEX IF NOT EXISTS idx_activity_session ON activity(session_id);
         CREATE INDEX IF NOT EXISTS idx_activity_tool ON activity(tool_name);
         CREATE INDEX IF NOT EXISTS idx_activity_timestamp ON activity(timestamp);
+        CREATE TABLE IF NOT EXISTS activity_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
       `);
-      this.#migrate();
-      await this.#applyRetention(existed);
-      this.#reclaimSpace();
-    } catch (e) {
-      this.db.close();
-      this.db = null;
-      throw e;
-    }
+      if (fresh) this.#setRetentionApproved();
+    }).immediate();
+  }
+
+  #setRetentionApproved() {
+    this.db.prepare("INSERT OR REPLACE INTO activity_meta (key, value) VALUES ('retention', 'approved')").run();
+  }
+
+  #retentionApproved() {
+    return this.db.prepare("SELECT value FROM activity_meta WHERE key = 'retention'").get()?.value === "approved";
   }
 
   #migrate() {
@@ -239,24 +262,24 @@ export class ActivityLog {
 
   /**
    * Delete entries outside the window, but on a log an older version left behind only once the
-   * user approved it or set a retention explicitly. Until then, record how many entries are
-   * outside the window, for the upgrade step that asks.
-   * @param {boolean} existed whether the database file was there before this start
+   * user approved it or while a retention is set explicitly. Then copy the state to
+   * activity-retention.json for session start, with the count of entries still outside the window.
    */
-  async #applyRetention(existed) {
-    const approved = !existed || (await readActivityRetention(this.vaultPath))?.state === "approved";
-    if (!existed) await this.#recordRetention({ state: "approved" });
+  async #applyRetention() {
+    const approved = this.#retentionApproved();
     const cutoff = this.#cutoff();
     this.deletedAtStart = cutoff && (approved || this.retentionChosen)
       ? this.db.prepare("DELETE FROM activity WHERE timestamp < ?").run(cutoff).changes
       : 0;
-    if (!approved) {
+    if (approved) {
+      await this.#recordRetention({ state: "approved" });
+    } else {
       const older = cutoff ? this.db.prepare("SELECT COUNT(*) AS n FROM activity WHERE timestamp < ?").get(cutoff).n : 0;
       await this.#recordRetention({ state: "pending", days: this.retentionDays, older, checked: new Date().toISOString() });
     }
   }
 
-  /** A state file that can't be written must not disable the log; trimming then simply waits. */
+  /** The copy for session start; failing to write it must not disable the log or undo an approval. */
   async #recordRetention(state) {
     try {
       await writeActivityRetention(this.vaultPath, state);
@@ -272,8 +295,12 @@ export class ActivityLog {
    */
   async approveRetention() {
     const cutoff = this.#cutoff();
-    const deleted = cutoff ? this.db.prepare("DELETE FROM activity WHERE timestamp < ?").run(cutoff).changes : 0;
-    await writeActivityRetention(this.vaultPath, { state: "approved" });
+    // The approval and the deletion it allows land together or not at all.
+    const deleted = this.db.transaction(() => {
+      this.#setRetentionApproved();
+      return cutoff ? this.db.prepare("DELETE FROM activity WHERE timestamp < ?").run(cutoff).changes : 0;
+    }).immediate();
+    await this.#recordRetention({ state: "approved" });
     return deleted;
   }
 

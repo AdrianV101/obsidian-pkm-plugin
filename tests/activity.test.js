@@ -5,7 +5,7 @@ import path from "path";
 import os from "os";
 import Database from "better-sqlite3";
 import { ActivityLog, summarizeArgs, buildActivityQuery } from "../activity.js";
-import { readActivityRetention, writeActivityRetention, activityRetentionFile } from "../activity-retention.js";
+import { readActivityRetention, activityRetentionFile } from "../activity-retention.js";
 
 let tmpDir;
 
@@ -747,7 +747,7 @@ describe("retention approval for a log that predates the retention window", () =
     await fs.rm(dir, { recursive: true });
   });
 
-  it("while pending, each start records how many entries are older than 90 days; once approved, a start deletes them", async () => {
+  it("while pending, each start records how many entries are older than 90 days; once approved, every start deletes them", async () => {
     const dir = await olderLog([0, 91, 400]);
     await start(dir);
     const pending = await readActivityRetention(dir);
@@ -756,9 +756,16 @@ describe("retention approval for a log that predates the retention window", () =
     assert.equal(pending.older, 2);
     assert.ok(!Number.isNaN(Date.parse(pending.checked)), pending.checked);
 
-    await writeActivityRetention(dir, { state: "approved" });
-    assert.deepEqual((await start(dir)).tools, ["age_0"]);
+    const log = new ActivityLog({ vaultPath: dir, sessionId: "s" });
+    await log.initialize();
+    assert.equal(await log.approveRetention(), 2);
+    log.shutdown();
     assert.deepEqual(await readActivityRetention(dir), { state: "approved" });
+
+    const db = openRaw(dir);
+    db.prepare("INSERT INTO activity (timestamp, session_id, tool_name, args_json) VALUES (?, 's', 'age_200', '{}')").run(ago(200));
+    db.close();
+    assert.deepEqual((await start(dir)).tools, ["age_0"]);
     await fs.rm(dir, { recursive: true });
   });
 
@@ -790,8 +797,43 @@ describe("retention approval for a log that predates the retention window", () =
     }
   });
 
+  it("only the log itself records approval: an older log stays pending whatever the state file beside it says", async () => {
+    // A backup of an older log restored over one this version created, or an older log that
+    // syncs in late, finds the state file the newer log left: "approved".
+    const dir = await freshVault();
+    await start(dir);
+    assert.deepEqual(await readActivityRetention(dir), { state: "approved" });
+    for (const suffix of ["", "-wal", "-shm"]) await fs.rm(path.join(dir, ".obsidian", `activity-log.db${suffix}`), { force: true });
+    createOldSchemaDb(dir, [{ tool: "age_0", timestamp: ago(0), args: {} }, { tool: "age_400", timestamp: ago(400), args: {} }]).close();
+
+    assert.deepEqual((await start(dir)).tools, ["age_0", "age_400"]);
+    assert.equal((await readActivityRetention(dir)).state, "pending");
+    await fs.rm(dir, { recursive: true });
+  });
+
+  it("approval survives a state file that can't be written: the next start still trims and rewrites the file", async () => {
+    const dir = await olderLog([0, 400]);
+    await start(dir);
+    const file = activityRetentionFile(dir);
+    await fs.rm(file);
+    await fs.mkdir(file);
+
+    const log = new ActivityLog({ vaultPath: dir, sessionId: "s" });
+    await log.initialize();
+    assert.equal(await log.approveRetention(), 1);
+    log.shutdown();
+
+    await fs.rm(file, { recursive: true });
+    const db = openRaw(dir);
+    db.prepare("INSERT INTO activity (timestamp, session_id, tool_name, args_json) VALUES (?, 's', 'age_300', '{}')").run(ago(300));
+    db.close();
+    assert.deepEqual((await start(dir)).tools, ["age_0"]);
+    assert.deepEqual(await readActivityRetention(dir), { state: "approved" });
+    await fs.rm(dir, { recursive: true });
+  });
+
   it("an older log whose state file is missing, unreadable or unrecognised counts as pending", async () => {
-    for (const content of [null, "not json", JSON.stringify({ state: "yes" }), JSON.stringify(["approved"])]) {
+    for (const content of [null, "not json", JSON.stringify({ state: "yes" }), JSON.stringify(["approved"]), JSON.stringify({ state: "approved" })]) {
       const dir = await olderLog([0, 400]);
       await start(dir);
       const file = activityRetentionFile(dir);
