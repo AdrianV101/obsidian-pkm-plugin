@@ -84,7 +84,7 @@ Without this, knowledge stays fragmented across per-project memory files and cha
 | Tool | Description |
 |------|-------------|
 | `vault_read` | Read note contents (pagination by heading, tail, chunk, line range; auto-redirects large files). Output is capped with a hint for reading on; a duplicated heading returns an error listing its line numbers |
-| `vault_peek` | Inspect file metadata and structure without reading full content |
+| `vault_peek` | Inspect file metadata and structure without reading full content; the heading outline shows line numbers and pages 50 headings at a time (`outline_offset`) |
 | `vault_list` | List files and folders |
 | `vault_recent` | Recently modified files |
 

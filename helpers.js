@@ -18,7 +18,7 @@ export { updateFrontmatter, validateFieldEnum } from "./frontmatter.js";
 export const AUTO_REDIRECT_THRESHOLD = 80_000;  // ~20k tokens
 export const FORCE_HARD_CAP = 400_000;           // ~100k tokens
 export const CHUNK_SIZE = 80_000;                 // chars per chunk
-const MAX_OUTLINE_HEADINGS = 50;
+const OUTLINE_PAGE = 50;
 
 const PRIORITY_RANKS = { urgent: 3, high: 2, normal: 1, low: 0 };
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
@@ -609,10 +609,11 @@ export function computePeek(content, relativePath) {
  * Format peek data into a human-readable string.
  *
  * @param {{ path: string, sizeChars: number, sizeLines: number, frontmatter: Object|null, headings: Array, preview: string, totalChunks: number }} peekData
- * @param {{ redirected?: boolean, formatPath?: (p: string) => string }} [options]
+ * @param {{ redirected?: boolean, formatPath?: (p: string) => string, outlineOffset?: number }} [options]
+ *   outlineOffset: how many headings the outline skips; 0, or below the heading count
  * @returns {string}
  */
-export function formatPeek(peekData, { redirected = false, formatPath } = {}) {
+export function formatPeek(peekData, { redirected = false, formatPath, outlineOffset = 0 } = {}) {
   const { path: filePath, sizeChars, sizeLines, frontmatter, headings, preview, totalChunks } = peekData;
   const parts = [];
   const displayPath = formatPath ? formatPath(filePath) : filePath;
@@ -631,14 +632,19 @@ export function formatPeek(peekData, { redirected = false, formatPath } = {}) {
 
   if (headings.length > 0) {
     parts.push("");
-    parts.push("### Heading Outline");
-    for (const h of headings.slice(0, MAX_OUTLINE_HEADINGS)) {
+    const page = headings.slice(outlineOffset, outlineOffset + OUTLINE_PAGE);
+    const paged = outlineOffset > 0 || headings.length > OUTLINE_PAGE;
+    parts.push(paged
+      ? `### Heading Outline (headings ${outlineOffset + 1}-${outlineOffset + page.length} of ${headings.length})`
+      : "### Heading Outline");
+    for (const h of page) {
       const indent = "  ".repeat(h.level - 1);
       const title = h.heading.replace(/^#+\s*/, "");
-      parts.push(`${indent}${title} [${h.charCount} chars]`);
+      parts.push(`${indent}${title} [line ${h.lineNumber}, ${h.charCount} chars]`);
     }
-    if (headings.length > MAX_OUTLINE_HEADINGS) {
-      parts.push(`… +${headings.length - MAX_OUTLINE_HEADINGS} more`);
+    const after = headings.length - outlineOffset - page.length;
+    if (after > 0) {
+      parts.push(`… +${after} more (vault_peek outline_offset: ${outlineOffset + page.length})`);
     }
   }
 
