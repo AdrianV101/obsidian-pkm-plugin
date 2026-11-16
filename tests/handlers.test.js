@@ -1088,6 +1088,22 @@ describe("handleEdit", () => {
       /old_string must be a non-empty string/
     );
   });
+
+  it("rejects a new_string that is missing or not a string, leaving the note unchanged", async () => {
+    for (const new_string of [undefined, null, 42, ["line TWO"]]) {
+      await assert.rejects(
+        () => handlers.get("vault_edit")({ path: editFile, old_string: "line two", new_string }),
+        /new_string must be a string/,
+        `new_string: ${JSON.stringify(new_string)}`
+      );
+    }
+    assert.equal(await fs.readFile(path.join(tmpDir, editFile), "utf-8"), "line one\nline two\nline three\n");
+  });
+
+  it("an empty new_string deletes the match", async () => {
+    await handlers.get("vault_edit")({ path: editFile, old_string: "line two\n", new_string: "" });
+    assert.equal(await fs.readFile(path.join(tmpDir, editFile), "utf-8"), "line one\nline three\n");
+  });
 });
 
 // ─── vault_search ──────────────────────────────────────────────────────
@@ -2473,6 +2489,24 @@ describe("handleUpdateFrontmatter", () => {
       assert.ok(e.message.includes("tasks/no-such-file.md"), "should include relative path");
       assert.ok(!e.message.includes(tmpDir), "should not leak absolute vault path");
     }
+  });
+
+  it("rejects fields that are missing or not an object, leaving the note unchanged", async () => {
+    await handlers.get("vault_write")({
+      template: "task",
+      path: "tasks/fm-bad-fields.md",
+      frontmatter: { tags: ["task"] }
+    });
+    const file = path.join(tmpDir, "tasks/fm-bad-fields.md");
+    const before = await fs.readFile(file, "utf-8");
+    for (const fields of [undefined, null, "status: done", ["status"], 5]) {
+      await assert.rejects(
+        () => handlers.get("vault_update_frontmatter")({ path: "tasks/fm-bad-fields.md", fields }),
+        /fields must be an object/,
+        `fields: ${JSON.stringify(fields)}`
+      );
+    }
+    assert.equal(await fs.readFile(file, "utf-8"), before);
   });
 
   it("errors on file without frontmatter", async () => {
