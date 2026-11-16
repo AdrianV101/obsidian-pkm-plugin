@@ -6,6 +6,7 @@ import path from "path";
 import os from "os";
 import { makeRepo, makeProject } from "./git-fixture.js";
 import { addDismissal, dismissalFile } from "../upgrade-dismissals.js";
+import { writeActivityRetention } from "../activity-retention.js";
 
 const CLI = path.join(import.meta.dirname, "..", "cli.js");
 const KEY_VARS = ["VAULT_PKM_OPENAI_KEY", "OBSIDIAN_PKM_OPENAI_KEY", "OPENAI_API_KEY"];
@@ -415,38 +416,45 @@ describe("doctor upgrade section", () => {
     await write("05-Templates/devlog.md", OLD_TEMPLATE);
     await write("01-Projects/MyApp/development/devlog.md", OLD_DEVLOG);
     await fs.writeFile(path.join(repo, "CLAUDE.md"), SECTION);
+    await writeActivityRetention(vaultPath, { state: "pending", days: 90, older: 5, checked: "2026-11-16T10:00:00.000Z" });
   }
 
   it("gives each step one line: left as a warning with its fix, dismissed and done as passed", async () => {
     await leaveAllSteps();
     const left = await run();
     const leftLines = upgradeLines(left.stdout);
-    assert.equal(leftLines.length, 3, left.stdout);
+    assert.equal(leftLines.length, 4, left.stdout);
     assert.match(leftLines[0], /^⚠ Upgrade: devlog-template left\. 05-Templates\/devlog\.md /);
     assert.ok(leftLines[1].startsWith("⚠ Upgrade: devlog-migration left for 01-Projects/MyApp. "), leftLines[1]);
     assert.ok(leftLines[1].includes("migrate-devlog 01-Projects/MyApp"), leftLines[1]);
     assert.ok(leftLines[2].startsWith(`⚠ Upgrade: claude-md-section left for ${repo}. `), leftLines[2]);
+    assert.ok(leftLines[3].startsWith("⚠ Upgrade: activity-retention left. "), leftLines[3]);
+    assert.ok(leftLines[3].includes("trim-activity"), leftLines[3]);
 
     await addDismissal({ step: "devlog-template", vault: vaultPath, target: null }, { home: fakeHome });
     await addDismissal({ step: "devlog-migration", vault: vaultPath, target: "01-Projects/MyApp" }, { home: fakeHome });
     await addDismissal({ step: "claude-md-section", vault: vaultPath, target: repo }, { home: fakeHome });
+    await addDismissal({ step: "activity-retention", vault: vaultPath, target: null }, { home: fakeHome });
     assert.deepEqual(upgradeLines((await run()).stdout), [
       "✓ Upgrade: devlog-template dismissed on this device (undo: obsidian-pkm upgrade reset)",
       "✓ Upgrade: devlog-migration dismissed on this device for 01-Projects/MyApp (undo: obsidian-pkm upgrade reset)",
       `✓ Upgrade: claude-md-section dismissed on this device for ${repo} (undo: obsidian-pkm upgrade reset)`,
+      "✓ Upgrade: activity-retention dismissed on this device (undo: obsidian-pkm upgrade reset)",
     ]);
 
     await fs.rm(dismissalFile(fakeHome));
     await write("05-Templates/devlog.md", hub);
     await write("01-Projects/MyApp/development/devlog.md", hub);
     await fs.writeFile(path.join(repo, "CLAUDE.md"), "# MyApp\n");
+    await writeActivityRetention(vaultPath, { state: "approved" });
     const done = await run();
     assert.deepEqual(upgradeLines(done.stdout), [
       "✓ Upgrade: devlog-template done",
       "✓ Upgrade: devlog-migration done",
       "✓ Upgrade: claude-md-section done",
+      "✓ Upgrade: activity-retention done",
     ]);
-    assert.equal(warningCount(left.stdout) - warningCount(done.stdout), 3, `${left.stdout}\n${done.stdout}`);
+    assert.equal(warningCount(left.stdout) - warningCount(done.stdout), 4, `${left.stdout}\n${done.stdout}`);
   });
 
   it("names the other projects whose devlog was never migrated in one warning", async () => {
@@ -481,7 +489,7 @@ describe("doctor upgrade section", () => {
     const plain = path.join(tmpDir, "plain");
     await fs.mkdir(plain);
     const outside = upgradeLines((await run(plain)).stdout);
-    assert.deepEqual(outside.map((l) => l.split(" ")[2]), ["devlog-template", "claude-md-section"], outside.join("\n"));
+    assert.deepEqual(outside.map((l) => l.split(" ")[2]), ["devlog-template", "claude-md-section", "activity-retention"], outside.join("\n"));
 
     const missing = await runDoctor({ ...process.env, VAULT_PATH: path.join(tmpDir, "nonexistent") }, repo);
     assert.deepEqual(upgradeLines(missing.stdout), []);

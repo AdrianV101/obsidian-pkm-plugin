@@ -9,6 +9,7 @@ import { parseDevlog } from "./devlog.js";
 import { parseHeadings } from "./markdown.js";
 import { claudeFileDirs } from "./hooks/resolve-project.js";
 import { readDismissals, isDismissed } from "./upgrade-dismissals.js";
+import { readActivityRetention } from "./activity-retention.js";
 
 /**
  * @typedef {object} UpgradeStep
@@ -25,7 +26,7 @@ import { readDismissals, isDismissed } from "./upgrade-dismissals.js";
 /**
  * @typedef {object} UpgradeReport
  * @property {UpgradeStep[]} steps devlog-template, then devlog-migration (when projectPath), then
- *   claude-md-section (when cwd); a step whose check failed is left out
+ *   claude-md-section (when cwd), then activity-retention; a step whose check failed is left out
  * @property {string[]} otherProjects sorted "01-Projects/<name>" paths, never projectPath, whose devlog.md has
  *   no ```base line in its first 4,096 bytes and whose devlog-migration is not dismissed
  * @property {string} othersFix how to migrate the other projects, commands spelled out; "" when there are none
@@ -70,6 +71,7 @@ export async function checkUpgrade({ vaultPath, projectPath, cwd, packageSpec, h
   const checks = [["devlog-template", () => templateStep(vault, where)]];
   if (projectPath !== null) checks.push(["devlog-migration", () => migrationStep(vault, projectPath, where)]);
   if (cwd !== null) checks.push(["claude-md-section", () => claudeMdStep(cwd, where, { home, git, timeoutMs })]);
+  checks.push(["activity-retention", () => activityStep(vault, where)]);
 
   const [outcomes, otherProjects] = await Promise.all([
     Promise.all(checks.map(async ([id, run]) => {
@@ -201,6 +203,25 @@ async function claudeMdStep(cwd, where, options) {
     state: "left",
     summary: `${files.join(" and ")} ${files.length === 1 ? "has" : "have"} a "## PKM Integration" section, which the server instructions now replace.`,
     fix: 'Offer to remove it, from the heading to the next # or ## heading but keeping any "# PKM:" line; edit only with the user\'s OK.',
+  };
+}
+
+/** @param {string} vault @param {Where} where @returns {Promise<UpgradeStep>} */
+async function activityStep(vault, where) {
+  const step = {
+    id: /** @type {const} */ ("activity-retention"),
+    required: false,
+    target: null,
+    dismiss: cliCommand(where, "upgrade", "dismiss", "activity-retention"),
+  };
+  const retention = await readActivityRetention(vault);
+  if (retention?.state !== "pending" || retention.older === 0) return done(step);
+  const entries = retention.older === 1 ? "1 entry" : `${retention.older.toLocaleString("en-US")} entries`;
+  return {
+    ...step,
+    state: "left",
+    summary: `The activity log predates its ${retention.days}-day limit, so it keeps ${entries} older than ${retention.days} days until the user agrees to delete them.`,
+    fix: `Ask whether to delete them; on the user's OK run \`${cliCommand(where, "trim-activity")}\`.`,
   };
 }
 

@@ -821,14 +821,15 @@ export class SemanticIndex {
 
     try {
       const toReindex = await this._scan();
-      if (toReindex.length === 0) {
-        console.error("Semantic index: up to date");
-        return summary;
-      }
-
+      // Probe even with nothing stale, so a persisted disabled state that no longer applies clears at startup.
       if (this._disabled && !(await this.probe())) {
         summary.skipped = toReindex.length;
         console.error(`Semantic index: ${formatDisabledMessage(this.health())} (${toReindex.length} notes stale)`);
+        return summary;
+      }
+
+      if (toReindex.length === 0) {
+        console.error("Semantic index: up to date");
         return summary;
       }
 

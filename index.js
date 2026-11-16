@@ -18,7 +18,7 @@ import { loadTemplates } from "./helpers.js";
 import { createHandlers } from "./handlers.js";
 import { createToolsList } from "./tools.js";
 import { buildServerInstructions } from "./instructions.js";
-import { normalizeVaultRoot } from "./vault-fs.js";
+import { normalizeVaultRoot, settleWrites } from "./vault-fs.js";
 
 // Read version from package.json
 const require = createRequire(import.meta.url);
@@ -161,6 +161,8 @@ export async function startServer() {
       process.exit(1);
     }, 5000);
     forceTimer.unref();
+    // A write cut off mid-way would leave its lock and temp file beside the note.
+    await settleWrites();
     try {
       if (semanticIndex) await semanticIndex.shutdown();
     } catch (e) {

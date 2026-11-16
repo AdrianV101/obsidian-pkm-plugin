@@ -15,6 +15,7 @@ import {
   writeNew,
   withNoteLock,
   acquireLockFile,
+  settleWrites,
 } from "../vault-fs.js";
 
 const IS_WIN = process.platform === "win32";
@@ -611,6 +612,79 @@ describe("writeNew", () => {
 
 // ─── mutateFile: staging order, cross-process lock, metadata ─────────────
 
+describe("settleWrites", () => {
+  let dir;
+
+  before(async () => {
+    dir = await tmp("settle-");
+  });
+
+  after(async () => {
+    await fs.rm(dir, { recursive: true, force: true });
+  });
+
+  /** A promise and the function that resolves it. */
+  function gate() {
+    let open;
+    const opened = new Promise((resolve) => { open = resolve; });
+    return { opened, open };
+  }
+
+  /** Whether `promise` has settled after the queued work so far has run. */
+  async function hasSettled(promise) {
+    let settled = false;
+    promise.then(() => { settled = true; }, () => { settled = true; });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    return settled;
+  }
+
+  it("resolves at once when no write is running", async () => {
+    assert.equal(await hasSettled(settleWrites()), true);
+  });
+
+  it("waits for a note update that is still running, which then lands in full", async () => {
+    const p = path.join(dir, "update.md");
+    await fs.writeFile(p, "start\n");
+    const { opened, open } = gate();
+    const update = mutateFile(p, async (c) => { await opened; return c + "end\n"; });
+
+    const settled = settleWrites();
+    assert.equal(await hasSettled(settled), false);
+    open();
+    await settled;
+    assert.equal(await fs.readFile(p, "utf-8"), "start\nend\n");
+    assert.deepEqual(await tempNames(dir), []);
+    await update;
+  });
+
+  it("waits for a note creation that is still running", async () => {
+    const p = path.join(dir, "created.md");
+    const { opened, open } = gate();
+    const creation = writeNew(p, "hello\n", {
+      write: async (tmpPath, text) => { await opened; await fs.writeFile(tmpPath, text, { flag: "wx" }); },
+    });
+
+    const settled = settleWrites();
+    assert.equal(await hasSettled(settled), false);
+    open();
+    await settled;
+    assert.equal(await fs.readFile(p, "utf-8"), "hello\n");
+    await creation;
+  });
+
+  it("resolves, without rejecting, when a running write fails", async () => {
+    const p = path.join(dir, "failing.md");
+    await fs.writeFile(p, "start\n");
+    const { opened, open } = gate();
+    const update = mutateFile(p, async () => { await opened; throw new Error("transform failed"); });
+
+    const settled = settleWrites();
+    open();
+    await assert.doesNotReject(settled);
+    await assert.rejects(update, /transform failed/);
+  });
+});
+
 describe("mutateFile staging and locking", () => {
   let dir;
 
@@ -806,6 +880,26 @@ describe("mutateFile staging and locking", () => {
     await mutateFile(p, (c) => c + "x", { staleLockMs: 10_000, sleep: async () => {} });
     assert.equal(await fs.readFile(p, "utf-8"), "start\nx");
     assert.deepEqual(await tempNames(d), []);
+  });
+
+  it("taking over a stale lock removes the note's old temp files, keeping recent ones and other notes'", async () => {
+    const { d, p } = await sub();
+    const held = await lockPathFor(d, p);
+    // Temp names start with the first 8 characters of the hash the lock name carries.
+    const hash = path.basename(held).slice(1, 9);
+    const old = new Date(Date.now() - 60_000);
+    const orphan = `.${hash}.99999999.aaaaaa.tmp`;
+    const recent = `.${hash}.99999998.bbbbbb.tmp`;
+    const otherNote = `.${hash === "00000000" ? "11111111" : "00000000"}.99999999.cccccc.tmp`;
+    for (const name of [orphan, recent, otherNote]) await fs.writeFile(path.join(d, name), "staged");
+    for (const name of [orphan, otherNote]) await fs.utimes(path.join(d, name), old, old);
+    await fs.writeFile(held, "99999999 0");
+    await fs.utimes(held, old, old);
+
+    await mutateFile(p, (c) => c + "x", { staleLockMs: 10_000, sleep: async () => {} });
+
+    assert.equal(await fs.readFile(p, "utf-8"), "start\nx");
+    assert.deepEqual((await tempNames(d)).sort(), [otherNote, recent].sort());
   });
 
   it("release leaves in place a lock that another process has taken over meanwhile", async () => {

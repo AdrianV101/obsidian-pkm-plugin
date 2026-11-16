@@ -1,6 +1,7 @@
 import Database from "better-sqlite3";
 import fs from "fs/promises";
 import path from "path";
+import { writeActivityRetention } from "./activity-retention.js";
 
 const MAX_ARG_CHARS = 200;
 // Top-level arguments whose value is a vault path. The same names inside free-text containers
@@ -69,6 +70,13 @@ function activityPath(args) {
   return null;
 }
 
+/** Whether the user set a retention themselves (a valid value, not the default). */
+function isRetentionChoice(value) {
+  if (value === undefined || value === null || (typeof value === "string" && value.trim() === "")) return false;
+  const n = Number(value);
+  return Number.isFinite(n) && n >= 0;
+}
+
 function normalizeRetentionDays(value) {
   if (value === undefined || value === null || (typeof value === "string" && value.trim() === "")) {
     return DEFAULT_RETENTION_DAYS;
@@ -128,11 +136,16 @@ export class ActivityLog {
    * @param {string} opts.sessionId - UUID for the current session
    * @param {number|string} [opts.retentionDays] - days of history kept at startup; 0 keeps everything.
    *   Defaults to VAULT_PKM_ACTIVITY_RETENTION_DAYS, else 90. Invalid values fall back to 90.
+   *   A log an older version left behind keeps everything until the user approves trimming
+   *   (approveRetention), unless this value was set explicitly.
    */
   constructor({ vaultPath, sessionId, retentionDays = process.env.VAULT_PKM_ACTIVITY_RETENTION_DAYS }) {
     this.vaultPath = vaultPath;
     this.sessionId = sessionId;
     this.retentionDays = normalizeRetentionDays(retentionDays);
+    this.retentionChosen = isRetentionChoice(retentionDays);
+    /** Entries the last initialize() deleted for being outside the window. */
+    this.deletedAtStart = 0;
     this.dbPath = path.join(vaultPath, ".obsidian", "activity-log.db");
     this.db = null;
   }
@@ -153,7 +166,28 @@ export class ActivityLog {
       // drops does not linger in the file even if the one-time VACUUM below fails.
       this.db.pragma("secure_delete = ON");
 
-      this.db.exec(`
+      this.#createTables();
+      this.#migrate();
+      await this.#applyRetention();
+      this.#reclaimSpace();
+    } catch (e) {
+      this.db.close();
+      this.db = null;
+      throw e;
+    }
+  }
+
+  /**
+   * Create the tables. A log created here may trim entries outside the window from the start; the
+   * approval is kept in the log itself, so an older log that later takes its place (a restored
+   * backup, a late sync) does not inherit it. IMMEDIATE makes the check and the creation one step
+   * when two servers start on a new vault together.
+   */
+  #createTables() {
+    const db = this.db;
+    db.transaction(() => {
+      const fresh = !db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'activity'").get();
+      db.exec(`
         CREATE TABLE IF NOT EXISTS activity (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
           timestamp TEXT NOT NULL,
@@ -164,15 +198,18 @@ export class ActivityLog {
         CREATE INDEX IF NOT EXISTS idx_activity_session ON activity(session_id);
         CREATE INDEX IF NOT EXISTS idx_activity_tool ON activity(tool_name);
         CREATE INDEX IF NOT EXISTS idx_activity_timestamp ON activity(timestamp);
+        CREATE TABLE IF NOT EXISTS activity_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
       `);
-      this.#migrate();
-      this.#applyRetention();
-      this.#reclaimSpace();
-    } catch (e) {
-      this.db.close();
-      this.db = null;
-      throw e;
-    }
+      if (fresh) this.#setRetentionApproved();
+    }).immediate();
+  }
+
+  #setRetentionApproved() {
+    this.db.prepare("INSERT OR REPLACE INTO activity_meta (key, value) VALUES ('retention', 'approved')").run();
+  }
+
+  #retentionApproved() {
+    return this.db.prepare("SELECT value FROM activity_meta WHERE key = 'retention'").get()?.value === "approved";
   }
 
   #migrate() {
@@ -215,12 +252,56 @@ export class ActivityLog {
     }).immediate();
   }
 
-  #applyRetention() {
-    if (this.retentionDays === 0) return;
+  /** @returns {string|null} entries before this ISO time fall outside the window; null keeps everything */
+  #cutoff() {
+    if (this.retentionDays === 0) return null;
     const cutoffMs = Date.now() - this.retentionDays * DAY_MS;
     // A window reaching back before the earliest representable date keeps everything.
-    if (!(cutoffMs >= MIN_DATE_MS)) return;
-    this.db.prepare("DELETE FROM activity WHERE timestamp < ?").run(new Date(cutoffMs).toISOString());
+    return cutoffMs >= MIN_DATE_MS ? new Date(cutoffMs).toISOString() : null;
+  }
+
+  /**
+   * Delete entries outside the window, but on a log an older version left behind only once the
+   * user approved it or while a retention is set explicitly. Then copy the state to
+   * activity-retention.json for session start, with the count of entries still outside the window.
+   */
+  async #applyRetention() {
+    const approved = this.#retentionApproved();
+    const cutoff = this.#cutoff();
+    this.deletedAtStart = cutoff && (approved || this.retentionChosen)
+      ? this.db.prepare("DELETE FROM activity WHERE timestamp < ?").run(cutoff).changes
+      : 0;
+    if (approved) {
+      await this.#recordRetention({ state: "approved" });
+    } else {
+      const older = cutoff ? this.db.prepare("SELECT COUNT(*) AS n FROM activity WHERE timestamp < ?").get(cutoff).n : 0;
+      await this.#recordRetention({ state: "pending", days: this.retentionDays, older, checked: new Date().toISOString() });
+    }
+  }
+
+  /** The copy for session start; failing to write it must not disable the log or undo an approval. */
+  async #recordRetention(state) {
+    try {
+      await writeActivityRetention(this.vaultPath, state);
+    } catch (e) {
+      console.error(`[activity] could not record the retention state: ${e.message}`);
+    }
+  }
+
+  /**
+   * The user approved trimming: delete the entries outside the window now, and at every start
+   * from now on.
+   * @returns {Promise<number>} how many entries were deleted
+   */
+  async approveRetention() {
+    const cutoff = this.#cutoff();
+    // The approval and the deletion it allows land together or not at all.
+    const deleted = this.db.transaction(() => {
+      this.#setRetentionApproved();
+      return cutoff ? this.db.prepare("DELETE FROM activity WHERE timestamp < ?").run(cutoff).changes : 0;
+    }).immediate();
+    await this.#recordRetention({ state: "approved" });
+    return deleted;
   }
 
   #reclaimSpace() {

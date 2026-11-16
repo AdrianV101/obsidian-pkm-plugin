@@ -401,6 +401,30 @@ const DEFAULT_LOCK_TIMEOUT_MS = 15_000;
 /** Per-file promise chains; module-level so every handler instance in the process shares them. */
 const fileQueues = new Map();
 
+/** Writes still running (note updates and creations), each settling when its write ends. */
+const inFlight = new Set();
+
+/**
+ * @template T
+ * @param {Promise<T>} promise
+ * @returns {Promise<T>} the same promise, tracked until it settles
+ */
+function track(promise) {
+  const settled = promise.then(() => {}, () => {});
+  inFlight.add(settled);
+  settled.then(() => inFlight.delete(settled));
+  return promise;
+}
+
+/**
+ * Wait for every write already running in this process to finish, so shutdown does not cut one
+ * off and leave its lock and temp file behind. Never rejects; a failed write counts as finished.
+ * @returns {Promise<void>}
+ */
+export async function settleWrites() {
+  await Promise.all([...inFlight]);
+}
+
 function queueByKey(key, fn) {
   const previous = fileQueues.get(key) ?? Promise.resolve();
   const run = previous.then(fn, fn);
@@ -454,14 +478,36 @@ async function lockState(file, staleLockMs) {
 }
 
 /**
+ * Remove the temp files a crashed writer left beside `target`: only this note's (they share the
+ * hash prefix) and only ones older than the stale timeout, so a slow writer's staged file survives.
+ */
+async function removeStaleTemps(target, staleLockMs) {
+  const dir = path.dirname(target);
+  const prefix = `.${shortHash(path.basename(target), 8)}.`;
+  let names;
+  try {
+    names = await fs.readdir(dir);
+  } catch {
+    return;
+  }
+  await Promise.all(names.filter((n) => n.startsWith(prefix) && n.endsWith(".tmp")).map(async (n) => {
+    const file = path.join(dir, n);
+    try {
+      if (Date.now() - (await fs.stat(file)).mtimeMs > staleLockMs) await fs.rm(file, { force: true });
+    } catch { /* already gone or unreadable: leave it */ }
+  }));
+}
+
+/**
  * Remove `lock` if it is stale (left by a crashed process). Waiters take turns through a second
  * O_EXCL file, the guard, so of several waiters that find the same stale lock only one removes it,
  * after re-checking it under the guard; the others go back to waiting. While the stale lock
  * exists nobody can create a new one, so the re-checked lock is the one removed, unless its own
  * holder, slower than `staleLockMs`, releases it in that instant and another process re-creates it.
+ * Removing a stale lock also removes the note's temp files its crashed holder left behind.
  * @returns {Promise<boolean>} true when the lock is gone (try to create it again at once)
  */
-async function takeOverIfStale(lock, staleLockMs, beforeTakeover) {
+async function takeOverIfStale(target, lock, staleLockMs, beforeTakeover) {
   const state = await lockState(lock, staleLockMs);
   if (state !== "stale") return state === "gone";
   if (beforeTakeover) await beforeTakeover();
@@ -478,7 +524,10 @@ async function takeOverIfStale(lock, staleLockMs, beforeTakeover) {
   }
   try {
     const again = await lockState(lock, staleLockMs);
-    if (again === "stale") await fs.rm(lock, { force: true });
+    if (again === "stale") {
+      await fs.rm(lock, { force: true });
+      await removeStaleTemps(target, staleLockMs);
+    }
     return again !== "fresh";
   } finally {
     await releaseLockFile(guard, token);
@@ -507,7 +556,7 @@ export async function acquireLockFile(target, { staleLockMs, lockTimeoutMs, slee
     } catch (e) {
       if (e.code !== "EEXIST") throw e;
     }
-    if (await takeOverIfStale(lock, staleLockMs, beforeTakeover)) continue;
+    if (await takeOverIfStale(target, lock, staleLockMs, beforeTakeover)) continue;
     if (waited >= lockTimeoutMs) {
       throw conflict(`Gave up updating ${path.basename(target)}: another process held its lock for ${waited} ms. Try again.`);
     }
@@ -529,20 +578,22 @@ export async function acquireLockFile(target, { staleLockMs, lockTimeoutMs, slee
  * @returns {Promise<T>}
  * @throws ENOENT (as-is) when the note does not exist
  */
-export async function withNoteLock(absPath, fn, {
+export function withNoteLock(absPath, fn, {
   staleLockMs = DEFAULT_STALE_LOCK_MS,
   lockTimeoutMs = DEFAULT_LOCK_TIMEOUT_MS,
   sleep = defaultSleep,
 } = {}) {
-  const target = await fs.realpath(absPath);
-  return queueByKey(target, async () => {
-    const release = await acquireLockFile(target, { staleLockMs, lockTimeoutMs, sleep });
-    try {
-      return await fn(target);
-    } finally {
-      await release();
-    }
-  });
+  return track((async () => {
+    const target = await fs.realpath(absPath);
+    return queueByKey(target, async () => {
+      const release = await acquireLockFile(target, { staleLockMs, lockTimeoutMs, sleep });
+      try {
+        return await fn(target);
+      } finally {
+        await release();
+      }
+    });
+  })());
 }
 
 function sameVersion(a, b) {
@@ -672,7 +723,11 @@ const LINK_UNSUPPORTED = new Set(["EPERM", "ENOTSUP", "EOPNOTSUPP", "ENOSYS"]);
  * }} [options] test seams
  * @throws {Error} code "EEXIST" when the target exists
  */
-export async function writeNew(absPath, content, {
+export function writeNew(absPath, content, options = {}) {
+  return track(createNew(absPath, content, options));
+}
+
+async function createNew(absPath, content, {
   link = (from, to) => fs.link(from, to),
   write = (tmp, text) => fs.writeFile(tmp, text, { encoding: "utf-8", flag: "wx", flush: true }),
 } = {}) {

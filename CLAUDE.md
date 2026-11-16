@@ -86,7 +86,7 @@ Finds conceptually related notes even when they use different terminology. For e
 - Uses OpenAI `text-embedding-3-large` (3072 dimensions)
 - Index stored at `$VAULT_PATH/.obsidian/semantic-index.db` (SQLite + sqlite-vec)
 - Write tools notify the index directly (`notifyChanged`/`notifyRemoved`/`notifyMoved`); a background `fs.watch` (restarted with backoff after errors) catches other changes; startup sync catches changes made while the server was stopped
-- API errors are classified (`EmbeddingError.kind`): auth and quota failures put the index into a disabled state persisted in `.obsidian/semantic-stats.json` (`status`, `reason`, `since`, `last_success_at`, `stale_files`); semantic tool calls probe once and the index re-enables on success; rate limits and transient errors are retried up to 3 times
+- API errors are classified (`EmbeddingError.kind`): auth and quota failures put the index into a disabled state persisted in `.obsidian/semantic-stats.json` (`status`, `reason`, `since`, `last_success_at`, `stale_files`); startup and each semantic tool call probe once, and the index re-enables on success; rate limits and transient errors are retried up to 3 times
 - Reindexes of one note are serialized, and the content hash is re-checked inside the store transaction
 - Chunking: whole-note for short notes, heading-based (`##`) splits for notes > ~2000 tokens
 - Params: `query` (required), `limit`, `folder`, `threshold` (0-1 similarity score), `anchor` (optional path for graph-distance weighting), `graph_weight` (0-1, default: 0.3)
@@ -132,7 +132,7 @@ Logs all MCP tool calls with timestamps and session IDs. Enables cross-session m
 - Logs every tool call except `vault_activity` itself
 - Supports filtering by tool name, session ID, date range, and path (exact note, or folder prefix; the filter matches the stored argument, so it needs the full vault-relative path, is case-sensitive, and a short name or partial folder matches nothing)
 - Arguments are summarised before storage: strings over 200 chars become `"<N chars>"`, except vault paths: the top-level `path`, `source`, `destination`, `folder`, `target`, `old_path`, `new_path` arguments and `links[].target` (the same key names inside `frontmatter`, `fields`, `custom_fields` or `variables` are summarised)
-- Retention: rows older than `VAULT_PKM_ACTIVITY_RETENTION_DAYS` (default 90; `0`, or a window too long to compute, keeps everything) are deleted at server start; the DB uses `auto_vacuum = INCREMENTAL` and `secure_delete = ON` (deleted content is zeroed)
+- Retention: rows older than `VAULT_PKM_ACTIVITY_RETENTION_DAYS` (default 90; `0`, or a window too long to compute, keeps everything) are deleted at server start, but only on a log the server created (approval recorded in its `activity_meta` table) or one the user approved with `obsidian-pkm trim-activity` (`trim-activity.js`), or while the variable is set explicitly; a log an older version left behind keeps everything until then. Each start copies the state and the count of entries outside the window to `.obsidian/activity-retention.json` (`activity-retention.js`, dependency-free) for the `activity-retention` upgrade step; nothing reads that copy to decide a deletion; the DB uses `auto_vacuum = INCREMENTAL` and `secure_delete = ON` (deleted content is zeroed)
 - Schema version in `PRAGMA user_version` (1 = indexed `path` column + summarised args)
 - Privacy: `action: "clear"` deletes entries (with optional filters), or delete the DB file
 

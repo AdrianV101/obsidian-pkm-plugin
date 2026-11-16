@@ -187,6 +187,7 @@ describe("migrate-devlog", () => {
         "Entries: 7 (### dated: 3, ## day sections: 2, ## dated: 2)",
         `Day notes: 4 in ${FOLDER}, 2026-10-01 to 2026-10-04; largest ${largest.name} (${largest.bytes} bytes)`,
         `Kept text: 2 blocks, ${keptChars} characters, starting at lines 13, ${lineOf(fx.content, "## Related")}`,
+        `Original: moved unchanged to ${TRASH} (with a timestamp if that name is taken)`,
       ];
 
       const cases = [
