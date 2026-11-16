@@ -197,12 +197,128 @@ describe("loadProjectContext items", () => {
     assert.deepEqual(labels(context), ["devlog.md: 2026-10-12 13:50 Child"]);
   });
 
-  it("task notes do not affect the context", async () => {
-    await write("tasks/add-auth.md", "---\ntype: task\nstatus: active\npriority: high\n---\n\n# Add Authentication\n");
+});
+
+/** A task note with the given frontmatter fields, written as `key: value` lines. */
+const taskNote = (fields, eol = "\n") =>
+  ["---", "type: task", ...Object.entries(fields).map(([k, v]) => `${k}: ${v}`), "---", "", "# A readable title", ""].join(eol);
+/** The lines of the Open Tasks section of a full context. */
+const taskLines = (context) => context.split("### Open Tasks\n")[1].split("\n\n")[0].split("\n");
+const MORE = (n) => `+${n} more (vault_query type: "task", folder: "${projectPath}/tasks")`;
+
+describe("loadProjectContext open tasks", () => {
+  beforeEach(async () => {
+    await write("_index.md", "---\ntype: project\n---\n\n# Big\n\n## Overview\nA test project.\n");
+  });
+
+  it("lists open tasks under ### Open Tasks between the index and the devlog: file name, status, priority, due date", async () => {
+    await write("tasks/ship-it.md", taskNote({ status: "active", priority: "high", due: "2026-11-20" }));
+    await write("tasks/later.md", taskNote({ status: "pending", priority: "low", due: "null" }));
     await writeSession("2026-10-27 10:00", "Work");
+    const { context } = await loadProjectContext(vaultPath, projectPath);
+    assert.ok(
+      context.includes("\n\n### Open Tasks\n- ship-it (active, high, due 2026-11-20)\n- later (pending, low)\n\n### Recent Development Activity\n"),
+      context,
+    );
+    assert.ok(context.indexOf("### Project Index") < context.indexOf("### Open Tasks"));
+  });
+
+  it("lists only .md notes directly in tasks/ whose status is active or pending; CRLF notes read the same", async () => {
+    const population = [
+      ["active.md", taskNote({ status: "active" }), true],
+      ["pending.md", taskNote({ status: "pending" }), true],
+      ["quoted.md", taskNote({ status: '"active"' }), true],
+      ["crlf.md", taskNote({ status: "active" }, "\r\n"), true],
+      ["done.md", taskNote({ status: "done" }), false],
+      ["cancelled.md", taskNote({ status: "cancelled" }), false],
+      ["no-status.md", taskNote({ priority: "high" }), false],
+      ["no-frontmatter.md", "# Not a task\nstatus: active\n", false],
+      ["notes.txt", taskNote({ status: "active" }), false],
+      ["sub/nested.md", taskNote({ status: "active" }), false],
+    ];
+    for (const [name, content] of population) await write(`tasks/${name}`, content);
     const { context, meta } = await loadProjectContext(vaultPath, projectPath);
-    assert.ok(!context.includes("Add Authentication") && !context.includes("Active Tasks"));
-    assert.ok(!("tasks" in meta));
+    const listed = taskLines(context).map(l => l.slice(2, l.indexOf(" (")));
+    assert.deepEqual(listed.sort(), population.filter(p => p[2]).map(p => p[0].replace(/\.md$/, "")).sort());
+    assert.equal(meta.tasks, 4);
+  });
+
+  it("orders active before pending, then priority (missing or unknown counts as normal), then earliest due, then name", async () => {
+    const tasks = {
+      "p-low": { status: "pending", priority: "low" },
+      "a-normal": { status: "active", priority: "normal" },
+      "a-high-late": { status: "active", priority: "high", due: "2026-12-01" },
+      "a-high-early": { status: "active", priority: "high", due: "2026-11-01" },
+      "a-high-undated": { status: "active", priority: "high", due: "null" },
+      "a-urgent": { status: "active", priority: "urgent" },
+      "a-unknown": { status: "active", priority: "whenever" },
+      "a-missing": { status: "active" },
+      "p-urgent": { status: "pending", priority: "urgent" },
+      "b-normal": { status: "active", priority: "normal" },
+    };
+    for (const [name, fields] of Object.entries(tasks)) await write(`tasks/${name}.md`, taskNote(fields));
+    const { context } = await loadProjectContext(vaultPath, projectPath);
+    assert.deepEqual(taskLines(context), [
+      "- a-urgent (active, urgent)",
+      "- a-high-early (active, high, due 2026-11-01)",
+      "- a-high-late (active, high, due 2026-12-01)",
+      "- a-high-undated (active, high)",
+      "- a-missing (active, normal)",
+      "- a-normal (active, normal)",
+      "- a-unknown (active, whenever)",
+      "- b-normal (active, normal)",
+      "- p-urgent (pending, urgent)",
+      "- p-low (pending, low)",
+    ]);
+  });
+
+  it("lists at most 10 tasks, then +N more with the vault_query that finds the rest", async () => {
+    for (let i = 1; i <= 13; i++) await write(`tasks/t${String(i).padStart(2, "0")}.md`, taskNote({ status: "pending" }));
+    const { context } = await loadProjectContext(vaultPath, projectPath);
+    const lines = taskLines(context);
+    assert.equal(lines.length, 11);
+    assert.equal(lines[9], "- t10 (pending, normal)");
+    assert.equal(lines[10], MORE(3));
+  });
+
+  it("says No open tasks. when the tasks folder is missing or holds no open task", async () => {
+    let { context, meta } = await loadProjectContext(vaultPath, projectPath);
+    assert.deepEqual([taskLines(context), meta.tasks], [["No open tasks."], 0]);
+    await write("tasks/finished.md", taskNote({ status: "done" }));
+    ({ context, meta } = await loadProjectContext(vaultPath, projectPath));
+    assert.deepEqual([taskLines(context), meta.tasks], [["No open tasks."], 0]);
+  });
+
+  it("skips an unreadable task note with one stderr line; the other tasks still load", { skip: !canChmod }, async (t) => {
+    await write("tasks/fine.md", taskNote({ status: "active" }));
+    await write("tasks/locked.md", taskNote({ status: "active" }));
+    await fs.chmod(path.join(projectDir(), "tasks", "locked.md"), 0o000);
+    const errors = t.mock.method(console, "error", () => {});
+    const { context, meta } = await loadProjectContext(vaultPath, projectPath);
+    assert.deepEqual(taskLines(context), ["- fine (active, normal)"]);
+    assert.equal(meta.tasks, 1);
+    assert.equal(errors.mock.callCount(), 1);
+    assert.ok(String(errors.mock.calls[0].arguments.join(" ")).includes("locked.md"));
+  });
+
+  it("keeps the whole context within the budget with long devlog items, and the task list intact", async () => {
+    const names = Array.from({ length: 10 }, (_, i) => `${String(i).padStart(2, "0")}-${"x".repeat(100)}`);
+    for (const name of names) await write(`tasks/${name}.md`, taskNote({ status: "active", priority: "high" }));
+    for (let i = 0; i < 10; i++) {
+      const key = `2026-10-${String(10 + i).padStart(2, "0")} 09:00`;
+      await writeSession(key, `Work${i}`, [{ key, summary: filler(`S${i}`, 1500) }]);
+    }
+    const { context } = await loadProjectContext(vaultPath, projectPath);
+    assert.ok(context.length <= CONTEXT_BUDGET, `${context.length}`);
+    assert.deepEqual(taskLines(context), names.map(n => `- ${n} (active, high)`));
+    assert.ok(devlogPart(context).includes("[truncated — vault_read"), "the devlog items give up the room");
+  });
+
+  it("meta.tasks counts every open task, not only the 10 shown", async () => {
+    for (let i = 1; i <= 12; i++) await write(`tasks/t${i}.md`, taskNote({ status: "active" }));
+    await write("tasks/old.md", taskNote({ status: "done" }));
+    const { meta } = await loadProjectContext(vaultPath, projectPath);
+    assert.equal(meta.tasks, 12);
   });
 });
 
@@ -366,20 +482,28 @@ describe("loadProjectContext budgets", () => {
     assert.ok(context.length <= CONTEXT_BUDGET);
   });
 
-  it("source \"compact\" lists up to 10 labels under Recent sessions within COMPACT_BUDGET, without reading note bodies", async () => {
+  it("source \"compact\" lists the open tasks, then up to 10 labels under Recent sessions, within COMPACT_BUDGET, without reading note bodies", async () => {
     await write("_index.md", "# Big\n\n## Overview\nINDEXBODY\n");
+    for (let i = 1; i <= 12; i++) await write(`tasks/t${String(i).padStart(2, "0")}.md`, taskNote({ status: "pending" }));
     for (let i = 10; i < 22; i++) await writeSession(`2026-10-${i} 10:00`, `Work ${"w".repeat(10)}`, [{ key: `2026-10-${i} 10:00`, summary: "NOTEBODY" }]);
     const { context, meta } = await loadProjectContext(vaultPath, projectPath, { source: "compact" });
-    assert.ok(context.startsWith("## PKM Project Context: 01-Projects/Big (compact)\n### Recent sessions\n- 2026-10-21 1000 Work"), context);
-    assert.equal(context.split("\n").filter(l => l.startsWith("- ")).length, 10);
+    const [head, sessions] = context.split("\n### Recent sessions\n");
+    assert.deepEqual(head.split("\n"), [
+      "## PKM Project Context: 01-Projects/Big (compact)",
+      "### Open Tasks",
+      ...Array.from({ length: 10 }, (_, i) => `- t${String(i + 1).padStart(2, "0")} (pending, normal)`),
+      MORE(2),
+    ]);
+    assert.ok(sessions.startsWith("- 2026-10-21 1000 Work"), context);
+    assert.equal(sessions.split("\n").filter(l => l.startsWith("- ")).length, 10);
     assert.ok(!context.includes("INDEXBODY") && !context.includes("NOTEBODY"));
     assert.ok(context.length <= COMPACT_BUDGET);
-    assert.deepEqual([meta.source, meta.devlog, meta.index], ["compact", 10, false]);
+    assert.deepEqual([meta.source, meta.devlog, meta.index, meta.tasks], ["compact", 10, false, 12]);
   });
 
   it("source \"compact\" stays within COMPACT_BUDGET with long labels, and says when there is nothing", async () => {
     let result = await loadProjectContext(vaultPath, projectPath, { source: "compact" });
-    assert.equal(result.context, "## PKM Project Context: 01-Projects/Big (compact)\n### Recent sessions\nNo devlog entries found.");
+    assert.equal(result.context, "## PKM Project Context: 01-Projects/Big (compact)\n### Open Tasks\nNo open tasks.\n### Recent sessions\nNo devlog entries found.");
     await write("development/devlog.md", legacyFile(Array.from({ length: 10 }, (_, i) => legacyEntry(`2026-10-0${i % 9 + 1} 1${i}:00 — ${"L".repeat(300)}`))));
     result = await loadProjectContext(vaultPath, projectPath, { source: "compact" });
     assert.ok(result.context.length <= COMPACT_BUDGET, `${result.context.length}`);

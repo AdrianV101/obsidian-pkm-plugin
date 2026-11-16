@@ -30,10 +30,9 @@ describe("buildServerInstructions", () => {
     assert.ok(text.length < 3000, `length ${text.length}`);
   });
 
-  it("says the index and recent devlog sessions load at session start, and no longer mentions tasks loading", () => {
+  it("says the index, open tasks and recent devlog sessions load at session start", () => {
     const text = buildServerInstructions({ vaultName: "PKM" });
-    assert.ok(text.includes("index and recent devlog sessions are loaded at session start"), text);
-    assert.ok(!/devlog or tasks/.test(text));
+    assert.ok(text.includes("index, open tasks and recent devlog sessions are loaded at session start"), text);
   });
 
   it("embeds the vault name URL-encoded in the link rule", () => {

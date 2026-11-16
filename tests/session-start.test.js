@@ -301,32 +301,38 @@ describe("session-start.js context budget and semantic health", () => {
     return JSON.parse(stdout);
   }
 
-  it("passes the hook input's source through: \"compact\" lists session names only", async () => {
+  it("passes the hook input's source through: \"compact\" lists task and session names only", async () => {
     const result = await run({ cwd: cwdDir, source: "compact" });
     const context = result.hookSpecificOutput.additionalContext;
-    assert.ok(context.startsWith("## PKM Project Context: 01-Projects/MyApp (compact)\n### Recent sessions\n- 2026-10-08 1000 Work"), context);
+    assert.ok(context.startsWith("## PKM Project Context: 01-Projects/MyApp (compact)\n### Open Tasks\n- t (active, high)\n### Recent sessions\n- 2026-10-08 1000 Work"), context);
     assert.ok(!context.includes("Project: 01-Projects/MyApp"), context);
     assert.ok(!context.includes("INDEXBODY") && !context.includes("DEVLOGBODY"));
-    assert.ok(result.systemMessage.startsWith("Obsidian PKM: Loaded MyApp (compact)"), result.systemMessage);
+    assert.ok(result.systemMessage.startsWith("Obsidian PKM: Loaded MyApp (compact, 1 open task)"), result.systemMessage);
   });
 
-  it("the status line reports the index and the devlog item count, and ignores task notes", async () => {
+  it("the status line reports the index, the devlog item count and the open task count, and nothing about tasks when there are none", async () => {
     const result = await run({ cwd: cwdDir });
     const context = result.hookSpecificOutput.additionalContext;
-    assert.ok(result.systemMessage.startsWith("Obsidian PKM: Loaded MyApp (index, 1 devlog item) \u2014 "), result.systemMessage);
-    assert.ok(!result.systemMessage.includes("task") && !result.systemMessage.includes("missing"));
+    assert.ok(result.systemMessage.startsWith("Obsidian PKM: Loaded MyApp (index, 1 devlog item, 1 open task) \u2014 "), result.systemMessage);
+    assert.ok(!result.systemMessage.includes("missing"));
     assert.ok(context.includes("#### 2026-10-08 1000 Work") && context.includes("DEVLOGBODY"));
-    assert.ok(!context.includes("Ship it") && !context.includes("Active Tasks"));
+    assert.ok(context.includes("### Open Tasks\n- t (active, high)"), context);
 
-    const dir = path.join(vaultPath, "01-Projects", "MyApp", "development", "devlog");
-    await fs.writeFile(path.join(dir, "2026-10-09 1000 More.md"), "## 2026-10-09 10:00 More\n\nBody.\n");
-    assert.ok((await run({ cwd: cwdDir })).systemMessage.startsWith("Obsidian PKM: Loaded MyApp (index, 2 devlog items) \u2014 "));
+    const projectDir = path.join(vaultPath, "01-Projects", "MyApp");
+    await fs.writeFile(path.join(projectDir, "development", "devlog", "2026-10-09 1000 More.md"), "## 2026-10-09 10:00 More\n\nBody.\n");
+    await fs.writeFile(path.join(projectDir, "tasks", "u.md"), "---\ntype: task\nstatus: pending\n---\n# Later\n");
+    assert.ok((await run({ cwd: cwdDir })).systemMessage.startsWith("Obsidian PKM: Loaded MyApp (index, 2 devlog items, 2 open tasks) \u2014 "));
+
+    await fs.rm(path.join(projectDir, "tasks"), { recursive: true });
+    const none = await run({ cwd: cwdDir });
+    assert.ok(none.systemMessage.startsWith("Obsidian PKM: Loaded MyApp (index, 2 devlog items) \u2014 "), none.systemMessage);
+    assert.ok(!none.systemMessage.includes("task"), none.systemMessage);
   });
 
   it("the status line lists devlog as missing when there are no items", async () => {
     await fs.rm(path.join(vaultPath, "01-Projects", "MyApp", "development"), { recursive: true });
     const result = await run({ cwd: cwdDir });
-    assert.ok(result.systemMessage.startsWith("Obsidian PKM: Loaded MyApp (index) [missing: devlog] \u2014 "), result.systemMessage);
+    assert.ok(result.systemMessage.startsWith("Obsidian PKM: Loaded MyApp (index, 1 open task) [missing: devlog] \u2014 "), result.systemMessage);
     assert.ok(result.hookSpecificOutput.additionalContext.includes("No devlog entries found."));
   });
 
