@@ -7,6 +7,7 @@ import path from "node:path";
 import { performance } from "node:perf_hooks";
 import { checkUpgrade, readPackageSpec, cliCommand } from "../upgrade-checks.js";
 import { addDismissal, dismissalFile } from "../upgrade-dismissals.js";
+import { activityRetentionFile } from "../activity-retention.js";
 import { git, makeRepo } from "./git-fixture.js";
 
 const REPO_ROOT = path.join(import.meta.dirname, "..");
@@ -179,6 +180,39 @@ describe("checkUpgrade: claude-md-section", () => {
   });
 });
 
+describe("checkUpgrade: activity-retention", () => {
+  it("is left while the activity log waits for approval with entries older than its window, naming the trim command", async () => {
+    const rows = [
+      [null, "done"],
+      ["not json", "done"],
+      [{ state: "approved" }, "done"],
+      [{ state: "pending", days: 90, older: 0, checked: "2026-11-16T10:00:00.000Z" }, "done"],
+      [{ state: "pending", days: 90, older: 1, checked: "2026-11-16T10:00:00.000Z" }, "left"],
+      [{ state: "pending", days: 30, older: 1240, checked: "2026-11-16T10:00:00.000Z" }, "left"],
+    ];
+    const file = activityRetentionFile(vault);
+    for (const [content, state] of rows) {
+      await fs.rm(file, { force: true });
+      if (content !== null) await write(file, typeof content === "string" ? content : JSON.stringify(content));
+      const step = stepOf(await check(), "activity-retention");
+      assert.equal(step.state, state, JSON.stringify(content));
+      assert.equal(step.required, false);
+      assert.equal(step.target, null);
+      if (state === "left") {
+        const entries = content.older === 1 ? "1 entry" : `${content.older.toLocaleString("en-US")} entries`;
+        assert.ok(step.summary.includes(`${entries} older than ${content.days} days`), step.summary);
+        assert.ok(step.fix.includes(cliCommand({ vaultPath: vault, packageSpec: SPEC }, "trim-activity")), step.fix);
+      } else {
+        assert.equal(step.summary, "");
+        assert.equal(step.fix, "");
+      }
+    }
+
+    await addDismissal({ step: "activity-retention", vault, target: null }, { home });
+    assert.equal(stepOf(await check(), "activity-retention").state, "dismissed");
+  });
+});
+
 describe("checkUpgrade: dismissals and failures", () => {
   it("reports a left step dismissed for this vault and target as dismissed, and nothing else", async () => {
     await write(vaultFile("05-Templates/devlog.md"), OLD_TEMPLATE);
@@ -187,13 +221,13 @@ describe("checkUpgrade: dismissals and failures", () => {
     await write(path.join(plain, "CLAUDE.md"), SECTION);
 
     await addDismissal({ step: "devlog-template", vault: path.join(tmp, "other-vault"), target: null }, { home });
-    assert.deepEqual((await check({ cwd: plain })).steps.map((s) => s.state), ["left", "left", "left"]);
+    assert.deepEqual((await check({ cwd: plain })).steps.map((s) => s.state), ["left", "left", "left", "done"]);
 
     await addDismissal({ step: "devlog-template", vault, target: null }, { home });
     await addDismissal({ step: "devlog-migration", vault, target: "01-Projects/Cur" }, { home });
     await addDismissal({ step: "claude-md-section", vault, target: plain }, { home });
     const report = await check({ cwd: plain });
-    assert.deepEqual(report.steps.map((s) => s.state), ["dismissed", "dismissed", "dismissed"]);
+    assert.deepEqual(report.steps.map((s) => s.state), ["dismissed", "dismissed", "dismissed", "done"]);
     assert.equal(report.dismissalError, null);
 
     await fs.rm(vaultFile("05-Templates/devlog.md"));
@@ -206,7 +240,7 @@ describe("checkUpgrade: dismissals and failures", () => {
 
     await fs.writeFile(dismissalFile(home), "not json");
     const corrupt = await check({ cwd: plain });
-    assert.deepEqual(corrupt.steps.map((s) => s.state), ["done", "left", "left"]);
+    assert.deepEqual(corrupt.steps.map((s) => s.state), ["done", "left", "left", "done"]);
     assert.equal(typeof corrupt.dismissalError, "string");
     assert.notEqual(corrupt.dismissalError, "");
   });
@@ -218,7 +252,7 @@ describe("checkUpgrade: dismissals and failures", () => {
     await write(path.join(plain, "CLAUDE.md"), SECTION);
 
     const report = await check({ cwd: plain });
-    assert.deepEqual(report.steps.map((s) => s.id), ["devlog-template", "claude-md-section"]);
+    assert.deepEqual(report.steps.map((s) => s.id), ["devlog-template", "claude-md-section", "activity-retention"]);
     assert.equal(report.errors.length, 1);
     assert.ok(report.errors[0].startsWith("devlog-migration: "), report.errors[0]);
   });
@@ -245,7 +279,9 @@ describe("upgrade commands", () => {
       [stepOf(report, "devlog-template").dismiss, ["upgrade", "dismiss", "devlog-template"]],
       [stepOf(report, "devlog-migration").dismiss, ["upgrade", "dismiss", "devlog-migration", project]],
       [stepOf(report, "claude-md-section").dismiss, ["upgrade", "dismiss", "claude-md-section", repo]],
+      [stepOf(report, "activity-retention").dismiss, ["upgrade", "dismiss", "activity-retention"]],
       [cliCommand(where, "migrate-devlog", project), ["migrate-devlog", project]],
+      [cliCommand(where, "trim-activity"), ["trim-activity"]],
     ];
     for (const [command, args] of expected) {
       assert.ok(command.startsWith("VAULT_PATH="), command);

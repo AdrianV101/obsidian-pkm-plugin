@@ -7,16 +7,19 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-/** @typedef {"devlog-template" | "devlog-migration" | "claude-md-section"} StepId */
+/** @typedef {"devlog-template" | "devlog-migration" | "claude-md-section" | "activity-retention"} StepId */
 
 /** @type {readonly StepId[]} */
-export const STEP_IDS = ["devlog-template", "devlog-migration", "claude-md-section"];
+export const STEP_IDS = ["devlog-template", "devlog-migration", "claude-md-section", "activity-retention"];
+
+/** Steps that apply to the whole vault, so their dismissals take no target. */
+const VAULT_WIDE = new Set(["devlog-template", "activity-retention"]);
 
 /**
  * @typedef {object} DismissalKey
  * @property {StepId} step
  * @property {string} vault absolute vault folder
- * @property {string|null} target null for devlog-template (the vault itself); the vault-relative
+ * @property {string|null} target null for devlog-template and activity-retention (the vault itself); the vault-relative
  *   project path for devlog-migration; the repo root for claude-md-section
  */
 /** @typedef {DismissalKey & { at: string }} Dismissal at: ISO time it was recorded */
@@ -42,8 +45,8 @@ export function validateDismissal(key) {
     return `Unknown step: ${step} (expected one of ${STEP_IDS.join(", ")})`;
   }
   if (typeof vault !== "string" || vault === "") return "The vault path is missing";
-  if (step === "devlog-template") {
-    return target === null ? null : "devlog-template applies to the whole vault and takes no target";
+  if (VAULT_WIDE.has(step)) {
+    return target === null ? null : `${step} applies to the whole vault and takes no target`;
   }
   if (typeof target !== "string" || target.trim() === "") {
     return `${step} needs a target: ${step === "devlog-migration" ? "the project path" : "the repo root"}`;

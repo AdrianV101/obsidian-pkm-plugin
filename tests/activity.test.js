@@ -5,6 +5,7 @@ import path from "path";
 import os from "os";
 import Database from "better-sqlite3";
 import { ActivityLog, summarizeArgs, buildActivityQuery } from "../activity.js";
+import { readActivityRetention, writeActivityRetention, activityRetentionFile } from "../activity-retention.js";
 
 let tmpDir;
 
@@ -692,5 +693,114 @@ describe("space reclamation", () => {
     assert.ok(log.db.pragma("page_count", { simple: true }) < pagesBefore);
     log.shutdown();
     await fs.rm(dir, { recursive: true });
+  });
+});
+
+describe("retention approval for a log that predates the retention window", () => {
+  let savedEnv;
+  before(() => {
+    savedEnv = process.env.VAULT_PKM_ACTIVITY_RETENTION_DAYS;
+    delete process.env.VAULT_PKM_ACTIVITY_RETENTION_DAYS;
+  });
+  after(() => {
+    if (savedEnv !== undefined) process.env.VAULT_PKM_ACTIVITY_RETENTION_DAYS = savedEnv;
+  });
+
+  const ago = (days) => new Date(Date.now() - days * DAY_MS).toISOString();
+  const LONG = "x".repeat(500);
+
+  /** A log written by an older version: it exists before this version's first start. */
+  async function olderLog(ages) {
+    const dir = await freshVault();
+    createOldSchemaDb(dir, ages.map((days) => ({ tool: `age_${days}`, timestamp: ago(days), args: { content: LONG } }))).close();
+    return dir;
+  }
+
+  async function start(dir, opts = {}) {
+    const log = new ActivityLog({ vaultPath: dir, sessionId: "s", ...opts });
+    await log.initialize();
+    const rows = log.query({ limit: 100 });
+    log.shutdown();
+    return { tools: rows.map((r) => r.tool_name).sort(), rows };
+  }
+
+  it("a log this version creates deletes entries older than 90 days from its next start on", async () => {
+    const dir = await freshVault();
+    await start(dir);
+    const db = openRaw(dir);
+    const insert = db.prepare("INSERT INTO activity (timestamp, session_id, tool_name, args_json) VALUES (?, 's', ?, '{}')");
+    for (const days of [0, 89, 91]) insert.run(ago(days), `age_${days}`);
+    db.close();
+
+    assert.deepEqual((await start(dir)).tools, ["age_0", "age_89"]);
+    assert.deepEqual(await readActivityRetention(dir), { state: "approved" });
+    await fs.rm(dir, { recursive: true });
+  });
+
+  it("an older log loses no entry across restarts while approval is pending, but its note text is still removed", async () => {
+    const dir = await olderLog([0, 91, 400]);
+    await start(dir);
+    const { tools, rows } = await start(dir);
+
+    assert.deepEqual(tools, ["age_0", "age_400", "age_91"]);
+    for (const row of rows) assert.ok(!row.args_json.includes(LONG), row.args_json);
+    await fs.rm(dir, { recursive: true });
+  });
+
+  it("while pending, each start records how many entries are older than 90 days; once approved, a start deletes them", async () => {
+    const dir = await olderLog([0, 91, 400]);
+    await start(dir);
+    const pending = await readActivityRetention(dir);
+    assert.equal(pending.state, "pending");
+    assert.equal(pending.days, 90);
+    assert.equal(pending.older, 2);
+    assert.ok(!Number.isNaN(Date.parse(pending.checked)), pending.checked);
+
+    await writeActivityRetention(dir, { state: "approved" });
+    assert.deepEqual((await start(dir)).tools, ["age_0"]);
+    assert.deepEqual(await readActivityRetention(dir), { state: "approved" });
+    await fs.rm(dir, { recursive: true });
+  });
+
+  it("a retention the user set explicitly applies to a pending log; an invalid value does not count as a choice", async () => {
+    const chosen = [
+      [{ retentionDays: 30 }, null],
+      [{}, "30"],
+    ];
+    for (const [opts, env] of chosen) {
+      if (env !== null) process.env.VAULT_PKM_ACTIVITY_RETENTION_DAYS = env;
+      try {
+        const dir = await olderLog([0, 40]);
+        assert.deepEqual((await start(dir, opts)).tools, ["age_0"], JSON.stringify({ opts, env }));
+        assert.equal((await readActivityRetention(dir)).older, 0, "nothing left to ask about");
+        await fs.rm(dir, { recursive: true });
+      } finally {
+        delete process.env.VAULT_PKM_ACTIVITY_RETENTION_DAYS;
+      }
+    }
+
+    process.env.VAULT_PKM_ACTIVITY_RETENTION_DAYS = "abc";
+    try {
+      const dir = await olderLog([0, 400]);
+      assert.deepEqual((await start(dir)).tools, ["age_0", "age_400"]);
+      assert.equal((await readActivityRetention(dir)).state, "pending");
+      await fs.rm(dir, { recursive: true });
+    } finally {
+      delete process.env.VAULT_PKM_ACTIVITY_RETENTION_DAYS;
+    }
+  });
+
+  it("an older log whose state file is missing, unreadable or unrecognised counts as pending", async () => {
+    for (const content of [null, "not json", JSON.stringify({ state: "yes" }), JSON.stringify(["approved"])]) {
+      const dir = await olderLog([0, 400]);
+      await start(dir);
+      const file = activityRetentionFile(dir);
+      if (content === null) await fs.rm(file);
+      else await fs.writeFile(file, content);
+
+      assert.deepEqual((await start(dir)).tools, ["age_0", "age_400"], String(content));
+      assert.equal((await readActivityRetention(dir)).state, "pending", String(content));
+      await fs.rm(dir, { recursive: true });
+    }
   });
 });

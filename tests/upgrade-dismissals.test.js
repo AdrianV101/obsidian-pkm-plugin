@@ -127,6 +127,7 @@ describe("upgrade dismissals", () => {
       { step: "devlog-template", vault: "/v", target: null },
       { step: "devlog-migration", vault: "/v", target: "01-Projects/A" },
       { step: "claude-md-section", vault: "/v", target: "/repo" },
+      { step: "activity-retention", vault: "/v", target: null },
     ];
     for (const key of valid) assert.equal(validateDismissal(key), null, JSON.stringify(key));
 
@@ -137,6 +138,7 @@ describe("upgrade dismissals", () => {
       { step: "devlog-migration", vault: "/v", target: "  " },
       { step: "claude-md-section", vault: "/v", target: null },
       { step: "claude-md-section", vault: "/v", target: "" },
+      { step: "activity-retention", vault: "/v", target: "x" },
     ];
     for (const key of invalid) {
       const message = validateDismissal(key);
