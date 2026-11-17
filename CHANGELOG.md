@@ -6,7 +6,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
-## [4.0.2] - 2026-11-16
+## [4.0.2] - 2026-11-17
 
 ### Fixed
 - **`vault_edit` refuses a missing `new_string`**, or one that is not a string, instead of writing the text `undefined` into the note and reporting success. An empty string still deletes the match.
