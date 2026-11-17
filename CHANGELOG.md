@@ -6,6 +6,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+- **The lockfile used for development and CI** moves `hono` and `@hono/node-server`, which come with the MCP SDK, to releases that fix the moderate-severity advisories GitHub reported. The server uses only the SDK's stdio transport, not these HTTP packages, and installs from npm already resolve the fixed versions.
+
 ## [4.0.2] - 2026-11-17
 
 ### Fixed
