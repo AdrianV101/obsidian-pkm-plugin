@@ -63,7 +63,7 @@
     "@inquirer/input": "^5.0.10",
     "@inquirer/select": "^5.1.2",
     "@modelcontextprotocol/sdk": "^1.27.0",
-    "better-sqlite3": "^12.6.2",
+    "better-sqlite3": "^13.2.0",
     "sqlite-vec": "^0.1.7",
     "yaml": "^2.9.1"
   },
